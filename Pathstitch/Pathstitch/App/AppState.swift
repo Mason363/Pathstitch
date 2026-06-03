@@ -17,10 +17,10 @@ enum TwoDTool: String, CaseIterable {
     
     var icon: String {
         switch self {
-        case .select: return "arrow.up.and.pointer"
+        case .select: return "arrow.up.left.pointer"
         case .chainSelect: return "link"
         case .pan: return "hand.raised"
-        case .offset: return "arrow.up.down"
+        case .offset: return "arrow.up.and.down"
         case .addHoles: return "circle.dashed"
         case .cleanup: return "sparkles"
         case .measure: return "ruler"

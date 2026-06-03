@@ -141,10 +141,35 @@ struct DxfCanvasView: View {
                 }
                 .modifier(MouseTrackerModifier(mouseLocation: $mouseLocation, hoverCoords: $hoverCoords, size: geo.size, bounds: modelBounds, scale: state.canvasScale, offset: state.canvasOffset))
                 .background(
-                    ScrollWheelModifier { event in
-                        let zoomFactor: CGFloat = event.deltaY > 0 ? 1.15 : 0.85
-                        state.canvasScale = max(0.01, min(500.0, state.canvasScale * zoomFactor))
-                    }
+                    ScrollWheelModifier(
+                        onZoom: { event in
+                            let oldScale = state.canvasScale
+                            let zoomFactor: CGFloat = event.deltaY > 0 ? 1.15 : 0.85
+                            let newScale = max(0.01, min(500.0, oldScale * zoomFactor))
+                            
+                            if newScale != oldScale {
+                                let mPt = toModel(point: mouseLocation, size: geo.size, bounds: modelBounds)
+                                state.canvasScale = newScale
+                                
+                                let dx = mPt.x - modelBounds.midX
+                                let dy = mPt.y - modelBounds.midY
+                                let scaleDiff = newScale - oldScale
+                                
+                                state.canvasOffset = CGSize(
+                                    width: state.canvasOffset.width - dx * scaleDiff,
+                                    height: state.canvasOffset.height + dy * scaleDiff
+                                )
+                            }
+                        },
+                        onPan: { event in
+                            let dx = event.hasPreciseScrollingDeltas ? event.scrollingDeltaX : event.deltaX * 10
+                            let dy = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 10
+                            state.canvasOffset = CGSize(
+                                width: state.canvasOffset.width + dx,
+                                height: state.canvasOffset.height + dy
+                            )
+                        }
+                    )
                 )
                 
                 // Overlay Coordinate Display (Plasticity Style)
@@ -284,9 +309,26 @@ struct DxfCanvasView: View {
             } else if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
                 let d = distance(modelPt, CGPoint(x: center[0], y: center[1]))
                 distModel = abs(d - radius)
-            } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius {
+            } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius,
+                      let sa = ent.start_angle, let ea = ent.end_angle {
                 let d = distance(modelPt, CGPoint(x: center[0], y: center[1]))
-                distModel = abs(d - radius)
+                let dx = modelPt.x - CGFloat(center[0])
+                let dy = modelPt.y - CGFloat(center[1])
+                var angle = atan2(dy, dx) * 180.0 / .pi
+                if angle < 0 { angle += 360.0 }
+                
+                let inArc: Bool
+                if sa <= ea {
+                    inArc = (angle >= sa && angle <= ea)
+                } else {
+                    inArc = (angle >= sa || angle <= ea)
+                }
+                
+                if inArc {
+                    distModel = abs(d - radius)
+                } else {
+                    distModel = Double.infinity
+                }
             } else if let vertices = ent.vertices {
                 for i in 0..<(vertices.count - 1) {
                     let d = distanceToSegment(pt: modelPt, start: CGPoint(x: vertices[i][0], y: vertices[i][1]), end: CGPoint(x: vertices[i+1][0], y: vertices[i+1][1]))
@@ -348,23 +390,30 @@ private struct MouseTrackerModifier: ViewModifier {
 
 // Scroll Wheel NSView representable wrapper
 struct ScrollWheelModifier: NSViewRepresentable {
-    var onScroll: (NSEvent) -> Void
+    var onZoom: (NSEvent) -> Void
+    var onPan: (NSEvent) -> Void
     
     func makeNSView(context: Context) -> NSView {
         let view = ScrollEventView()
-        view.onScroll = onScroll
+        view.onZoom = onZoom
+        view.onPan = onPan
         return view
     }
     
     func updateNSView(_ nsView: NSView, context: Context) {}
     
     class ScrollEventView: NSView {
-        var onScroll: ((NSEvent) -> Void)?
+        var onZoom: ((NSEvent) -> Void)?
+        var onPan: ((NSEvent) -> Void)?
         
         override var acceptsFirstResponder: Bool { true }
         
         override func scrollWheel(with event: NSEvent) {
-            onScroll?(event)
+            if event.modifierFlags.contains(.option) {
+                onZoom?(event)
+            } else {
+                onPan?(event)
+            }
         }
     }
 }
