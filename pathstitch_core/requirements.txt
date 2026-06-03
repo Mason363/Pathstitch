@@ -1,0 +1,4 @@
+ezdxf
+shapely
+svgwrite
+numpy
