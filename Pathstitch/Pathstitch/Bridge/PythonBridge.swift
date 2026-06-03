@@ -32,6 +32,16 @@ class PythonBridge {
         process.executableURL = URL(fileURLWithPath: pythonPath)
         process.arguments = ["-m", "pathstitch_core.\(module)"]
         
+        // Configure PYTHONPATH and current directory to locate pathstitch_core package
+        let projectPath = "/Users/chen/Documents/Assets/Pathstitch"
+        if FileManager.default.fileExists(atPath: projectPath) {
+            process.currentDirectoryURL = URL(fileURLWithPath: projectPath)
+            var env = ProcessInfo.processInfo.environment
+            let currentPythonPath = env["PYTHONPATH"] ?? ""
+            env["PYTHONPATH"] = currentPythonPath.isEmpty ? projectPath : "\(projectPath):\(currentPythonPath)"
+            process.environment = env
+        }
+        
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
