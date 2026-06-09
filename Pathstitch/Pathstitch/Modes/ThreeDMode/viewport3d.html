@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Pathstitch 3D Viewport</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #121214;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            user-select: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #info-overlay {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            color: #a1a1aa;
+            font-size: 11px;
+            pointer-events: none;
+            background: rgba(18, 18, 20, 0.85);
+            padding: 6px 10px;
+            border-radius: 4px;
+            border: 1px solid #27272a;
+            display: none;
+        }
+    </style>
+    <!-- Load Three.js and OrbitControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="info-overlay">Hover face details</div>
+
+    <script>
+        // Setup Three.js scene
+        const container = document.getElementById('canvas-container');
+        const infoOverlay = document.getElementById('info-overlay');
+        
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x121214);
+        
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 10000);
+        camera.position.set(200, 200, 200);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+        
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+        
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.6);
+        dirLight1.position.set(500, 1000, 500);
+        scene.add(dirLight1);
+        
+        const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+        dirLight2.position.set(-500, -1000, -500);
+        scene.add(dirLight2);
+
+        // Grid and Axes
+        const gridHelper = new THREE.GridHelper(500, 50, 0x3f3f46, 0x27272a);
+        gridHelper.position.y = -0.1; // slight offset to prevent z-fighting
+        scene.add(gridHelper);
+        
+        const axesHelper = new THREE.AxesHelper(50);
+        scene.add(axesHelper);
+
+        // State variables
+        let faceMeshes = [];
+        let hoveredFace = null;
+        let selectedFaces = []; // Array of {bodyIndex, faceIndex}
+
+        // Color constants (Plasticity CAD Palette)
+        const COLOR_DEFAULT = 0xffffff; // Flat white
+        const COLOR_HOVER = 0xe2e8f0;   // Light gray/blue
+        const COLOR_SELECTED = 0x3b82f6; // Accent color
+        const COLOR_EDGE = 0x1e1e20;     // Black/dark charcoal
+        const COLOR_HIGHLIGHT_EDGE = 0x60a5fa;
+
+        // Load 3D model JSON
+        window.loadModel = function(modelJsonStr) {
+            // Clear existing models
+            if (window.modelGroup) {
+                scene.remove(window.modelGroup);
+                faceMeshes.forEach(mesh => {
+                    mesh.geometry.dispose();
+                    if (Array.isArray(mesh.material)) {
+                        mesh.material.forEach(m => m.dispose());
+                    } else {
+                        mesh.material.dispose();
+                    }
+                });
+            }
+            window.modelGroup = new THREE.Group();
+            scene.add(window.modelGroup);
+            faceMeshes = [];
+            hoveredFace = null;
+            selectedFaces = [];
+            infoOverlay.style.display = 'none';
+
+            const model = JSON.parse(modelJsonStr);
+            const bodies = model.bodies || [];
+            
+            const bodyGroups = [];
+
+            bodies.forEach(body => {
+                const faces = body.faces || [];
+                if (faces.length === 0) return;
+
+                const bodyGroup = new THREE.Group();
+                bodyGroup.userData = {
+                    bodyIndex: body.body_index
+                };
+                window.modelGroup.add(bodyGroup);
+                bodyGroups.push(bodyGroup);
+
+                faces.forEach(face => {
+                    if (!face.vertices || face.vertices.length === 0) return;
+
+                    const geometry = new THREE.BufferGeometry();
+                    const vertices = new Float32Array(face.vertices);
+                    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                    
+                    if (face.indices && face.indices.length > 0) {
+                        geometry.setIndex(face.indices);
+                    }
+                    
+                    geometry.computeVertexNormals();
+
+                    // Material for the face (flat shading matching Plasticity)
+                    const material = new THREE.MeshStandardMaterial({
+                        color: COLOR_DEFAULT,
+                        roughness: 0.5,
+                        metalness: 0.1,
+                        flatShading: false,
+                        side: THREE.DoubleSide
+                    });
+
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.userData = {
+                        bodyIndex: body.body_index,
+                        faceIndex: face.face_index,
+                        type: face.type,
+                        area: face.area
+                    };
+                    
+                    // Add wireframe edges for precise outlines
+                    const edgesGeom = new THREE.EdgesGeometry(geometry, 20); // 20-deg angle threshold
+                    const lineMat = new THREE.LineBasicMaterial({ color: COLOR_EDGE, linewidth: 1 });
+                    const wireframe = new THREE.LineSegments(edgesGeom, lineMat);
+                    mesh.add(wireframe);
+                    mesh.userData.wireframe = wireframe;
+
+                    bodyGroup.add(mesh);
+                    faceMeshes.push(mesh);
+                });
+            });
+
+            // Space bodies out along X-axis and ground them at Y = 0
+            const gap = 20.0;
+            let currentX = 0;
+
+            bodyGroups.forEach(bodyGroup => {
+                const box = new THREE.Box3().setFromObject(bodyGroup);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+
+                // Ground children locally and center in X & Z
+                bodyGroup.children.forEach(child => {
+                    child.position.x -= center.x;
+                    child.position.y -= box.min.y;
+                    child.position.z -= center.z;
+                });
+
+                // Position bodyGroup along X axis
+                const halfWidth = (size.x || 1.0) / 2.0;
+                bodyGroup.position.x = currentX + halfWidth;
+                bodyGroup.position.y = 0;
+                bodyGroup.position.z = 0;
+
+                currentX += (size.x || 1.0) + gap;
+            });
+
+            const totalArrangedWidth = currentX > gap ? currentX - gap : 0.0;
+
+            // Center entire modelGroup on X and Z axes
+            window.modelGroup.position.x = -totalArrangedWidth / 2.0;
+            window.modelGroup.position.y = 0;
+            window.modelGroup.position.z = 0;
+
+            window.recenterCamera();
+        };
+
+        window.recenterCamera = function() {
+            if (!window.modelGroup) return;
+            const finalBox = new THREE.Box3().setFromObject(window.modelGroup);
+            const finalSize = finalBox.getSize(new THREE.Vector3());
+            const maxDim = Math.max(finalSize.x, finalSize.y, finalSize.z) || 50.0;
+            controls.target.set(0, finalSize.y / 2, 0);
+            camera.position.set(maxDim * 1.5, finalSize.y / 2 + maxDim * 1.5, maxDim * 1.5);
+            controls.update();
+        };
+
+        // Highlight selection from SwiftUI
+        window.setSelectedFaces = function(selectedJsonStr) {
+            selectedFaces = JSON.parse(selectedJsonStr);
+            updateVisuals();
+        };
+
+        // Toggle visibility of a solid body
+        window.setBodyVisibility = function(bodyIndex, visible) {
+            faceMeshes.forEach(mesh => {
+                if (mesh.userData.bodyIndex === bodyIndex) {
+                    mesh.visible = visible;
+                }
+            });
+        };
+
+        // Raycasting for Face Selection & Hover
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(faceMeshes);
+
+            if (intersects.length > 0) {
+                const hitMesh = intersects[0].object;
+                if (hoveredFace !== hitMesh) {
+                    hoveredFace = hitMesh;
+                    updateVisuals();
+                    
+                    // Show Info Overlay
+                    infoOverlay.style.display = 'block';
+                    infoOverlay.innerHTML = `Body: ${hitMesh.userData.bodyIndex + 1} | Face: ${hitMesh.userData.faceIndex} | Type: ${hitMesh.userData.type} | Area: ${hitMesh.userData.area.toFixed(1)} mm²`;
+                }
+            } else {
+                if (hoveredFace !== null) {
+                    hoveredFace = null;
+                    updateVisuals();
+                    infoOverlay.style.display = 'none';
+                }
+            }
+        }
+
+        function onClick(event) {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(faceMeshes);
+
+            if (intersects.length > 0) {
+                const clickedMesh = intersects[0].object;
+                const bodyIndex = clickedMesh.userData.bodyIndex;
+                const faceIndex = clickedMesh.userData.faceIndex;
+
+                // Send selection to Swift
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pathstitch) {
+                    window.webkit.messageHandlers.pathstitch.postMessage(JSON.stringify({
+                        op: "selectFace",
+                        bodyIndex: bodyIndex,
+                        faceIndex: faceIndex,
+                        isShiftKey: event.shiftKey
+                    }));
+                }
+            } else {
+                // Clicked background -> clear selection
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pathstitch) {
+                    window.webkit.messageHandlers.pathstitch.postMessage(JSON.stringify({
+                        op: "clearSelection"
+                    }));
+                }
+            }
+        }
+
+        // Apply colors based on selection/hover state
+        function updateVisuals() {
+            faceMeshes.forEach(mesh => {
+                const isSelected = selectedFaces.some(sf => sf.bodyIndex === mesh.userData.bodyIndex && sf.faceIndex === mesh.userData.faceIndex);
+                const isHovered = hoveredFace === mesh;
+
+                if (isSelected) {
+                    mesh.material.color.setHex(COLOR_SELECTED);
+                    mesh.userData.wireframe.material.color.setHex(COLOR_HIGHLIGHT_EDGE);
+                } else if (isHovered) {
+                    mesh.material.color.setHex(COLOR_HOVER);
+                    mesh.userData.wireframe.material.color.setHex(COLOR_HIGHLIGHT_EDGE);
+                } else {
+                    mesh.material.color.setHex(COLOR_DEFAULT);
+                    mesh.userData.wireframe.material.color.setHex(COLOR_EDGE);
+                }
+            });
+        }
+
+        window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('click', onClick, false);
+
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Animation Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Notify Swift that the Web Interface is fully loaded and ready
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pathstitch) {
+            window.webkit.messageHandlers.pathstitch.postMessage(JSON.stringify({
+                op: "ready"
+            }));
+        }
+    </script>
+</body>
+</html>
