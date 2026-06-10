@@ -1689,7 +1689,7 @@ extension ContentView {
                         loadProject()
                     }
                     
-                    ToolbarHoverButton(systemName: "square.and.arrow.down.on.square", help: "Save Project (.stch)", disabled: state.currentFilePath == nil) {
+                    ToolbarHoverButton(systemName: "square.and.arrow.down.on.square", help: "Save Project (.stch)") {
                         saveProject()
                     }
                     

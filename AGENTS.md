@@ -144,7 +144,7 @@ To verify modifications in the backend geometrical algorithms:
 The canonical working state is an **isolated, always-valid DXF working buffer** (`active.dxf` inside `sessionTempDirectory`), not a user-visible temp file. This was a deliberate engineering choice over a from-scratch in-memory rewrite (cf. MAS-21): the Python geometry engine (ezdxf/shapely) is built around DXF documents, so the highest-reliability, lowest-risk overhaul keeps the buffer but makes **empty a valid state**, fixes all file-type routing, and makes save/load/merge robust. A future migration to a pure in-memory document model (rendering directly from the already-`Codable` `[DXFEntity]` and passing geometry to Python over stdin/stdout) remains the long-term direction.
 
 - **`.stch` = zipped JSON** (`project.json` + `preview.png`) via `ProjectSaveContainer`. It round-trips geometry, measurements, canvas/ref-image state, tool settings, **and the batch session** (`BatchItemSave`). Loading tries the zip first, then falls back to raw JSON for legacy files.
-- **Saving a blank project works** — `saveProject(to:)` materialises an empty buffer if needed rather than erroring.
+- **Saving a blank project works** — `saveProject(to:)` materialises an empty buffer if needed rather than erroring, and the Save toolbar control is always enabled (never gated on `currentFilePath`).
 - **Supported open/import:** `.stch`, `.dxf`, `.step`/`.stp`, `.svg`, `.pdf`, and raster images. `loadFile(url:)` self-routes `.stch`→`loadProject` and `.pdf`→`importPDF` so no caller hits "unsupported".
 - **The `.stch` Finder icon** is the asset-catalog image set `StchDocument` (generated from `Icon/FIle Icon 2.png` over a document page), referenced by `CFBundleTypeIconName` in `Info.plist`.
 
