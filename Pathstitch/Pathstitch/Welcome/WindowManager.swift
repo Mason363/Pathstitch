@@ -234,7 +234,13 @@ class PathstitchDocumentWindow: NSWindow {
     
     init(contentViewController: NSViewController, appState: AppState) {
         self.appState = appState
-        super.init(contentViewController: contentViewController)
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        self.contentViewController = contentViewController
     }
     
     override func sendEvent(_ event: NSEvent) {
