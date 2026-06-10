@@ -34,14 +34,13 @@ struct PathstitchApp: App {
     @Environment(\.openWindow) private var openWindow
     
     var body: some Scene {
-        WindowGroup {
-            Color.clear
-                .frame(width: 0, height: 0)
+        Settings {
+            EmptyView()
         }
         .commands {
             // File persistence menu items (Open, Save, Save As)
             CommandGroup(replacing: .saveItem) {
-                Button("New Project") {
+                Button("New File") {
                     WindowManager.shared.createNewDocument(fromWindow: NSApp.keyWindow)
                 }
                 .keyboardShortcut("n", modifiers: [.command])

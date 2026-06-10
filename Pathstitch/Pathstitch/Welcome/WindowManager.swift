@@ -156,6 +156,13 @@ class WindowManager: NSObject, NSApplicationDelegate {
         window.title = "Pathstitch"
         window.isReleasedWhenClosed = false
         
+        if let lastWindow = documentWindows.last {
+            let lastOrigin = lastWindow.frame.origin
+            window.setFrameOrigin(NSPoint(x: lastOrigin.x + 30.0, y: lastOrigin.y - 30.0))
+        } else {
+            window.center()
+        }
+        
         let delegate = DocumentWindowDelegate(window: window, state: state)
         window.delegate = delegate
         

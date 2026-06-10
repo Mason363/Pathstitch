@@ -24,6 +24,8 @@ struct DxfCanvasView: View {
     @State private var editingDimension: MeasurementLine? = nil
     @State private var editingDimensionText: String = ""
     @State private var editingDimensionScreenPos: CGPoint = .zero
+    @FocusState private var isTextEditorFocused: Bool
+    @FocusState private var isDimensionEditorFocused: Bool
     
     var selectionCenterModel: CGPoint? {
         if state.selectedHandles.isEmpty { return nil }
@@ -47,6 +49,7 @@ struct DxfCanvasView: View {
     }
     
     var body: some View {
+        @Bindable var state = state
         GeometryReader { geo in
             let modelBounds = state.entities.isEmpty ? CGRect(x: 0, y: 0, width: 200, height: 200) : getBounds(state.entities)
             
@@ -78,19 +81,12 @@ struct DxfCanvasView: View {
                         let isHovered = (state.hoveredHandle == ent.handle)
                         
                         let baseColor = state.layers.first(where: { $0.name == ent.layer })?.color ?? Color.text_primary
+                        let isOriginal = ent.layer.uppercased() == "ORIGINAL"
                         let strokeColor: Color
                         if isSelected {
-                            if ent.layer.uppercased() == "ORIGINAL" {
-                                strokeColor = Color.accent
-                            } else {
-                                strokeColor = baseColor
-                            }
+                            strokeColor = isOriginal ? Color.accent : baseColor
                         } else if isHovered {
-                            if ent.layer.uppercased() == "ORIGINAL" {
-                                strokeColor = Color.accent.opacity(0.5)
-                            } else {
-                                strokeColor = baseColor.opacity(0.6)
-                            }
+                            strokeColor = isOriginal ? Color.accent.opacity(0.5) : baseColor.opacity(0.6)
                         } else {
                             strokeColor = baseColor
                         }
@@ -138,6 +134,9 @@ struct DxfCanvasView: View {
                                 context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
                             }
                         } else if ent.type == "TEXT", let textStr = ent.text, let start = ent.start {
+                            if state.isEditingText && state.editingTextHandle == ent.handle {
+                                continue
+                            }
                             let sc = toScreen(dx: start[0], dy: start[1], size: size, bounds: modelBounds)
                             let h = CGFloat(ent.height ?? 5.0) * state.canvasScale
                             let resolvedText = context.resolve(Text(textStr).font(.system(size: h)).foregroundColor(strokeColor))
@@ -200,8 +199,14 @@ struct DxfCanvasView: View {
                         }
                         
                         let isSelected = state.selectedMeasurement?.id == measure.id
-                        let startScreen = toScreen(dx: measure.start.x, dy: measure.start.y, size: size, bounds: modelBounds)
-                        let endScreen = toScreen(dx: measure.end.x, dy: measure.end.y, size: size, bounds: modelBounds)
+                        let isMeasuringSelectedEntity = (measure.entityHandle != nil && state.selectedHandles.contains(measure.entityHandle!))
+                        let mDxOffset = isMeasuringSelectedEntity ? gizmoDragOffset.width : 0.0
+                        let mDyOffset = isMeasuringSelectedEntity ? gizmoDragOffset.height : 0.0
+                        
+                        let baseStartScreen = toScreen(dx: measure.start.x, dy: measure.start.y, size: size, bounds: modelBounds)
+                        let baseEndScreen = toScreen(dx: measure.end.x, dy: measure.end.y, size: size, bounds: modelBounds)
+                        let startScreen = CGPoint(x: baseStartScreen.x + mDxOffset, y: baseStartScreen.y + mDyOffset)
+                        let endScreen = CGPoint(x: baseEndScreen.x + mDxOffset, y: baseEndScreen.y + mDyOffset)
                         
                         var mPath = SwiftUI.Path()
                         mPath.move(to: startScreen)
@@ -272,20 +277,24 @@ struct DxfCanvasView: View {
                     
                     // Draw Sketch Tools Live Preview
                     if state.currentTool == .sketchLine, let startModel = sketchStartPoint {
+                        let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
+                        let endModel = snapped.point
                         let startScreen = toScreen(dx: startModel.x, dy: startModel.y, size: size, bounds: modelBounds)
+                        let endScreen = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
+                        
                         var path = SwiftUI.Path()
                         path.move(to: startScreen)
-                        path.addLine(to: mouseLocation)
+                        path.addLine(to: endScreen)
                         context.stroke(path, with: .color(Color.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
                         
-                        let endModel = toModel(point: mouseLocation, size: size, bounds: modelBounds)
                         let dist = Double(hypot(startModel.x - endModel.x, startModel.y - endModel.y))
                         let labelText = String(format: "L: %.2f mm", dist)
-                        let midScreen = CGPoint(x: (startScreen.x + mouseLocation.x) / 2, y: (startScreen.y + mouseLocation.y) / 2)
-                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: midScreen.x, y: midScreen.y - 10), anchor: .center)
+                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: endScreen.x, y: endScreen.y - 10), anchor: .center)
                     } else if state.currentTool == .sketchCircle, let startModel = sketchStartPoint {
+                        let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
+                        let endModel = snapped.point
                         let startScreen = toScreen(dx: startModel.x, dy: startModel.y, size: size, bounds: modelBounds)
-                        let endModel = toModel(point: mouseLocation, size: size, bounds: modelBounds)
+                        let endScreen = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
                         let rModel = Double(hypot(startModel.x - endModel.x, startModel.y - endModel.y))
                         let rScreen = CGFloat(rModel) * state.canvasScale
                         
@@ -295,14 +304,16 @@ struct DxfCanvasView: View {
                         
                         var radLine = SwiftUI.Path()
                         radLine.move(to: startScreen)
-                        radLine.addLine(to: mouseLocation)
+                        radLine.addLine(to: endScreen)
                         context.stroke(radLine, with: .color(Color.accent.opacity(0.5)), lineWidth: 1.0)
                         
                         let labelText = String(format: "R: %.2f mm", rModel)
-                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: mouseLocation.x, y: mouseLocation.y - 10), anchor: .center)
+                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: endScreen.x, y: endScreen.y - 10), anchor: .center)
                     } else if state.currentTool == .sketchRectangle, let startModel = sketchStartPoint {
-                        let startScreen = toScreen(dx: startModel.x, dy: startModel.y, size: size, bounds: modelBounds)
-                        let endModel = toModel(point: mouseLocation, size: size, bounds: modelBounds)
+                        let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
+                        let endModel = snapped.point
+                        let p1 = toScreen(dx: startModel.x, dy: startModel.y, size: size, bounds: modelBounds)
+                        let p2 = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
                         
                         let pts = pointsOnRoundedRectangle(p1: startModel, p2: endModel, r: state.sketchFilletRadius)
                         if pts.count >= 2 {
@@ -320,16 +331,18 @@ struct DxfCanvasView: View {
                         let w = abs(endModel.x - startModel.x)
                         let h = abs(endModel.y - startModel.y)
                         let labelText = String(format: "W: %.2f | H: %.2f mm", w, h)
-                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: mouseLocation.x, y: mouseLocation.y - 10), anchor: .center)
+                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: p2.x, y: p2.y - 10), anchor: .center)
                     } else if state.currentTool == .sketchText, let startModel = sketchStartPoint {
+                        let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
+                        let endModel = snapped.point
                         let startScreen = toScreen(dx: startModel.x, dy: startModel.y, size: size, bounds: modelBounds)
-                        let endModel = toModel(point: mouseLocation, size: size, bounds: modelBounds)
+                        let endScreen = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
                         
                         let rect = CGRect(
-                            x: min(startScreen.x, mouseLocation.x),
-                            y: min(startScreen.y, mouseLocation.y),
-                            width: abs(startScreen.x - mouseLocation.x),
-                            height: abs(startScreen.y - mouseLocation.y)
+                            x: min(startScreen.x, endScreen.x),
+                            y: min(startScreen.y, endScreen.y),
+                            width: abs(startScreen.x - endScreen.x),
+                            height: abs(startScreen.y - endScreen.y)
                         )
                         var boxPath = SwiftUI.Path()
                         boxPath.addRect(rect)
@@ -338,7 +351,23 @@ struct DxfCanvasView: View {
                         let w = abs(endModel.x - startModel.x)
                         let h = abs(endModel.y - startModel.y)
                         let labelText = String(format: "W: %.2f | H: %.2f mm", w, h)
-                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: mouseLocation.x, y: mouseLocation.y - 10), anchor: .center)
+                        context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: endScreen.x, y: endScreen.y - 10), anchor: .center)
+                    }
+                    
+                    // Draw Snapping Hover Indicator
+                    if let hover = hoverCoords {
+                        let hoverScreen = toScreen(dx: Double(hover.x), dy: Double(hover.y), size: size, bounds: modelBounds)
+                        if let snap = getSnappedPoint(for: hoverScreen, size: size, bounds: modelBounds) {
+                            let snapPt = snap.snappedScreenPt
+                            let snapRect = CGRect(x: snapPt.x - 4, y: snapPt.y - 4, width: 8, height: 8)
+                            var snapPath = SwiftUI.Path()
+                            snapPath.addRect(snapRect)
+                            context.stroke(snapPath, with: .color(Color.orange), lineWidth: 2.0)
+                            
+                            let font = Font.system(size: 9, weight: .semibold)
+                            let text = context.resolve(Text(snap.type.rawValue).font(font).foregroundColor(.orange))
+                            context.draw(text, at: CGPoint(x: snapPt.x + 8, y: snapPt.y - 4), anchor: .leading)
+                        }
                     }
                     
                     // Draw Selection Rectangle
@@ -376,6 +405,7 @@ struct DxfCanvasView: View {
                     SpatialTapGesture(count: 2)
                         .onEnded { event in
                             let point = event.location
+                            let modelPt = toModel(point: point, size: geo.size, bounds: modelBounds)
                             if let nearestMeasure = findNearestMeasurement(screenPt: point, size: geo.size, bounds: modelBounds) {
                                 editingDimension = nearestMeasure
                                 editingDimensionText = String(format: "%.2f", nearestMeasure.distanceMm)
@@ -386,6 +416,9 @@ struct DxfCanvasView: View {
                                     x: (startScreen.x + endScreen.x) / 2,
                                     y: (startScreen.y + endScreen.y) / 2
                                 )
+                            } else if let nearestEntity = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: geo.size, bounds: modelBounds),
+                                      nearestEntity.type == "TEXT" {
+                                state.startEditingText(entity: nearestEntity)
                             }
                         }
                 )
@@ -403,6 +436,30 @@ struct DxfCanvasView: View {
                 }
                 .onChange(of: state.fitRequestToken) { _, _ in
                     fitToContent(viewSize: geo.size)
+                }
+                .onChange(of: state.isEditingText) { _, editing in
+                    isTextEditorFocused = editing
+                }
+                .onChange(of: state.escapePressedToken) { _, _ in
+                    if state.isEditingText {
+                        state.cancelTextEditing()
+                    } else if sketchStartPoint != nil {
+                        sketchStartPoint = nil
+                    } else {
+                        state.selectedHandles.removeAll()
+                        state.selectedFaces3D.removeAll()
+                    }
+                }
+                .onChange(of: state.currentTool) { _, _ in
+                    sketchStartPoint = nil
+                    state.activeMeasureStart = nil
+                }
+                .onChange(of: editingDimension) { _, newDim in
+                    if newDim != nil {
+                        isDimensionEditorFocused = true
+                    } else {
+                        isDimensionEditorFocused = false
+                    }
                 }
                 .overlay(
                     ScrollWheelModifier(
@@ -492,7 +549,7 @@ struct DxfCanvasView: View {
                                 .frame(width: 8, height: 10)
                                 .offset(x: 48)
                                 .gesture(
-                                    DragGesture()
+                                    DragGesture(coordinateSpace: .global)
                                         .onChanged { val in
                                             gizmoDragOffset = CGSize(width: val.translation.width, height: 0)
                                         }
@@ -517,7 +574,7 @@ struct DxfCanvasView: View {
                                 .rotationEffect(.degrees(-90))
                                 .offset(y: -48)
                                 .gesture(
-                                    DragGesture()
+                                    DragGesture(coordinateSpace: .global)
                                         .onChanged { val in
                                             gizmoDragOffset = CGSize(width: 0, height: val.translation.height)
                                         }
@@ -534,7 +591,7 @@ struct DxfCanvasView: View {
                                 .frame(width: 10, height: 10)
                                 .border(Color.black, width: 1)
                                 .gesture(
-                                    DragGesture()
+                                    DragGesture(coordinateSpace: .global)
                                         .onChanged { val in
                                             gizmoDragOffset = val.translation
                                         }
@@ -590,12 +647,16 @@ struct DxfCanvasView: View {
                 Group {
                     if let editing = editingDimension {
                         TextField("", text: $editingDimensionText, onCommit: {
-                            if let val = Double(editingDimensionText) {
-                                state.selectedMeasurement = editing
-                                state.updateSelectedDimensionValue(newValue: val)
-                            }
-                            editingDimension = nil
+                            commitDimensionEdit()
                         })
+                        .onSubmit {
+                            commitDimensionEdit()
+                        }
+                        .focused($isDimensionEditorFocused)
+                        .onKeyPress(.tab) {
+                            cycleDimension(size: geo.size, modelBounds: modelBounds)
+                            return .handled
+                        }
                         .textFieldStyle(PlainTextFieldStyle())
                         .font(.system(size: 11, weight: .bold))
                         .padding(.horizontal, 8)
@@ -607,6 +668,28 @@ struct DxfCanvasView: View {
                         .frame(width: 80)
                         .position(editingDimensionScreenPos)
                         .shadow(radius: 4)
+                    }
+                    
+                    if state.isEditingText {
+                        let sc = toScreen(dx: state.editingTextInsert.x, dy: state.editingTextInsert.y, size: geo.size, bounds: modelBounds)
+                        let fontSize = CGFloat(state.editingTextHeight) * state.canvasScale
+                        
+                        TextField("Enter text...", text: $state.editingTextString, onCommit: {
+                            state.commitTextEditing()
+                        })
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.system(size: max(8.0, fontSize)))
+                        .foregroundColor(Color.text_primary)
+                        .padding(4)
+                        .background(Color.bg_panel.opacity(0.85))
+                        .cornerRadius(4)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accent, lineWidth: 1.0))
+                        .frame(minWidth: 150)
+                        .position(sc)
+                        .focused($isTextEditorFocused)
+                        .onSubmit {
+                            state.commitTextEditing()
+                        }
                     }
                 }
             )
@@ -700,7 +783,16 @@ struct DxfCanvasView: View {
                 if state.currentTool == .pan || NSEvent.modifierFlags.contains(.option) {
                     dragStartOffset = state.canvasOffset
                 } else if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText {
-                    sketchStartPoint = toModel(point: val.startLocation, size: size, bounds: modelBounds)
+                    if state.currentTool == .sketchLine && sketchStartPoint != nil {
+                        // Keep previous chained point
+                    } else {
+                        let startPt = val.startLocation
+                        if let snap = getSnappedPoint(for: startPt, size: size, bounds: modelBounds) {
+                            sketchStartPoint = snap.snappedModelPt
+                        } else {
+                            sketchStartPoint = toModel(point: startPt, size: size, bounds: modelBounds)
+                        }
+                    }
                 } else if state.currentTool != .measure {
                     dragSelectionStart = val.startLocation
                 }
@@ -793,20 +885,15 @@ struct DxfCanvasView: View {
         
         if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText {
             if let start = sketchStartPoint {
-                let end = toModel(point: val.location, size: size, bounds: modelBounds)
+                let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
+                let end = snapped.point
                 let dragDist = hypot(val.translation.width, val.translation.height)
                 
                 if dragDist > 5.0 {
                     if state.currentTool == .sketchText {
                         let textHeight = Double(abs(end.y - start.y))
                         let textInsert = CGPoint(x: min(start.x, end.x), y: min(start.y, end.y))
-                        Task {
-                            await MainActor.run {
-                                state.pendingTextInsert = textInsert
-                                state.pendingTextHeight = textHeight
-                                state.showTextInputDialog = true
-                            }
-                        }
+                        state.startEditingNewText(insert: textInsert, height: textHeight)
                     } else if state.currentTool == .sketchLine {
                         let dist = Double(hypot(start.x - end.x, start.y - end.y))
                         Task {
@@ -815,14 +902,26 @@ struct DxfCanvasView: View {
                                 "end": [Double(end.x), Double(end.y)]
                             ]) {
                                 await MainActor.run {
-                                    state.measurements.append(MeasurementLine(
+                                    let lenMeasure = MeasurementLine(
                                         start: start,
                                         end: end,
                                         distanceMm: dist,
                                         isAutoDimension: true,
                                         entityHandle: handle,
                                         dimensionType: "length"
-                                    ))
+                                    )
+                                    state.measurements.append(lenMeasure)
+                                    
+                                    // Focus the length dimension
+                                    editingDimension = lenMeasure
+                                    editingDimensionText = String(format: "%.2f", lenMeasure.distanceMm)
+                                    let startScreen = toScreen(dx: lenMeasure.start.x, dy: lenMeasure.start.y, size: size, bounds: modelBounds)
+                                    let endScreen = toScreen(dx: lenMeasure.end.x, dy: lenMeasure.end.y, size: size, bounds: modelBounds)
+                                    editingDimensionScreenPos = CGPoint(
+                                        x: (startScreen.x + endScreen.x) / 2,
+                                        y: (startScreen.y + endScreen.y) / 2
+                                    )
+                                    isDimensionEditorFocused = true
                                 }
                             }
                         }
@@ -835,14 +934,26 @@ struct DxfCanvasView: View {
                             ]) {
                                 let endRad = CGPoint(x: start.x + CGFloat(radius), y: start.y)
                                 await MainActor.run {
-                                    state.measurements.append(MeasurementLine(
+                                    let radMeasure = MeasurementLine(
                                         start: start,
                                         end: endRad,
                                         distanceMm: radius,
                                         isAutoDimension: true,
                                         entityHandle: handle,
                                         dimensionType: "radius"
-                                    ))
+                                    )
+                                    state.measurements.append(radMeasure)
+                                    
+                                    // Focus the radius dimension
+                                    editingDimension = radMeasure
+                                    editingDimensionText = String(format: "%.2f", radMeasure.distanceMm)
+                                    let startScreen = toScreen(dx: radMeasure.start.x, dy: radMeasure.start.y, size: size, bounds: modelBounds)
+                                    let endScreen = toScreen(dx: radMeasure.end.x, dy: radMeasure.end.y, size: size, bounds: modelBounds)
+                                    editingDimensionScreenPos = CGPoint(
+                                        x: (startScreen.x + endScreen.x) / 2,
+                                        y: (startScreen.y + endScreen.y) / 2
+                                    )
+                                    isDimensionEditorFocused = true
                                 }
                             }
                         }
@@ -860,7 +971,7 @@ struct DxfCanvasView: View {
                                 let pTopLeft = CGPoint(x: min(start.x, end.x), y: max(start.y, end.y))
                                 
                                 await MainActor.run {
-                                    state.measurements.append(MeasurementLine(
+                                    let wMeasure = MeasurementLine(
                                         start: pBottomLeft,
                                         end: pBottomRight,
                                         distanceMm: Double(w),
@@ -870,8 +981,8 @@ struct DxfCanvasView: View {
                                         rectP1: pBottomLeft,
                                         rectP2: end,
                                         filletRadius: state.sketchFilletRadius
-                                    ))
-                                    state.measurements.append(MeasurementLine(
+                                    )
+                                    let hMeasure = MeasurementLine(
                                         start: pBottomLeft,
                                         end: pTopLeft,
                                         distanceMm: Double(h),
@@ -881,14 +992,32 @@ struct DxfCanvasView: View {
                                         rectP1: pBottomLeft,
                                         rectP2: end,
                                         filletRadius: state.sketchFilletRadius
-                                    ))
+                                    )
+                                    state.measurements.append(wMeasure)
+                                    state.measurements.append(hMeasure)
+                                    
+                                    // Focus the width dimension
+                                    editingDimension = wMeasure
+                                    editingDimensionText = String(format: "%.2f", wMeasure.distanceMm)
+                                    let startScreen = toScreen(dx: wMeasure.start.x, dy: wMeasure.start.y, size: size, bounds: modelBounds)
+                                    let endScreen = toScreen(dx: wMeasure.end.x, dy: wMeasure.end.y, size: size, bounds: modelBounds)
+                                    editingDimensionScreenPos = CGPoint(
+                                        x: (startScreen.x + endScreen.x) / 2,
+                                        y: (startScreen.y + endScreen.y) / 2
+                                    )
+                                    isDimensionEditorFocused = true
                                 }
                             }
                         }
                     }
                 }
+                
+                if state.currentTool == .sketchLine {
+                    sketchStartPoint = end
+                } else {
+                    sketchStartPoint = nil
+                }
             }
-            sketchStartPoint = nil
             return
         }
         
@@ -1548,6 +1677,226 @@ struct DxfCanvasView: View {
     
     private func distance(_ p1: CGPoint, _ p2: CGPoint) -> Double {
         Double(hypot(p1.x - p2.x, p1.y - p2.y))
+    }
+    
+    // MARK: - Snapping & Dimension Cycling Logic
+    
+    struct SnapResult {
+        let snappedModelPt: CGPoint
+        let snappedScreenPt: CGPoint
+        let type: SnapType
+        
+        enum SnapType: String {
+            case endpoint = "Endpoint"
+            case midpoint = "Midpoint"
+            case center = "Center"
+            case coincident = "Coincident"
+        }
+    }
+    
+    struct SnapCandidate {
+        let modelPoint: CGPoint
+        let type: SnapResult.SnapType
+    }
+    
+    private func closestPointOnSegment(p: CGPoint, a: CGPoint, b: CGPoint) -> CGPoint {
+        let ab = CGPoint(x: b.x - a.x, y: b.y - a.y)
+        let ap = CGPoint(x: p.x - a.x, y: p.y - a.y)
+        let abLenSq = ab.x * ab.x + ab.y * ab.y
+        if abLenSq < 1e-9 { return a }
+        var t = (ap.x * ab.x + ap.y * ab.y) / abLenSq
+        t = max(0.0, min(1.0, t))
+        return CGPoint(x: a.x + t * ab.x, y: a.y + t * ab.y)
+    }
+    
+    private func closestPointOnCircle(p: CGPoint, center: CGPoint, radius: CGFloat) -> CGPoint {
+        let dx = p.x - center.x
+        let dy = p.y - center.y
+        let dist = hypot(dx, dy)
+        if dist < 1e-9 {
+            return CGPoint(x: center.x + radius, y: center.y)
+        }
+        return CGPoint(x: center.x + radius * dx / dist, y: center.y + radius * dy / dist)
+    }
+    
+    private func closestPointOnArc(p: CGPoint, center: CGPoint, radius: CGFloat, startAngle: Double, endAngle: Double) -> CGPoint {
+        let dx = p.x - center.x
+        let dy = p.y - center.y
+        let angleRad = atan2(dy, dx)
+        var angleDeg = angleRad * 180.0 / .pi
+        if angleDeg < 0 { angleDeg += 360 }
+        
+        var s = startAngle
+        var e = endAngle
+        if e < s { e += 360 }
+        
+        var testAngle = angleDeg
+        if testAngle < s { testAngle += 360 }
+        
+        if testAngle >= s && testAngle <= e {
+            return CGPoint(x: center.x + radius * cos(angleRad), y: center.y + radius * sin(angleRad))
+        } else {
+            let sRad = startAngle * .pi / 180.0
+            let eRad = endAngle * .pi / 180.0
+            let ptS = CGPoint(x: center.x + radius * cos(sRad), y: center.y + radius * sin(sRad))
+            let ptE = CGPoint(x: center.x + radius * cos(eRad), y: center.y + radius * sin(eRad))
+            let distS = hypot(p.x - ptS.x, p.y - ptS.y)
+            let distE = hypot(p.x - ptE.x, p.y - ptE.y)
+            return distS < distE ? ptS : ptE
+        }
+    }
+    
+    func getSnapCandidates(for queryModelPt: CGPoint) -> [SnapCandidate] {
+        var list: [SnapCandidate] = []
+        for ent in state.entities {
+            let layerVisible = state.layers.first(where: { $0.name == ent.layer })?.visible ?? true
+            if !layerVisible { continue }
+            
+            if ent.type == "LINE", let s = ent.start, let e = ent.end {
+                let ptS = CGPoint(x: s[0], y: s[1])
+                let ptE = CGPoint(x: e[0], y: e[1])
+                list.append(SnapCandidate(modelPoint: ptS, type: .endpoint))
+                list.append(SnapCandidate(modelPoint: ptE, type: .endpoint))
+                list.append(SnapCandidate(modelPoint: CGPoint(x: (ptS.x + ptE.x)/2, y: (ptS.y + ptE.y)/2), type: .midpoint))
+                
+                let coinc = closestPointOnSegment(p: queryModelPt, a: ptS, b: ptE)
+                list.append(SnapCandidate(modelPoint: coinc, type: .coincident))
+            } else if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
+                let ptC = CGPoint(x: center[0], y: center[1])
+                let r = CGFloat(radius)
+                list.append(SnapCandidate(modelPoint: ptC, type: .center))
+                
+                let coinc = closestPointOnCircle(p: queryModelPt, center: ptC, radius: r)
+                list.append(SnapCandidate(modelPoint: coinc, type: .coincident))
+            } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius,
+                      let sa = ent.start_angle, let ea = ent.end_angle {
+                let ptC = CGPoint(x: center[0], y: center[1])
+                let r = CGFloat(radius)
+                list.append(SnapCandidate(modelPoint: ptC, type: .center))
+                
+                let saRad = sa * .pi / 180.0
+                let eaRad = ea * .pi / 180.0
+                let ptS = CGPoint(x: ptC.x + r * cos(saRad), y: ptC.y + r * sin(saRad))
+                let ptE = CGPoint(x: ptC.x + r * cos(eaRad), y: ptC.y + r * sin(eaRad))
+                list.append(SnapCandidate(modelPoint: ptS, type: .endpoint))
+                list.append(SnapCandidate(modelPoint: ptE, type: .endpoint))
+                
+                var diff = ea - sa
+                if diff < 0 { diff += 360 }
+                let midAngle = sa + diff / 2
+                let midRad = midAngle * .pi / 180.0
+                let ptM = CGPoint(x: ptC.x + r * cos(midRad), y: ptC.y + r * sin(midRad))
+                list.append(SnapCandidate(modelPoint: ptM, type: .midpoint))
+                
+                let coinc = closestPointOnArc(p: queryModelPt, center: ptC, radius: r, startAngle: sa, endAngle: ea)
+                list.append(SnapCandidate(modelPoint: coinc, type: .coincident))
+            } else if let vertices = ent.vertices, vertices.count >= 2 {
+                let pts = vertices.map { CGPoint(x: $0[0], y: $0[1]) }
+                for p in pts {
+                    list.append(SnapCandidate(modelPoint: p, type: .endpoint))
+                }
+                for i in 0..<(pts.count - 1) {
+                    let a = pts[i]
+                    let b = pts[i+1]
+                    list.append(SnapCandidate(modelPoint: CGPoint(x: (a.x + b.x)/2, y: (a.y + b.y)/2), type: .midpoint))
+                    
+                    let coinc = closestPointOnSegment(p: queryModelPt, a: a, b: b)
+                    list.append(SnapCandidate(modelPoint: coinc, type: .coincident))
+                }
+                if ent.closed == true {
+                    let a = pts[pts.count - 1]
+                    let b = pts[0]
+                    list.append(SnapCandidate(modelPoint: CGPoint(x: (a.x + b.x)/2, y: (a.y + b.y)/2), type: .midpoint))
+                    let coinc = closestPointOnSegment(p: queryModelPt, a: a, b: b)
+                    list.append(SnapCandidate(modelPoint: coinc, type: .coincident))
+                }
+            }
+        }
+        return list
+    }
+    
+    func getSnappedPoint(for screenPt: CGPoint, size: CGSize, bounds: CGRect) -> SnapResult? {
+        let queryModelPt = toModel(point: screenPt, size: size, bounds: bounds)
+        let candidates = getSnapCandidates(for: queryModelPt)
+        
+        var bestCandidate: SnapResult? = nil
+        
+        for cand in candidates {
+            let candScreen = toScreen(dx: Double(cand.modelPoint.x), dy: Double(cand.modelPoint.y), size: size, bounds: bounds)
+            let dist = hypot(screenPt.x - candScreen.x, screenPt.y - candScreen.y)
+            if dist <= 12.0 {
+                let res = SnapResult(snappedModelPt: cand.modelPoint, snappedScreenPt: candScreen, type: cand.type)
+                if let best = bestCandidate {
+                    let bestPri = getPriority(best.type)
+                    let candPri = getPriority(res.type)
+                    if candPri < bestPri {
+                        bestCandidate = res
+                    } else if candPri == bestPri {
+                        let bestDist = hypot(screenPt.x - best.snappedScreenPt.x, screenPt.y - best.snappedScreenPt.y)
+                        if dist < bestDist {
+                            bestCandidate = res
+                        }
+                    }
+                } else {
+                    bestCandidate = res
+                }
+            }
+        }
+        
+        return bestCandidate
+    }
+    
+    private func getPriority(_ type: SnapResult.SnapType) -> Int {
+        switch type {
+        case .endpoint: return 0
+        case .midpoint: return 1
+        case .center: return 2
+        case .coincident: return 3
+        }
+    }
+    
+    func snappedMouseLocation(size: CGSize, bounds: CGRect) -> (point: CGPoint, snap: SnapResult?) {
+        if let snap = getSnappedPoint(for: mouseLocation, size: size, bounds: bounds) {
+            return (snap.snappedModelPt, snap)
+        }
+        let modelPt = toModel(point: mouseLocation, size: size, bounds: bounds)
+        return (modelPt, nil)
+    }
+    
+    private func cycleDimension(size: CGSize, modelBounds: CGRect) {
+        guard let editing = editingDimension else { return }
+        let related = state.measurements.filter { $0.entityHandle == editing.entityHandle && $0.isAutoDimension }
+        guard !related.isEmpty else { return }
+        
+        if let idx = related.firstIndex(where: { $0.id == editing.id }) {
+            let nextIdx = (idx + 1) % related.count
+            let nextDim = related[nextIdx]
+            
+            if let val = Double(editingDimensionText) {
+                state.selectedMeasurement = editing
+                state.updateSelectedDimensionValue(newValue: val)
+            }
+            
+            editingDimension = nextDim
+            editingDimensionText = String(format: "%.2f", nextDim.distanceMm)
+            let startScreen = toScreen(dx: nextDim.start.x, dy: nextDim.start.y, size: size, bounds: modelBounds)
+            let endScreen = toScreen(dx: nextDim.end.x, dy: nextDim.end.y, size: size, bounds: modelBounds)
+            editingDimensionScreenPos = CGPoint(
+                x: (startScreen.x + endScreen.x) / 2,
+                y: (startScreen.y + endScreen.y) / 2
+            )
+            isDimensionEditorFocused = true
+        }
+    }
+    
+    private func commitDimensionEdit() {
+        if let editing = editingDimension {
+            if let val = Double(editingDimensionText) {
+                state.selectedMeasurement = editing
+                state.updateSelectedDimensionValue(newValue: val)
+            }
+            editingDimension = nil
+        }
     }
 }
 

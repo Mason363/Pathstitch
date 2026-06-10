@@ -121,6 +121,25 @@ struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
     let closed: Bool?
     let text: String?
     let height: Double?
+
+    func translated(dx: Double, dy: Double) -> DXFEntity {
+        DXFEntity(
+            handle: handle,
+            type: type,
+            layer: layer,
+            color: color,
+            start: start.map { [$0[0] + dx, $0[1] + dy] },
+            end: end.map { [$0[0] + dx, $0[1] + dy] },
+            center: center.map { [$0[0] + dx, $0[1] + dy] },
+            radius: radius,
+            start_angle: start_angle,
+            end_angle: end_angle,
+            vertices: vertices.map { pts in pts.map { [$0[0] + dx, $0[1] + dy] } },
+            closed: closed,
+            text: text,
+            height: height
+        )
+    }
 }
 
 struct DXFLayer: Identifiable, Hashable {
@@ -201,6 +220,14 @@ class AppState {
     var pendingTextHeight: Double = 5.0
     var showTextInputDialog: Bool = false
     var textInputString: String = "Label"
+    
+    // Canvas Text editing properties
+    var isEditingText: Bool = false
+    var editingTextHandle: String? = nil
+    var editingTextString: String = ""
+    var editingTextInsert: CGPoint = .zero
+    var editingTextHeight: Double = 5.0
+    var escapePressedToken: Int = 0
     
     // Log entries
     var logEntries: [LogEntry] = []
@@ -2543,35 +2570,74 @@ class AppState {
     func translateSelected(dx: CGFloat, dy: CGFloat) {
         guard let url = currentFilePath, !selectedHandles.isEmpty else { return }
         saveToHistory()
-        isProcessing = true
         
-        Task {
+        let dxDouble = Double(dx)
+        let dyDouble = Double(dy)
+        
+        // 1. Optimistic in-memory update for entities
+        self.entities = self.entities.map { entity in
+            if self.selectedHandles.contains(entity.handle) {
+                return entity.translated(dx: dxDouble, dy: dyDouble)
+            } else {
+                return entity
+            }
+        }
+        
+        // 2. Optimistic in-memory update for measurements
+        for idx in 0..<self.measurements.count {
+            if let handle = self.measurements[idx].entityHandle, self.selectedHandles.contains(handle) {
+                var m = self.measurements[idx]
+                m.start.x += dx
+                m.start.y += dy
+                m.end.x += dx
+                m.end.y += dy
+                if var p1 = m.rectP1 {
+                    p1.x += dx
+                    p1.y += dy
+                    m.rectP1 = p1
+                }
+                if var p2 = m.rectP2 {
+                    p2.x += dx
+                    p2.y += dy
+                    m.rectP2 = p2
+                }
+                self.measurements[idx] = m
+            }
+        }
+        
+        self.hasUnsavedChanges = true
+        logEntries.append(LogEntry(action: "Translate Entities", details: "Translated selected entities by dx: \(dx), dy: \(dy)"))
+        
+        // 3. Asynchronous background reconciliation to disk
+        let selectedHandlesSnapshot = self.selectedHandles
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        
+        let task = Task<Void, Never> {
+            // Wait for any running reconcileTask to finish first
+            await reconcileBufferIfNeeded()
+            
             do {
-                await reconcileBufferIfNeeded()
-                let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
                 _ = try await PythonBridge.shared.run(
                     module: "dxf_ops",
                     op: "translate_entities",
                     args: [
                         "input": url.path,
                         "output": activeDxfURL.path,
-                        "handles": Array(selectedHandles),
-                        "dx": Double(dx),
-                        "dy": Double(dy)
+                        "handles": Array(selectedHandlesSnapshot),
+                        "dx": dxDouble,
+                        "dy": dyDouble
                     ]
                 )
                 await MainActor.run {
                     self.currentFilePath = activeDxfURL
-                    self.reloadDXF()
-                    logEntries.append(LogEntry(action: "Translate Entities", details: "Translated selected entities by dx: \(dx), dy: \(dy)"))
                 }
             } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                    self.isProcessing = false
-                }
+                // Background translation failed; the in-memory state is still correct.
+                print("Background translation failed: \(error)")
             }
         }
+        
+        self.reconcileTask = task
     }
 
     func applyDashedCreases() {
@@ -2878,6 +2944,193 @@ class AppState {
             let g = Double((hash & 0x00FF00) >> 8) / 255.0
             let b = Double(hash & 0x0000FF) / 255.0
             return Color(red: r, green: g, blue: b)
+        }
+    }
+
+    // MARK: - Text Inline Editing
+    func generateNextHandle() -> String {
+        var maxHandleVal = 0
+        for ent in entities {
+            if let val = Int(ent.handle, radix: 16) {
+                if val > maxHandleVal {
+                    maxHandleVal = val
+                }
+            }
+        }
+        let nextVal = max(maxHandleVal + 1, 0xF0000)
+        return String(nextVal, radix: 16).uppercased()
+    }
+
+    func startEditingNewText(insert: CGPoint, height: Double) {
+        self.isEditingText = true
+        self.editingTextHandle = nil
+        self.editingTextString = ""
+        self.editingTextInsert = insert
+        self.editingTextHeight = height
+    }
+    
+    func startEditingText(entity: DXFEntity) {
+        self.isEditingText = true
+        self.editingTextHandle = entity.handle
+        self.editingTextString = entity.text ?? ""
+        if let start = entity.start {
+            self.editingTextInsert = CGPoint(x: start[0], y: start[1])
+        }
+        self.editingTextHeight = entity.height ?? 5.0
+    }
+    
+    func cancelTextEditing() {
+        self.isEditingText = false
+        self.editingTextHandle = nil
+        self.editingTextString = ""
+    }
+    
+    func commitTextEditing() {
+        guard isEditingText else { return }
+        let text = editingTextString.isEmpty ? "Label" : editingTextString
+        let insert = editingTextInsert
+        let height = editingTextHeight
+        let handle = editingTextHandle
+        
+        self.isEditingText = false
+        self.editingTextHandle = nil
+        self.editingTextString = ""
+        
+        if let h = handle {
+            // Edit existing text in-memory
+            saveToHistory()
+            self.entities = self.entities.map { entity in
+                if entity.handle == h {
+                    return DXFEntity(
+                        handle: entity.handle,
+                        type: entity.type,
+                        layer: entity.layer,
+                        color: entity.color,
+                        start: [Double(insert.x), Double(insert.y)],
+                        end: nil,
+                        center: nil,
+                        radius: nil,
+                        start_angle: nil,
+                        end_angle: nil,
+                        vertices: nil,
+                        closed: nil,
+                        text: text,
+                        height: height
+                    )
+                } else {
+                    return entity
+                }
+            }
+            self.hasUnsavedChanges = true
+            
+            // Reconcile background DXF
+            guard let url = currentFilePath else { return }
+            let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+            let task = Task<Void, Never> {
+                await reconcileBufferIfNeeded()
+                do {
+                    _ = try await PythonBridge.shared.run(
+                        module: "dxf_ops",
+                        op: "update_text",
+                        args: [
+                            "input": url.path,
+                            "output": activeDxfURL.path,
+                            "handle": h,
+                            "text": text,
+                            "height": height
+                        ]
+                    )
+                    await MainActor.run {
+                        self.currentFilePath = activeDxfURL
+                    }
+                } catch {
+                    print("Background text update failed: \(error)")
+                }
+            }
+            self.reconcileTask = task
+        } else {
+            // Create new text in-memory
+            saveToHistory()
+            let tempHandle = "TEMP_" + UUID().uuidString
+            let newEntity = DXFEntity(
+                handle: tempHandle,
+                type: "TEXT",
+                layer: "TEXT",
+                color: 7,
+                start: [Double(insert.x), Double(insert.y)],
+                end: nil,
+                center: nil,
+                radius: nil,
+                start_angle: nil,
+                end_angle: nil,
+                vertices: nil,
+                closed: nil,
+                text: text,
+                height: height
+            )
+            self.entities.append(newEntity)
+            self.recomputeLayersFromEntities()
+            self.hasUnsavedChanges = true
+            
+            // Reconcile background DXF
+            let activeDxfURL = ensureActiveDXFFileExists()
+            let task = Task<Void, Never> {
+                await reconcileBufferIfNeeded()
+                do {
+                    let res = try await PythonBridge.shared.run(
+                        module: "dxf_ops",
+                        op: "add_text",
+                        args: [
+                            "input": activeDxfURL.path,
+                            "output": activeDxfURL.path,
+                            "text": text,
+                            "insert": [Double(insert.x), Double(insert.y)],
+                            "height": height,
+                            "layer": "TEXT"
+                        ]
+                    )
+                    if let data = res["data"] as? [String: Any],
+                       let realHandle = data["handle"] as? String {
+                        await MainActor.run {
+                            // Update the temporary handle in-memory
+                            self.entities = self.entities.map { entity in
+                                if entity.handle == tempHandle {
+                                    return DXFEntity(
+                                        handle: realHandle,
+                                        type: entity.type,
+                                        layer: entity.layer,
+                                        color: entity.color,
+                                        start: entity.start,
+                                        end: entity.end,
+                                        center: entity.center,
+                                        radius: entity.radius,
+                                        start_angle: entity.start_angle,
+                                        end_angle: entity.end_angle,
+                                        vertices: entity.vertices,
+                                        closed: entity.closed,
+                                        text: entity.text,
+                                        height: entity.height
+                                    )
+                                } else {
+                                    return entity
+                                }
+                            }
+                            if self.selectedHandles.contains(tempHandle) {
+                                self.selectedHandles.remove(tempHandle)
+                                self.selectedHandles.insert(realHandle)
+                            }
+                            for idx in 0..<self.measurements.count {
+                                if self.measurements[idx].entityHandle == tempHandle {
+                                    self.measurements[idx].entityHandle = realHandle
+                                }
+                            }
+                        }
+                    }
+                } catch {
+                    print("Background text add failed: \(error)")
+                }
+            }
+            self.reconcileTask = task
         }
     }
 }

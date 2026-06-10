@@ -209,20 +209,7 @@ struct ContentView: View {
         .onChange(of: state.holeEnableVariableSpacing) { _ in state.updateLivePreview() }
         .onChange(of: state.holeEnableProximityFilter) { _ in state.updateLivePreview() }
         .onChange(of: state.holeEnableCornerInterpolation) { _ in state.updateLivePreview() }
-        .alert("Enter Text", isPresented: $state.showTextInputDialog) {
-            TextField("Text to insert", text: $state.textInputString)
-            Button("OK") {
-                if let insert = state.pendingTextInsert {
-                    state.applyAddText(text: state.textInputString, insert: insert, height: state.pendingTextHeight)
-                }
-                state.textInputString = "Label"
-            }
-            Button("Cancel", role: .cancel) {
-                state.textInputString = "Label"
-            }
-        } message: {
-            Text("Enter the text to place in the bounding box.")
-        }
+
     }
     
     @ViewBuilder
@@ -236,8 +223,7 @@ struct ContentView: View {
             Button("") { state.currentTool = .cleanup }.keyboardShortcut("j", modifiers: [])
             Button("") { state.currentTool = .measure }.keyboardShortcut("m", modifiers: [])
             Button("") {
-                state.selectedHandles.removeAll()
-                state.selectedFaces3D.removeAll()
+                state.escapePressedToken += 1
             }.keyboardShortcut(.escape, modifiers: [])
             Button("") { state.undo() }.keyboardShortcut("z", modifiers: [.command])
             Button("") { state.redo() }.keyboardShortcut("z", modifiers: [.command, .shift])
@@ -1784,23 +1770,6 @@ extension ContentView {
                 
                 // Top Toolbar (always visible in 2D mode)
                 HStack(spacing: 16) {
-                    Button(action: {
-                        WindowManager.shared.createNewDocument(fromWindow: NSApp.keyWindow)
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "doc.badge.plus")
-                            Text("New")
-                                .font(PlasticityFont.label)
-                        }
-                        .foregroundColor(Color.text_primary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.bg_input)
-                        .cornerRadius(4)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    .help("New File (⌘N)")
-                    
                     Button(action: {
                         state.canvasScale = 1.0
                         state.canvasOffset = .zero

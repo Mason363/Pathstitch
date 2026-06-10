@@ -380,47 +380,52 @@ struct BatchThumbnailCanvas: View {
             let bounds = getBounds(entities)
             
             Canvas { context, size in
-                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
-                
                 let scaleX = (size.width - 16) / max(1.0, bounds.width)
                 let scaleY = (size.height - 16) / max(1.0, bounds.height)
                 let scale = min(scaleX, scaleY)
                 
-                let offsetX = size.width / 2.0 - bounds.midX * scale
-                let offsetY = size.height / 2.0 - bounds.midY * scale
+                let midX = bounds.midX
+                let midY = bounds.midY
                 
-                context.translateBy(x: offsetX, y: offsetY)
-                context.scaleBy(x: scale, y: scale)
+                func mapPt(_ x: Double, _ y: Double) -> CGPoint {
+                    let sx = CGFloat(x - midX) * scale + size.width / 2.0
+                    let sy = -CGFloat(y - midY) * scale + size.height / 2.0
+                    return CGPoint(x: sx, y: sy)
+                }
                 
                 for ent in entities {
                     var path = SwiftUI.Path()
                     if ent.type == "LINE", let s = ent.start, let e = ent.end {
-                        path.move(to: CGPoint(x: s[0], y: s[1]))
-                        path.addLine(to: CGPoint(x: e[0], y: e[1]))
-                        context.stroke(path, with: .color(.black), lineWidth: 1.2 / scale)
+                        path.move(to: mapPt(s[0], s[1]))
+                        path.addLine(to: mapPt(e[0], e[1]))
+                        context.stroke(path, with: .color(Color.text_primary), lineWidth: 1.2)
                     } else if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
-                        path.addEllipse(in: CGRect(x: center[0] - radius, y: center[1] - radius, width: radius * 2, height: radius * 2))
-                        context.stroke(path, with: .color(.black), lineWidth: 1.2 / scale)
+                        let sc = mapPt(center[0], center[1])
+                        let sr = CGFloat(radius) * scale
+                        path.addEllipse(in: CGRect(x: sc.x - sr, y: sc.y - sr, width: sr * 2, height: sr * 2))
+                        context.stroke(path, with: .color(Color.text_primary), lineWidth: 1.2)
                     } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius,
                               let sa = ent.start_angle, let ea = ent.end_angle {
+                        let sc = mapPt(center[0], center[1])
+                        let sr = CGFloat(radius) * scale
                         path.addArc(
-                            center: CGPoint(x: center[0], y: center[1]),
-                            radius: CGFloat(radius),
+                            center: sc,
+                            radius: sr,
                             startAngle: Angle(degrees: -sa),
                             endAngle: Angle(degrees: -ea),
                             clockwise: true
                         )
-                        context.stroke(path, with: .color(.black), lineWidth: 1.2 / scale)
+                        context.stroke(path, with: .color(Color.text_primary), lineWidth: 1.2)
                     } else if let vertices = ent.vertices {
                         if vertices.count >= 2 {
-                            path.move(to: CGPoint(x: vertices[0][0], y: vertices[0][1]))
+                            path.move(to: mapPt(vertices[0][0], vertices[0][1]))
                             for i in 1..<vertices.count {
-                                path.addLine(to: CGPoint(x: vertices[i][0], y: vertices[i][1]))
+                                path.addLine(to: mapPt(vertices[i][0], vertices[i][1]))
                             }
                             if ent.closed == true {
                                 path.closeSubpath()
                             }
-                            context.stroke(path, with: .color(.black), lineWidth: 1.2 / scale)
+                            context.stroke(path, with: .color(Color.text_primary), lineWidth: 1.2)
                         }
                     }
                 }

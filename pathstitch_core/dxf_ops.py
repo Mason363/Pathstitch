@@ -2248,7 +2248,7 @@ def op_trace_raster(args: Dict[str, Any]) -> Dict[str, Any]:
                         pts.append((x, y))
             
             if len(pts) >= 2:
-                msp.add_lwpolyline(pts, dxfattribs={"layer": "ORIGINAL", "closed": curve.is_loop})
+                msp.add_lwpolyline(pts, dxfattribs={"layer": "ORIGINAL", "closed": True})
                 
         doc.saveas(output_path)
         return {"status": "ok"}
@@ -2616,6 +2616,7 @@ def op_add_text(args: Dict[str, Any]) -> Dict[str, Any]:
     insert = args.get("insert", [0.0, 0.0])
     height = float(args.get("height", 5.0))
     layer = args.get("layer", "TEXT")
+    handle = args.get("handle")
     
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
@@ -2632,10 +2633,45 @@ def op_add_text(args: Dict[str, Any]) -> Dict[str, Any]:
         txt_ent = msp.add_text(text, dxfattribs={"height": height, "layer": layer})
         txt_ent.dxf.insert = (float(insert[0]), float(insert[1]))
         
+        if handle:
+            old_handle = txt_ent.dxf.handle
+            if old_handle in doc.entitydb:
+                del doc.entitydb[old_handle]
+            txt_ent.dxf.handle = handle
+            doc.entitydb[handle] = txt_ent
+        
         doc.saveas(output_path)
         return {"status": "ok", "data": {"handle": txt_ent.dxf.handle}}
     except Exception as e:
         return {"status": "error", "message": f"Failed to add text: {str(e)}"}
+
+def op_update_text(args: Dict[str, Any]) -> Dict[str, Any]:
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handle = args.get("handle")
+    text = args.get("text", "")
+    height = args.get("height")
+    
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handle:
+        return {"status": "error", "message": "Handle must be specified."}
+        
+    try:
+        doc = ezdxf.readfile(input_path)
+        ent = doc.entitydb.get(handle)
+        if ent and ent.dxftype() == "TEXT":
+            ent.dxf.text = text
+            if height is not None:
+                ent.dxf.height = float(height)
+            doc.saveas(output_path)
+            return {"status": "ok", "data": {"handle": handle}}
+        else:
+            return {"status": "error", "message": f"Text entity with handle {handle} not found."}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to update text: {str(e)}"}
 
 def op_delete_entities(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
@@ -2708,6 +2744,7 @@ OPERATIONS = {
     "pattern_grid": op_pattern_grid,
     "pattern_path": op_pattern_path,
     "add_text": op_add_text,
+    "update_text": op_update_text,
     "delete_entities": op_delete_entities,
     "new_dxf": op_new_dxf,
 }
