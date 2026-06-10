@@ -6,6 +6,33 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		3959E8A19BCE2EBB3435721B /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 340761E66F24C26A57C2A6F6 /* ZIPFoundation */; };
+		74B6C80F2FD0B0DF0025AB94 /* DxfPreviewer.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 74B6C8012FD0B0DF0025AB94 /* DxfPreviewer.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		74B7C80F2FD0B0DF0025AB94 /* PathstitchThumbnail.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 74B7C8012FD0B0DF0025AB94 /* PathstitchThumbnail.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		74FEA97D2FD2EDA10066B988 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
+		74FEA97E2FD2EDA10066B988 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 340761E66F24C26A57C2A6F6 /* ZIPFoundation */; };
+		74FEA97F2FD2EDA10066B988 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
+		74FEA9802FD2EDA10066B988 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 340761E66F24C26A57C2A6F6 /* ZIPFoundation */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		74B6C80C2FD0B0DF0025AB94 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 74B6C7D42FD0B0DF0025AB94 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 74B6C8002FD0B0DF0025AB94;
+			remoteInfo = DxfPreviewer;
+		};
+		74B7C80C2FD0B0DF0025AB94 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 74B6C7D42FD0B0DF0025AB94 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 74B7C8002FD0B0DF0025AB94;
+			remoteInfo = PathstitchThumbnail;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		74B6C7EC2FD0B15E0025AB94 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -16,11 +43,25 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 		};
+		74B6C80E2FD0B0DF0025AB94 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				74B6C80F2FD0B0DF0025AB94 /* DxfPreviewer.appex in Embed App Extensions */,
+				74B7C80F2FD0B0DF0025AB94 /* PathstitchThumbnail.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		74B6C7DC2FD0B0DF0025AB94 /* Pathstitch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pathstitch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		74B6C7EE2FD0B15E0025AB94 /* PathstitchCLITest */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = PathstitchCLITest; sourceTree = BUILT_PRODUCTS_DIR; };
+		74B6C8012FD0B0DF0025AB94 /* DxfPreviewer.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DxfPreviewer.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		74B7C8012FD0B0DF0025AB94 /* PathstitchThumbnail.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PathstitchThumbnail.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +75,16 @@
 			path = PathstitchCLITest;
 			sourceTree = "<group>";
 		};
+		74B6C8022FD0B0DF0025AB94 /* DxfPreviewer */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DxfPreviewer;
+			sourceTree = "<group>";
+		};
+		74B7C8022FD0B0DF0025AB94 /* PathstitchThumbnail */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PathstitchThumbnail;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -41,6 +92,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3959E8A19BCE2EBB3435721B /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -48,6 +100,24 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				74FEA97D2FD2EDA10066B988 /* (null) in Frameworks */,
+				74FEA97E2FD2EDA10066B988 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		74B6C8082FD0B0DF0025AB94 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		74B7C8082FD0B0DF0025AB94 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				74FEA97F2FD2EDA10066B988 /* (null) in Frameworks */,
+				74FEA9802FD2EDA10066B988 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -58,6 +128,8 @@
 			isa = PBXGroup;
 			children = (
 				74B6C7DE2FD0B0DF0025AB94 /* Pathstitch */,
+				74B6C8022FD0B0DF0025AB94 /* DxfPreviewer */,
+				74B7C8022FD0B0DF0025AB94 /* PathstitchThumbnail */,
 				74B6C7EF2FD0B15E0025AB94 /* PathstitchCLITest */,
 				74B6C7DD2FD0B0DF0025AB94 /* Products */,
 			);
@@ -67,6 +139,8 @@
 			isa = PBXGroup;
 			children = (
 				74B6C7DC2FD0B0DF0025AB94 /* Pathstitch.app */,
+				74B6C8012FD0B0DF0025AB94 /* DxfPreviewer.appex */,
+				74B7C8012FD0B0DF0025AB94 /* PathstitchThumbnail.appex */,
 				74B6C7EE2FD0B15E0025AB94 /* PathstitchCLITest */,
 			);
 			name = Products;
@@ -82,6 +156,7 @@
 				74B6C7D82FD0B0DF0025AB94 /* Sources */,
 				74B6C7D92FD0B0DF0025AB94 /* Frameworks */,
 				74B6C7DA2FD0B0DF0025AB94 /* Resources */,
+				74B6C80E2FD0B0DF0025AB94 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
@@ -89,9 +164,11 @@
 			);
 			fileSystemSynchronizedGroups = (
 				74B6C7DE2FD0B0DF0025AB94 /* Pathstitch */,
+				74B6C8022FD0B0DF0025AB94 /* DxfPreviewer */,
 			);
 			name = Pathstitch;
 			packageProductDependencies = (
+				340761E66F24C26A57C2A6F6 /* ZIPFoundation */,
 			);
 			productName = Pathstitch;
 			productReference = 74B6C7DC2FD0B0DF0025AB94 /* Pathstitch.app */;
@@ -114,10 +191,58 @@
 			);
 			name = PathstitchCLITest;
 			packageProductDependencies = (
+				340761E66F24C26A57C2A6F6 /* ZIPFoundation */,
 			);
 			productName = PathstitchCLITest;
 			productReference = 74B6C7EE2FD0B15E0025AB94 /* PathstitchCLITest */;
 			productType = "com.apple.product-type.tool";
+		};
+		74B6C8002FD0B0DF0025AB94 /* DxfPreviewer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 74B6C8122FD0B0DF0025AB94 /* Build configuration list for PBXNativeTarget "DxfPreviewer" */;
+			buildPhases = (
+				74B6C8072FD0B0DF0025AB94 /* Sources */,
+				74B6C8082FD0B0DF0025AB94 /* Frameworks */,
+				74B6C80A2FD0B0DF0025AB94 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				74B6C80D2FD0B0DF0025AB94 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				74B6C8022FD0B0DF0025AB94 /* DxfPreviewer */,
+			);
+			name = DxfPreviewer;
+			packageProductDependencies = (
+			);
+			productName = DxfPreviewer;
+			productReference = 74B6C8012FD0B0DF0025AB94 /* DxfPreviewer.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		74B7C8002FD0B0DF0025AB94 /* PathstitchThumbnail */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 74B7C8122FD0B0DF0025AB94 /* Build configuration list for PBXNativeTarget "PathstitchThumbnail" */;
+			buildPhases = (
+				74B7C8072FD0B0DF0025AB94 /* Sources */,
+				74B7C8082FD0B0DF0025AB94 /* Frameworks */,
+				74B7C80A2FD0B0DF0025AB94 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				74B7C80D2FD0B0DF0025AB94 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				74B7C8022FD0B0DF0025AB94 /* PathstitchThumbnail */,
+			);
+			name = PathstitchThumbnail;
+			packageProductDependencies = (
+				340761E66F24C26A57C2A6F6 /* ZIPFoundation */,
+			);
+			productName = PathstitchThumbnail;
+			productReference = 74B7C8012FD0B0DF0025AB94 /* PathstitchThumbnail.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -135,6 +260,12 @@
 					74B6C7ED2FD0B15E0025AB94 = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					74B6C8002FD0B0DF0025AB94 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					74B7C8002FD0B0DF0025AB94 = {
+						CreatedOnToolsVersion = 26.5;
+					};
 				};
 			};
 			buildConfigurationList = 74B6C7D72FD0B0DF0025AB94 /* Build configuration list for PBXProject "Pathstitch" */;
@@ -146,6 +277,9 @@
 			);
 			mainGroup = 74B6C7D32FD0B0DF0025AB94;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B95E5C74840F45C3649B2D61 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 74B6C7DD2FD0B0DF0025AB94 /* Products */;
 			projectDirPath = "";
@@ -153,12 +287,28 @@
 			targets = (
 				74B6C7DB2FD0B0DF0025AB94 /* Pathstitch */,
 				74B6C7ED2FD0B15E0025AB94 /* PathstitchCLITest */,
+				74B6C8002FD0B0DF0025AB94 /* DxfPreviewer */,
+				74B7C8002FD0B0DF0025AB94 /* PathstitchThumbnail */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		74B6C7DA2FD0B0DF0025AB94 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		74B6C80A2FD0B0DF0025AB94 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		74B7C80A2FD0B0DF0025AB94 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -182,7 +332,34 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		74B6C8072FD0B0DF0025AB94 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		74B7C8072FD0B0DF0025AB94 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		74B6C80D2FD0B0DF0025AB94 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 74B6C8002FD0B0DF0025AB94 /* DxfPreviewer */;
+			targetProxy = 74B6C80C2FD0B0DF0025AB94 /* PBXContainerItemProxy */;
+		};
+		74B7C80D2FD0B0DF0025AB94 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 74B7C8002FD0B0DF0025AB94 /* PathstitchThumbnail */;
+			targetProxy = 74B7C80C2FD0B0DF0025AB94 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		74B6C7E52FD0B0E00025AB94 /* Debug */ = {
@@ -314,7 +491,12 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"*Info.plist",
+					"*.entitlements",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Pathstitch/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -345,7 +527,12 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"*Info.plist",
+					"*.entitlements",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Pathstitch/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -387,6 +574,130 @@
 			};
 			name = Release;
 		};
+		74B6C8102FD0B0DF0025AB94 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = DxfPreviewer/DxfPreviewer.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"*Info.plist",
+					"*.entitlements",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DxfPreviewer/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = DxfPreviewer;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chen.Pathstitch.DxfPreviewer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		74B6C8112FD0B0DF0025AB94 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = DxfPreviewer/DxfPreviewer.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"*Info.plist",
+					"*.entitlements",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DxfPreviewer/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = DxfPreviewer;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chen.Pathstitch.DxfPreviewer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		74B7C8102FD0B0DF0025AB94 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PathstitchThumbnail/PathstitchThumbnail.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"*Info.plist",
+					"*.entitlements",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PathstitchThumbnail/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PathstitchThumbnail;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chen.Pathstitch.PathstitchThumbnail;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		74B7C8112FD0B0DF0025AB94 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PathstitchThumbnail/PathstitchThumbnail.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"*Info.plist",
+					"*.entitlements",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PathstitchThumbnail/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = PathstitchThumbnail;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.chen.Pathstitch.PathstitchThumbnail;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -417,7 +728,44 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		74B6C8122FD0B0DF0025AB94 /* Build configuration list for PBXNativeTarget "DxfPreviewer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				74B6C8102FD0B0DF0025AB94 /* Debug */,
+				74B6C8112FD0B0DF0025AB94 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		74B7C8122FD0B0DF0025AB94 /* Build configuration list for PBXNativeTarget "PathstitchThumbnail" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				74B7C8102FD0B0DF0025AB94 /* Debug */,
+				74B7C8112FD0B0DF0025AB94 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B95E5C74840F45C3649B2D61 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.19;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		340761E66F24C26A57C2A6F6 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B95E5C74840F45C3649B2D61 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 74B6C7D42FD0B0DF0025AB94 /* Project object */;
 }

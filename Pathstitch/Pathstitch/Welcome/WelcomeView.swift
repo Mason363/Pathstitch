@@ -45,7 +45,7 @@ struct WelcomeView: View {
                     }
                     
                     SidebarButton(title: "Open File...", iconName: "folder") {
-                        WindowManager.shared.openProjectWithDialog()
+                        WindowManager.shared.openAnyFileWithDialog()
                     }
                 }
                 .padding(.horizontal, 8)

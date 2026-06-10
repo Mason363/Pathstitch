@@ -54,3 +54,36 @@ struct PlasticityFont {
     static let body = Font.system(size: 12)
     static let header = Font.system(size: 13).weight(.medium)
 }
+
+struct EdgeBorder: Shape {
+    var width: CGFloat
+    var edges: [Edge]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for edge in edges {
+            switch edge {
+            case .top:
+                path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            case .bottom:
+                path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            case .leading:
+                path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+            case .trailing:
+                path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            }
+        }
+        return path
+    }
+}
+
+extension View {
+    func border(width: CGFloat, edges: [Edge], color: Color) -> some View {
+        overlay(EdgeBorder(width: width, edges: edges).stroke(color, lineWidth: width))
+    }
+}
+

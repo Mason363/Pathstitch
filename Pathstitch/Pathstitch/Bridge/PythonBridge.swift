@@ -32,6 +32,10 @@ class PythonBridge {
         process.executableURL = URL(fileURLWithPath: pythonPath)
         process.arguments = ["-m", "pathstitch_core.\(module)"]
         
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = "/Users/chen/Documents/Assets/Pathstitch"
+        process.environment = env
+        
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

@@ -43,53 +43,61 @@ class WindowManager: NSObject, NSApplicationDelegate {
                     if response == .alertFirstButtonReturn {
                         if let current = delegate.state.currentProjectPath {
                             delegate.state.saveProject(to: current)
-                            delegate.state.resetToNewProject()
+                            delegate.state.startBlankDocument()
                         } else {
                             // prompt for location
                             delegate.state.saveProjectWithDialog()
                             if !delegate.state.hasUnsavedChanges {
-                                delegate.state.resetToNewProject()
+                                delegate.state.startBlankDocument()
                             }
                         }
                     } else if response == .alertThirdButtonReturn {
-                        delegate.state.resetToNewProject()
+                        delegate.state.startBlankDocument()
                     }
                 }
             } else {
-                delegate.state.resetToNewProject()
+                delegate.state.startBlankDocument()
             }
         } else {
             let state = AppState()
-            state.resetToNewProject()
+            state.startBlankDocument()
             openDocumentWindow(with: state)
         }
     }
     
+    /// Opens one or more files, each in its own workspace window.
+    func openFiles(_ urls: [URL]) {
+        for url in urls {
+            openAnyFile(url: url)
+        }
+    }
+
     func openDocument(url: URL) {
         let state = AppState()
         state.loadProject(from: url)
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         openDocumentWindow(with: state)
     }
-    
+
     func openAnyFile(url: URL) {
         let ext = url.pathExtension.lowercased()
-        
+
         if ext == "stch" {
             openDocument(url: url)
             return
         }
-        
+
+        // Start from a clean, valid blank workspace then load the file into it.
         let state = AppState()
-        state.resetToNewProject()
-        
+        state.startBlankDocument()
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+
         if ext == "pdf" {
             state.importPDF(from: url)
-            openDocumentWindow(with: state)
         } else {
             state.loadFile(url: url)
-            openDocumentWindow(with: state)
         }
+        openDocumentWindow(with: state)
     }
     
     func openProjectWithDialog() {
@@ -98,9 +106,24 @@ class WindowManager: NSObject, NSApplicationDelegate {
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
         openPanel.canChooseFiles = true
-        
+
         if openPanel.runModal() == .OK, let url = openPanel.url {
             openDocument(url: url)
+        }
+    }
+
+    /// Opens any supported file type (project, DXF, STEP, SVG, PDF, image),
+    /// each in its own workspace window.
+    func openAnyFileWithDialog() {
+        let exts = ["stch", "dxf", "step", "stp", "svg", "pdf", "png", "jpg", "jpeg", "bmp", "tiff", "gif"]
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = exts.compactMap { UTType(filenameExtension: $0) }
+        openPanel.allowsMultipleSelection = true
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+
+        if openPanel.runModal() == .OK {
+            openFiles(openPanel.urls)
         }
     }
     
@@ -146,26 +169,26 @@ class DocumentWindowDelegate: NSObject, NSWindowDelegate {
             let alert = NSAlert()
             alert.messageText = "Do you want to save the changes made to this document?"
             alert.informativeText = "Your changes will be lost if you don't save them."
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Don't Save")
-            
+            alert.addButton(withTitle: "Save")     // .alertFirstButtonReturn
+            alert.addButton(withTitle: "Cancel")   // .alertSecondButtonReturn
+            alert.addButton(withTitle: "Discard")  // .alertThirdButtonReturn
+
             alert.beginSheetModal(for: sender) { response in
                 if response == .alertFirstButtonReturn {
+                    // Save → keep window open if the save panel was cancelled.
                     if let current = self.state.currentProjectPath {
                         self.state.saveProject(to: current)
-                        sender.close()
+                        if !self.state.hasUnsavedChanges { sender.close() }
                     } else {
                         self.state.saveProjectWithDialog()
-                        if !self.state.hasUnsavedChanges {
-                            sender.close()
-                        }
+                        if !self.state.hasUnsavedChanges { sender.close() }
                     }
                 } else if response == .alertThirdButtonReturn {
-                    // Don't save: force close
+                    // Discard → close, abandoning changes.
                     self.state.hasUnsavedChanges = false
                     sender.close()
                 }
+                // Cancel (.alertSecondButtonReturn) → do nothing; window stays open.
             }
             return false // Defer until sheet response
         }

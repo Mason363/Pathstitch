@@ -124,9 +124,33 @@ To verify modifications in the backend geometrical algorithms:
 - The `.stch` document type is associated with the Uniform Type Identifier `com.chen.pathstitch.stch`.
 - Any QuickLook preview or thumbnail extensions registered for `.stch` must specify this UTI in their `Info.plist` support declarations.
 
+### Rule 7: An Empty Canvas Is a Valid State
+- A blank or fully-cleared canvas is a **first-class, valid state** — never an error. Do **not** guard operations with assumptions that geometry exists.
+- The working buffer is always a readable DXF: `AppState.writeEmptyActiveDXF()` writes a minimal but valid DXF (`AppState.emptyDXFTemplate`) synchronously, with **zero** Python round-trips, so new/cleared canvases never show a loading screen. `ensureActiveDXFFileExists()` guarantees the file exists before any op runs; `startBlankDocument()` resets to a clean blank workspace.
+- Python `op_export_svg` returns a valid **empty** SVG (`status: ok`, `data.empty == true`) when there is no geometry — it must never return `"No renderable geometry found"`. `reloadDXF()` mirrors this: a missing/empty buffer renders an empty canvas, not an error banner.
+
+### Rule 8: ezdxf Layer Attribute Access
+- An `ezdxf` `Layer` has **no** bare `.name` / `.color`; its attributes live under `.dxf` (`layer.dxf.name`, `layer.dxf.color`). Using the bare accessors raises `'Layer' object has no attribute 'name'` and crashed every multi-file merge — always go through `.dxf`.
+
+### Rule 9: Finder / Multi-File Open = One Workspace Per File
+- `AppDelegate.application(_:open:)` routes files opened from Finder ("Open With", double-click, Dock drop) to `WindowManager.shared.openFiles(_:)`. Without this handler, opening a `.stch` did nothing and macOS surfaced a blank window.
+- **A window = a workspace.** Projects (`.stch`) and 3D models (`.step`/`.stp`) always open in their **own** window. Dragging vector files (`.dxf`/`.svg`/`.pdf`/images) onto an existing 2D window **merges** them additively into the current document (no save prompt, no error on any supported format).
+- The unsaved-changes prompt is consistent everywhere: buttons **Save / Cancel / Discard** (`.alertFirstButtonReturn` / `.alertSecondButtonReturn` / `.alertThirdButtonReturn`). Cancelling the save panel cancels the whole action.
+
 ---
 
-## 7. Git Collaboration Guidelines
+## 7. File & Document System
+
+The canonical working state is an **isolated, always-valid DXF working buffer** (`active.dxf` inside `sessionTempDirectory`), not a user-visible temp file. This was a deliberate engineering choice over a from-scratch in-memory rewrite (cf. MAS-21): the Python geometry engine (ezdxf/shapely) is built around DXF documents, so the highest-reliability, lowest-risk overhaul keeps the buffer but makes **empty a valid state**, fixes all file-type routing, and makes save/load/merge robust. A future migration to a pure in-memory document model (rendering directly from the already-`Codable` `[DXFEntity]` and passing geometry to Python over stdin/stdout) remains the long-term direction.
+
+- **`.stch` = zipped JSON** (`project.json` + `preview.png`) via `ProjectSaveContainer`. It round-trips geometry, measurements, canvas/ref-image state, tool settings, **and the batch session** (`BatchItemSave`). Loading tries the zip first, then falls back to raw JSON for legacy files.
+- **Saving a blank project works** — `saveProject(to:)` materialises an empty buffer if needed rather than erroring.
+- **Supported open/import:** `.stch`, `.dxf`, `.step`/`.stp`, `.svg`, `.pdf`, and raster images. `loadFile(url:)` self-routes `.stch`→`loadProject` and `.pdf`→`importPDF` so no caller hits "unsupported".
+- **The `.stch` Finder icon** is the asset-catalog image set `StchDocument` (generated from `Icon/FIle Icon 2.png` over a document page), referenced by `CFBundleTypeIconName` in `Info.plist`.
+
+---
+
+## 8. Git Collaboration Guidelines
 
 - **Atomic Commits**: Keep backend Python changes and frontend Swift updates separated into clean, logical commits.
 - **Derived Data Exclusion**: Ensure `/Users/chen/Library/Developer/Xcode/DerivedData` is ignored. Avoid committing temporary binary output artifacts.

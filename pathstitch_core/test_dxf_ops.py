@@ -113,7 +113,47 @@ def test_dxf_ops():
     assert res["status"] == "ok", f"cleanup failed: {res}"
     assert os.path.exists(cleanup_dxf), "Cleanup DXF file not created"
     print(f"Cleanup stats: {res['data']}")
-    
+
+    # 6. Test new_dxf creates a valid blank document
+    print("Testing new_dxf (blank document)...")
+    blank_dxf = "TestFiles/test_blank.dxf"
+    if os.path.exists(blank_dxf):
+        os.remove(blank_dxf)
+    res = run_cli("new_dxf", {"output": blank_dxf})
+    assert res["status"] == "ok", f"new_dxf failed: {res}"
+    assert os.path.exists(blank_dxf), "Blank DXF file not created"
+    res = run_cli("list_entities", {"input": blank_dxf})
+    assert res["status"] == "ok", f"list_entities on blank failed: {res}"
+    assert len(res["data"]["entities"]) == 0, "Blank DXF should have no entities"
+    print("Blank document created and lists 0 entities")
+
+    # 7. Test export_svg on an empty document returns a valid empty SVG (no error)
+    print("Testing export_svg on empty document...")
+    empty_svg = "TestFiles/test_empty.svg"
+    if os.path.exists(empty_svg):
+        os.remove(empty_svg)
+    res = run_cli("export_svg", {"input": blank_dxf, "output": empty_svg})
+    assert res["status"] == "ok", f"export_svg on empty should succeed: {res}"
+    assert res["data"].get("empty") is True, f"export_svg should flag empty: {res}"
+    assert os.path.exists(empty_svg), "Empty SVG file not created"
+    print("Empty document exported a valid empty SVG without erroring")
+
+    # 8. Test append_dxf merges into a blank document (MAS-13 regression).
+    print("Testing append_dxf into a blank document...")
+    merged_dxf = "TestFiles/test_merged.dxf"
+    if os.path.exists(merged_dxf):
+        os.remove(merged_dxf)
+    res = run_cli("append_dxf", {
+        "primary": blank_dxf,
+        "secondary": input_dxf,
+        "output": merged_dxf
+    })
+    assert res["status"] == "ok", f"append_dxf into blank failed: {res}"
+    res = run_cli("list_entities", {"input": merged_dxf})
+    merged_count = len(res["data"]["entities"])
+    print(f"Merged document has {merged_count} entities")
+    assert merged_count == 3, f"Expected 3 merged entities, got {merged_count}"
+
     print("ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

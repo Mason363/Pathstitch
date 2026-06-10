@@ -42,8 +42,8 @@
 			</array>
 		</dict>
 		<dict>
-			<key>CFBundleTypeIconSystemGenerated</key>
-			<integer>1</integer>
+			<key>CFBundleTypeIconName</key>
+			<string>StchDocument</string>
 			<key>CFBundleTypeName</key>
 			<string>Pathstitch Document</string>
 			<key>CFBundleTypeRole</key>
