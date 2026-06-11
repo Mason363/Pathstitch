@@ -1519,7 +1519,10 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
             return tag
         def process_element(elem, current_layer):
             tag = get_local_tag(elem)
-            if tag == 'g':
+            # Recurse into the root <svg> and <g> groups. Previously only <g> was
+            # descended into, so SVGs whose shapes are direct children of <svg>
+            # (the common case) imported as 0 entities — a blank canvas.
+            if tag == 'g' or tag == 'svg':
                 layer_name = elem.get('id') or elem.get('{http://www.inkscape.org/namespaces/inkscape}label')
                 if layer_name:
                     layer_name = layer_name.replace("layer_", "").strip()
