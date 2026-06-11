@@ -334,6 +334,10 @@ class AppState {
     // Measure Tool State
     var activeMeasureStart: CGPoint? // in model coordinates
     var measurements: [MeasurementLine] = []
+
+    /// When on, placement uses the snap point under the cursor and lines/rulers
+    /// faintly snap to 90° increments. Indicators only show when this is on.
+    var snapEnabled: Bool = true
     
     // 3D Canvas State
     var stepJsonContent: String?

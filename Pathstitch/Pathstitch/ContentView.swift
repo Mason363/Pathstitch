@@ -1792,7 +1792,15 @@ extension ContentView {
                     }
                     .buttonStyle(PlainButtonStyle())
                     .help("Recenter View")
-                    
+
+                    Button(action: { state.snapEnabled.toggle() }) {
+                        Image(systemName: state.snapEnabled ? "dot.scope" : "scope")
+                            .foregroundColor(state.snapEnabled ? Color.accent : Color.text_muted)
+                            .padding(4)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .help(state.snapEnabled ? "Snapping: On (placement snaps to points & 90°)" : "Snapping: Off")
+
                     Spacer()
                 }
                 .padding(.horizontal, 16)

@@ -728,8 +728,8 @@ struct DxfCanvasView: View {
             context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: endScreen.x, y: endScreen.y - 10), anchor: .center)
         }
         
-        // Draw Snapping Hover Indicator
-        if let hover = hoverCoords {
+        // Draw Snapping Hover Indicator (only when snapping is on)
+        if state.snapEnabled, let hover = hoverCoords {
             let hoverScreen = toScreen(dx: Double(hover.x), dy: Double(hover.y), size: size, bounds: modelBounds)
             if let snap = getSnappedPoint(for: hoverScreen, size: size, bounds: modelBounds) {
                 let snapPt = snap.snappedScreenPt
@@ -826,7 +826,7 @@ struct DxfCanvasView: View {
                     } else {
                         // First click: set the start point and wait for the second.
                         let startPt = val.startLocation
-                        if let snap = getSnappedPoint(for: startPt, size: size, bounds: modelBounds) {
+                        if state.snapEnabled, let snap = getSnappedPoint(for: startPt, size: size, bounds: modelBounds) {
                             sketchStartPoint = snap.snappedModelPt
                         } else {
                             sketchStartPoint = toModel(point: startPt, size: size, bounds: modelBounds)
@@ -1081,7 +1081,9 @@ struct DxfCanvasView: View {
                     state.calibrateReferenceImage()
                 }
             } else if state.currentTool == .measure {
-                let clickedModelPt = toModel(point: point, size: size, bounds: modelBounds)
+                // Place at the snap point under the cursor (or ortho-constrained),
+                // not the raw cursor — snapping now actually drives placement.
+                let clickedModelPt = snappedModelPoint(forScreen: point, ref: state.activeMeasureStart, size: size, bounds: modelBounds)
                 if let startModel = state.activeMeasureStart {
                     let dist = Double(hypot(startModel.x - clickedModelPt.x, startModel.y - clickedModelPt.y))
                     let newMeasure = MeasurementLine(start: startModel, end: clickedModelPt, distanceMm: dist)
@@ -1865,11 +1867,51 @@ struct DxfCanvasView: View {
     }
     
     func snappedMouseLocation(size: CGSize, bounds: CGRect) -> (point: CGPoint, snap: SnapResult?) {
-        if let snap = getSnappedPoint(for: mouseLocation, size: size, bounds: bounds) {
+        // A real geometry snap (endpoint/midpoint/centre) under the cursor wins.
+        if state.snapEnabled, let snap = getSnappedPoint(for: mouseLocation, size: size, bounds: bounds) {
             return (snap.snappedModelPt, snap)
         }
-        let modelPt = toModel(point: mouseLocation, size: size, bounds: bounds)
+        var modelPt = toModel(point: mouseLocation, size: size, bounds: bounds)
+        // Otherwise faintly snap a line/ruler segment to 90° increments.
+        if state.snapEnabled, let ref = orthoReferencePoint() {
+            modelPt = orthoConstrained(from: ref, to: modelPt)
+        }
         return (modelPt, nil)
+    }
+
+    /// The segment start for ortho (90°) snapping — only for line/ruler tools.
+    private func orthoReferencePoint() -> CGPoint? {
+        if state.currentTool == .sketchLine { return sketchStartPoint }
+        if state.currentTool == .measure { return state.activeMeasureStart }
+        return nil
+    }
+
+    /// If the segment `ref → pt` is within ~7° of a 0/90/180/270° axis, rotate
+    /// `pt` (keeping its distance) exactly onto that axis; otherwise unchanged.
+    private func orthoConstrained(from ref: CGPoint, to pt: CGPoint) -> CGPoint {
+        let dx = pt.x - ref.x, dy = pt.y - ref.y
+        let len = hypot(dx, dy)
+        guard len > 0.0001 else { return pt }
+        let deg = atan2(dy, dx) * 180.0 / .pi
+        let nearest = (deg / 90.0).rounded() * 90.0
+        if abs(nearest - deg) < 7.0 {
+            let r = nearest * .pi / 180.0
+            return CGPoint(x: ref.x + CGFloat(cos(r)) * len, y: ref.y + CGFloat(sin(r)) * len)
+        }
+        return pt
+    }
+
+    /// Snapped model point for a screen click (placement), honouring `snapEnabled`
+    /// and ortho relative to an optional reference (e.g. the ruler's first point).
+    private func snappedModelPoint(forScreen point: CGPoint, ref: CGPoint?, size: CGSize, bounds: CGRect) -> CGPoint {
+        if state.snapEnabled, let s = getSnappedPoint(for: point, size: size, bounds: bounds) {
+            return s.snappedModelPt
+        }
+        var m = toModel(point: point, size: size, bounds: bounds)
+        if state.snapEnabled, let ref = ref {
+            m = orthoConstrained(from: ref, to: m)
+        }
+        return m
     }
     
     private func cycleDimension(size: CGSize, modelBounds: CGRect) {
