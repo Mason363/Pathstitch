@@ -137,6 +137,9 @@ struct ToolbarHoverButton: View {
 struct ContentView: View {
     @State var state: AppState
     @State private var showExportDialog = false
+    // Debounced processing flag: only becomes true if work runs longer than a
+    // short delay, so fast worker ops (~ms) never flash a loading overlay.
+    @State private var showSlowLoader = false
     @State private var isShapesHovered = false
     @State private var offsetMode = "curve" // "curve" or "bbox"
     @State private var customLayerName: String = ""
@@ -195,6 +198,16 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         // Bind hotkeys
         .background(hotkeyBindings)
+        // Only reveal the loading overlay if work outlasts a short delay, so the
+        // now-fast worker ops never flash a loader (§7).
+        .task(id: state.isProcessing) {
+            if state.isProcessing {
+                try? await Task.sleep(nanoseconds: 280_000_000)
+                if !Task.isCancelled && state.isProcessing { showSlowLoader = true }
+            } else {
+                showSlowLoader = false
+            }
+        }
         .onChange(of: state.selectedHandles) { _ in state.updateLivePreview() }
         .onChange(of: state.currentTool) { _ in state.updateLivePreview() }
         .onChange(of: state.offsetDistance) { _ in state.updateLivePreview() }
@@ -1839,7 +1852,7 @@ extension ContentView {
                     }
                     
                     // Live Process Loader Overlay
-                    if state.isProcessing {
+                    if showSlowLoader {
                         ZStack {
                             Color.black.opacity(0.3)
                             VStack(spacing: 8) {
@@ -1997,7 +2010,7 @@ extension ContentView {
                 }
                 
                 // Live Process Loader Overlay
-                if state.isProcessing {
+                if showSlowLoader {
                     ZStack {
                         Color.black.opacity(0.3)
                         VStack(spacing: 8) {
