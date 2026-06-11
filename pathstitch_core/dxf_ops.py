@@ -29,55 +29,161 @@ def aci_to_hex(aci: int) -> str:
     except Exception:
         return "#ffffff"
 
+def insert_point_in_linestring(line: LineString, pt: Tuple[float, float], tol: float = 1e-5) -> LineString:
+    coords = list(line.coords)
+    if len(coords) < 2:
+        return line
+    
+    new_coords = [coords[0]]
+    px, py = pt
+    
+    for i in range(len(coords) - 1):
+        p1 = coords[i]
+        p2 = coords[i+1]
+        
+        d1 = math.hypot(p1[0] - px, p1[1] - py)
+        d2 = math.hypot(p2[0] - px, p2[1] - py)
+        if d1 < tol or d2 < tol:
+            new_coords.append(p2)
+            continue
+            
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length2 = dx*dx + dy*dy
+        if length2 < 1e-12:
+            new_coords.append(p2)
+            continue
+            
+        t = ((px - p1[0]) * dx + (py - p1[1]) * dy) / length2
+        if 0.0 < t < 1.0:
+            proj_x = p1[0] + t * dx
+            proj_y = p1[1] + t * dy
+            dist = math.hypot(px - proj_x, py - proj_y)
+            if dist < tol:
+                new_coords.append(pt)
+        new_coords.append(p2)
+        
+    return LineString(new_coords)
+
 def snap_endpoints(geoms: List[LineString], tolerance: float = 0.05) -> List[LineString]:
     """
     Clusters and snaps endpoints of LineStrings that are within a given tolerance.
-    Helps prepare curves for successful line merging.
+    Projects and snaps line endpoints to nearby lines and inserts vertices for watertight joins.
     """
     if not geoms:
         return []
 
-    # Extract all endpoints
-    endpoints = []
-    for g in geoms:
-        endpoints.append(g.coords[0])
-        endpoints.append(g.coords[-1])
-
-    # Cluster endpoints
-    clusters: List[Tuple[float, float]] = []
-    for pt in endpoints:
-        matched = False
-        for cl in clusters:
-            dist = math.hypot(pt[0] - cl[0], pt[1] - cl[1])
-            if dist < tolerance:
-                matched = True
-                break
-        if not matched:
-            clusters.append(pt)
-
-    # Snap geometry endpoints to their cluster centers
-    snapped_geoms = []
-    for g in geoms:
-        coords = list(g.coords)
-        if len(coords) < 2:
-            continue
-        
-        # Snap start point
-        start = coords[0]
-        for cl in clusters:
-            if math.hypot(start[0] - cl[0], start[1] - cl[1]) < tolerance:
-                coords[0] = cl
-                break
+    lines = [LineString(list(g.coords)) for g in geoms]
+    n = len(lines)
+    
+    for pass_idx in range(2):
+        changed = False
+        for i in range(n):
+            if len(lines[i].coords) < 2:
+                continue
+            
+            coords = list(lines[i].coords)
+            
+            # Snap start point
+            p_start = coords[0]
+            closest_dist = float('inf')
+            closest_pt = None
+            closest_line_idx = -1
+            
+            for j in range(n):
+                if i == j:
+                    continue
+                if len(lines[j].coords) < 2:
+                    continue
                 
-        # Snap end point
-        end = coords[-1]
-        for cl in clusters:
-            if math.hypot(end[0] - cl[0], end[1] - cl[1]) < tolerance:
-                coords[-1] = cl
-                break
-
-        snapped_geoms.append(LineString(coords))
-    return snapped_geoms
+                pt_geom = ShapelyPoint(p_start)
+                dist = lines[j].distance(pt_geom)
+                if 0.0001 < dist <= tolerance and dist < closest_dist:
+                    proj_dist = lines[j].project(pt_geom)
+                    pt_on_line = lines[j].interpolate(proj_dist)
+                    closest_dist = dist
+                    closest_pt = (pt_on_line.x, pt_on_line.y)
+                    closest_line_idx = j
+            
+            if closest_pt is not None:
+                coords[0] = closest_pt
+                lines[i] = LineString(coords)
+                lines[closest_line_idx] = insert_point_in_linestring(lines[closest_line_idx], closest_pt, tol=1e-5)
+                changed = True
+                
+            # Snap end point
+            coords = list(lines[i].coords)
+            p_end = coords[-1]
+            closest_dist = float('inf')
+            closest_pt = None
+            closest_line_idx = -1
+            
+            for j in range(n):
+                if i == j:
+                    continue
+                if len(lines[j].coords) < 2:
+                    continue
+                
+                pt_geom = ShapelyPoint(p_end)
+                dist = lines[j].distance(pt_geom)
+                if 0.0001 < dist <= tolerance and dist < closest_dist:
+                    proj_dist = lines[j].project(pt_geom)
+                    pt_on_line = lines[j].interpolate(proj_dist)
+                    closest_dist = dist
+                    closest_pt = (pt_on_line.x, pt_on_line.y)
+                    closest_line_idx = j
+            
+            if closest_pt is not None:
+                coords[-1] = closest_pt
+                lines[i] = LineString(coords)
+                lines[closest_line_idx] = insert_point_in_linestring(lines[closest_line_idx], closest_pt, tol=1e-5)
+                changed = True
+                
+        # Also perform endpoint clustering to snap endpoints that are close to each other
+        endpoints = []
+        for g in lines:
+            if len(g.coords) >= 2:
+                endpoints.append(g.coords[0])
+                endpoints.append(g.coords[-1])
+                
+        clusters = []
+        for pt in endpoints:
+            matched = False
+            for cl in clusters:
+                dist = math.hypot(pt[0] - cl[0], pt[1] - cl[1])
+                if dist < tolerance:
+                    matched = True
+                    break
+            if not matched:
+                clusters.append(pt)
+                
+        for i in range(n):
+            coords = list(lines[i].coords)
+            if len(coords) < 2:
+                continue
+            
+            start = coords[0]
+            for cl in clusters:
+                if math.hypot(start[0] - cl[0], start[1] - cl[1]) < tolerance:
+                    if coords[0] != cl:
+                        coords[0] = cl
+                        changed = True
+                    break
+                    
+            end = coords[-1]
+            for cl in clusters:
+                if math.hypot(end[0] - cl[0], end[1] - cl[1]) < tolerance:
+                    if coords[-1] != cl:
+                        coords[-1] = cl
+                        changed = True
+                    break
+            if changed:
+                lines[i] = LineString(coords)
+                
+        if not changed:
+            break
+            
+    return lines
 
 def find_corners(coords: List[Tuple[float, float]], angle_threshold_deg: float = 15.0) -> List[Tuple[float, float]]:
     """
@@ -1732,14 +1838,15 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         return False
 
     for path in paths:
-        is_closed = path.is_closed or math.hypot(path.coords[0][0] - path.coords[-1][0], path.coords[0][1] - path.coords[-1][1]) < 0.05
-        polygon = None
-        if is_closed:
-            from shapely.geometry import Polygon
-            try:
-                polygon = Polygon(path)
-            except Exception:
-                pass
+        is_closed = path.is_closed or isinstance(path, LinearRing) or math.hypot(path.coords[0][0] - path.coords[-1][0], path.coords[0][1] - path.coords[-1][1]) < 0.05
+        
+        if side in ("left", "inner"):
+            sides_to_try = ["inner" if is_closed else "left"]
+        elif side in ("right", "outer"):
+            sides_to_try = ["outer" if is_closed else "right"]
+        else:
+            sides_to_try = ["inner" if is_closed else "left", "outer" if is_closed else "right"]
+
         offsets = []
         if pattern == "saddle":
             offsets.append((offset_distance - row_spacing / 2.0, 0.0))
@@ -1747,105 +1854,45 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         else:
             offsets.append((offset_distance, 0.0))
             
-        step_size = 0.1
-        L = path.length
-        if L < 0.1:
-            continue
-        steps = int(math.ceil(L / step_size))
-        
         for dist, shift in offsets:
-            contour_internal_candidates = []
-            contour_external_candidates = []
-            prev_pt = None
-            prev_normal = None
-            
-            for i in range(steps + 1):
-                d = (i / steps) * L
-                pt, normal = get_point_and_normal(path, d, is_closed)
+            for s in sides_to_try:
+                offset_geom = get_offset_geometry(path, dist, s)
+                if not offset_geom:
+                    continue
                 
-                # Corner normal interpolation
-                if enable_corner_interpolation and prev_pt and prev_normal:
-                    dot = prev_normal[0]*normal[0] + prev_normal[1]*normal[1]
-                    if dot < 0.999:
-                        angle1 = math.atan2(prev_normal[1], prev_normal[0])
-                        angle2 = math.atan2(normal[1], normal[0])
-                        diff = angle2 - angle1
-                        while diff < -math.pi: diff += 2 * math.pi
-                        while diff > math.pi: diff -= 2 * math.pi
-                        if abs(diff) > 0.05:
-                            arc_steps = int(math.ceil(dist * abs(diff) / step_size))
-                            for j in range(1, arc_steps):
-                                t = j / arc_steps
-                                angle = angle1 + diff * t
-                                interp_normal = (math.cos(angle), math.sin(angle))
-                                p1 = (prev_pt[0] + interp_normal[0] * dist, prev_pt[1] + interp_normal[1] * dist)
-                                p2 = (prev_pt[0] - interp_normal[0] * dist, prev_pt[1] - interp_normal[1] * dist)
-                                for p in [p1, p2]:
-                                    p_pt = ShapelyPoint(p)
-                                    is_internal = polygon.contains(p_pt) if (is_closed and polygon) else (p == p1)
-                                    parent_dist = path.distance(p_pt)
-                                    
-                                    # Line proximity filter check for self-overlap
-                                    if enable_line_proximity_filter:
-                                        if parent_dist < line_proximity_threshold:
-                                            continue
-                                    else:
-                                        if parent_dist < dist - 0.5:
-                                            continue
-                                            
-                                    if check_collision_with_others(p_pt, other_geoms, hole_radius, path):
-                                        continue
-                                    if is_internal:
-                                        contour_internal_candidates.append(p)
-                                    else:
-                                        contour_external_candidates.append(p)
-                                        
-                # Regular candidate normal offset
-                p1 = (pt[0] + normal[0] * dist, pt[1] + normal[1] * dist)
-                p2 = (pt[0] - normal[0] * dist, pt[1] - normal[1] * dist)
-                for p in [p1, p2]:
-                    p_pt = ShapelyPoint(p)
-                    is_internal = polygon.contains(p_pt) if (is_closed and polygon) else (p == p1)
-                    parent_dist = path.distance(p_pt)
-                    
-                    # Line proximity filter check for self-overlap
-                    if enable_line_proximity_filter:
-                        if parent_dist < line_proximity_threshold:
-                            continue
-                    else:
-                        if parent_dist < dist - 0.5:
-                            continue
-                            
-                    if check_collision_with_others(p_pt, other_geoms, hole_radius, path):
+                components = []
+                if isinstance(offset_geom, MultiLineString):
+                    components.extend(offset_geom.geoms)
+                elif isinstance(offset_geom, (LineString, LinearRing)):
+                    components.append(offset_geom)
+                
+                for comp in components:
+                    comp_L = comp.length
+                    if comp_L < 0.1:
                         continue
-                    if is_internal:
-                        contour_internal_candidates.append(p)
-                    else:
-                        contour_external_candidates.append(p)
-                prev_pt = pt
-                prev_normal = normal
-                
-            spacing_internal = select_optimal_spacing(contour_internal_candidates, is_closed, hole_spacing, enable_variable_spacing, variable_spacing_min, variable_spacing_max)
-            spacing_external = select_optimal_spacing(contour_external_candidates, is_closed, hole_spacing, enable_variable_spacing, variable_spacing_min, variable_spacing_max)
-            
-            final_internal = filter_by_density(contour_internal_candidates, spacing_internal, shift)
-            final_external = filter_by_density(contour_external_candidates, spacing_external, shift)
-            
-            sides_to_use = []
-            if side in ("left", "inner"):
-                sides_to_use = [True]
-            elif side in ("right", "outer"):
-                sides_to_use = [False]
-            else:
-                sides_to_use = [True, False]
-                
-            for is_int in sides_to_use:
-                cand_list = final_internal if is_int else final_external
-                for p in cand_list:
-                    selected_pt = (p[0], p[1])
-                    # Ensure no duplicate centers
-                    if not any(math.hypot(selected_pt[0] - hc[0], selected_pt[1] - hc[1]) < 0.01 for hc in hole_centers):
-                        hole_centers.append(selected_pt)
+                    
+                    step_size = 0.05
+                    steps = int(math.ceil(comp_L / step_size))
+                    candidates = []
+                    for i in range(steps + 1):
+                        d = (i / steps) * comp_L
+                        pt = comp.interpolate(d)
+                        candidates.append((pt.x, pt.y))
+                    
+                    if not candidates:
+                        continue
+                    
+                    spacing = select_optimal_spacing(candidates, is_closed, hole_spacing, enable_variable_spacing, variable_spacing_min, variable_spacing_max)
+                    filtered = filter_by_density(candidates, spacing, shift)
+                    
+                    for p in filtered:
+                        p_pt = ShapelyPoint(p)
+                        if check_collision_with_others(p_pt, other_geoms, hole_radius, path):
+                            continue
+                        
+                        selected_pt = (p[0], p[1])
+                        if not any(math.hypot(selected_pt[0] - hc[0], selected_pt[1] - hc[1]) < 0.01 for hc in hole_centers):
+                            hole_centers.append(selected_pt)
 
     if enable_proximity_filter and hole_centers:
         to_remove = set()
@@ -2414,6 +2461,8 @@ def op_add_glue_tabs(args: Dict[str, Any]) -> Dict[str, Any]:
     tab_type = args.get("type", "trapezoid")
     side = args.get("side", "left")
     layer = args.get("layer", "GLUE_TABS")
+    start_offset = float(args.get("start_offset", 0.0))
+    end_offset = float(args.get("end_offset", 0.0))
     
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
@@ -2448,28 +2497,37 @@ def op_add_glue_tabs(args: Dict[str, Any]) -> Dict[str, Any]:
                 ux = dx / L
                 uy = dy / L
                 
+                # Flipped side logic per MAS-29:
                 if side == "left":
-                    nx = -uy
-                    ny = ux
-                else:
                     nx = uy
                     ny = -ux
-                    
-                tab_pts = [p1]
+                else:
+                    nx = -uy
+                    ny = ux
+                
+                # Clamp/validate offsets
+                if start_offset + end_offset >= L - 0.1:
+                    continue
+                
+                p1_tab = (p1[0] + start_offset * ux, p1[1] + start_offset * uy)
+                p2_tab = (p2[0] - end_offset * ux, p2[1] - end_offset * uy)
+                L_prime = L - start_offset - end_offset
+                
+                tab_pts = [p1_tab]
                 
                 if tab_type == "triangle":
-                    mid_x = (p1[0] + p2[0]) / 2.0
-                    mid_y = (p1[1] + p2[1]) / 2.0
+                    mid_x = (p1_tab[0] + p2_tab[0]) / 2.0
+                    mid_y = (p1_tab[1] + p2_tab[1]) / 2.0
                     peak = (mid_x + height * nx, mid_y + height * ny)
                     tab_pts.append(peak)
                 else:
-                    h_offset = min(height, L / 2.1)
-                    t1 = (p1[0] + h_offset * ux + height * nx, p1[1] + h_offset * uy + height * ny)
-                    t2 = (p2[0] - h_offset * ux + height * nx, p2[1] - h_offset * uy + height * ny)
+                    h_offset = min(height, L_prime / 2.1)
+                    t1 = (p1_tab[0] + h_offset * ux + height * nx, p1_tab[1] + h_offset * uy + height * ny)
+                    t2 = (p2_tab[0] - h_offset * ux + height * nx, p2_tab[1] - h_offset * uy + height * ny)
                     tab_pts.append(t1)
                     tab_pts.append(t2)
                     
-                tab_pts.append(p2)
+                tab_pts.append(p2_tab)
                 
                 new_ent = msp.add_lwpolyline(tab_pts, dxfattribs={"layer": layer})
                 new_handles.append(new_ent.dxf.handle)

@@ -217,6 +217,45 @@ def test_dxf_ops():
     assert abs(max_y - min_y) > 10.0, f"Expected items to stack vertically (diff in Y > 10), got Y coords: {y_coords}"
     print("2D compact layout verified successfully!")
 
+    # 10. Test add_holes on both sides
+    print("Testing add_holes (both sides)...")
+    both_holes_dxf = "TestFiles/test_both_holes.dxf"
+    res = run_cli("add_holes", {
+        "input": input_dxf,
+        "output": both_holes_dxf,
+        "offset_distance": 3.0,
+        "hole_diameter": 1.0,
+        "hole_spacing": 4.0,
+        "side": "both"
+    })
+    assert res["status"] == "ok", f"add_holes both sides failed: {res}"
+    res = run_cli("list_entities", {"input": both_holes_dxf})
+    both_hole_count = sum(1 for e in res["data"]["entities"] if e["layer"] == "SEWING_HOLES")
+    print(f"Generated {both_hole_count} sewing holes on both sides")
+    assert both_hole_count > 0
+
+    # 11. Test add_glue_tabs with start/end offsets
+    print("Testing add_glue_tabs with start/end offsets...")
+    tabs_dxf = "TestFiles/test_tabs.dxf"
+    # Get a LINE handle from test_pts_dxf
+    res = run_cli("list_entities", {"input": test_pts_dxf})
+    lines = [e for e in res["data"]["entities"] if e["type"] == "LINE"]
+    assert len(lines) > 0, "No lines found to add glue tabs to"
+    line_handle = lines[0]["handle"]
+    res = run_cli("add_glue_tabs", {
+        "input": test_pts_dxf,
+        "output": tabs_dxf,
+        "handles": [line_handle],
+        "height": 5.0,
+        "type": "trapezoid",
+        "side": "left",
+        "start_offset": 2.0,
+        "end_offset": 3.0
+    })
+    assert res["status"] == "ok", f"add_glue_tabs failed: {res}"
+    assert os.path.exists(tabs_dxf)
+    print("Paper tab generation with offsets verified successfully!")
+
     print("ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

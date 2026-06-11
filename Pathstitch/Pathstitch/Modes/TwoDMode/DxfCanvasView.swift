@@ -429,6 +429,82 @@ struct DxfCanvasView: View {
                     )
             }
             
+            // Paper Folding (Glue Tab) Offset Handles
+            if state.isPaperFoldingExpanded,
+               state.selectedHandles.count == 1,
+               let handle = state.selectedHandles.first,
+               let ent = state.entities.first(where: { $0.handle == handle }),
+               ent.type == "LINE",
+               let start = ent.start, start.count >= 2,
+               let end = ent.end, end.count >= 2 {
+                
+                let p1 = CGPoint(x: start[0], y: start[1])
+                let p2 = CGPoint(x: end[0], y: end[1])
+                let dx = p2.x - p1.x
+                let dy = p2.y - p1.y
+                let len = hypot(dx, dy)
+                if len > 0 {
+                    let ux = dx / len
+                    let uy = dy / len
+                    
+                    // Positions of the tab start and end in model coordinates
+                    let tabStartPt = CGPoint(
+                        x: p1.x + ux * CGFloat(state.glueTabStartOffset),
+                        y: p1.y + uy * CGFloat(state.glueTabStartOffset)
+                    )
+                    let tabEndPt = CGPoint(
+                        x: p2.x - ux * CGFloat(state.glueTabEndOffset),
+                        y: p2.y - uy * CGFloat(state.glueTabEndOffset)
+                    )
+                    
+                    let startScreen = toScreen(dx: Double(tabStartPt.x), dy: Double(tabStartPt.y), size: viewSize, bounds: modelBounds)
+                    let endScreen = toScreen(dx: Double(tabEndPt.x), dy: Double(tabEndPt.y), size: viewSize, bounds: modelBounds)
+                    let angleDeg = Double(atan2(-dy, dx) * 180.0 / .pi)
+                    
+                    // Start Handle
+                    Image(systemName: "arrow.right.circle.fill")
+                        .resizable()
+                        .foregroundColor(Color.orange)
+                        .background(Circle().fill(Color.white).frame(width: 14, height: 14))
+                        .frame(width: 20, height: 20)
+                        .rotationEffect(.degrees(angleDeg))
+                        .shadow(radius: 2)
+                        .position(startScreen)
+                        .gesture(
+                            DragGesture(coordinateSpace: .global)
+                                .onChanged { val in
+                                    let localPt = CGPoint(x: val.location.x - globalOrigin.x, y: val.location.y - globalOrigin.y)
+                                    let modelPt = toModel(point: localPt, size: viewSize, bounds: modelBounds)
+                                    let vecX = modelPt.x - p1.x
+                                    let vecY = modelPt.y - p1.y
+                                    let proj = vecX * ux + vecY * uy
+                                    state.glueTabStartOffset = max(0.0, min(Double(len) - state.glueTabEndOffset - 1.0, Double(proj)))
+                                }
+                        )
+                    
+                    // End Handle
+                    Image(systemName: "arrow.right.circle.fill")
+                        .resizable()
+                        .foregroundColor(Color.orange)
+                        .background(Circle().fill(Color.white).frame(width: 14, height: 14))
+                        .frame(width: 20, height: 20)
+                        .rotationEffect(.degrees(angleDeg + 180))
+                        .shadow(radius: 2)
+                        .position(endScreen)
+                        .gesture(
+                            DragGesture(coordinateSpace: .global)
+                                .onChanged { val in
+                                    let localPt = CGPoint(x: val.location.x - globalOrigin.x, y: val.location.y - globalOrigin.y)
+                                    let modelPt = toModel(point: localPt, size: viewSize, bounds: modelBounds)
+                                    let vecX = p2.x - modelPt.x
+                                    let vecY = p2.y - modelPt.y
+                                    let proj = vecX * ux + vecY * uy
+                                    state.glueTabEndOffset = max(0.0, min(Double(len) - state.glueTabStartOffset - 1.0, Double(proj)))
+                                }
+                        )
+                }
+            }
+            
             // Calibration Points visual markers
             if state.isCalibrationActive {
                 ForEach(Array(state.calibrationPoints.enumerated()), id: \.offset) { idx, pt in
@@ -807,6 +883,43 @@ struct DxfCanvasView: View {
             let handleScreen = toScreen(dx: Double(handlePt.x), dy: Double(handlePt.y), size: size, bounds: modelBounds)
             if hypot(pt.x - handleScreen.x, pt.y - handleScreen.y) < 16.0 {
                 return true
+            }
+        }
+        if state.isPaperFoldingExpanded,
+           state.selectedHandles.count == 1,
+           let handle = state.selectedHandles.first,
+           let ent = state.entities.first(where: { $0.handle == handle }),
+           ent.type == "LINE",
+           let start = ent.start, start.count >= 2,
+           let end = ent.end, end.count >= 2 {
+            
+            let p1 = CGPoint(x: start[0], y: start[1])
+            let p2 = CGPoint(x: end[0], y: end[1])
+            let dx = p2.x - p1.x
+            let dy = p2.y - p1.y
+            let len = hypot(dx, dy)
+            if len > 0 {
+                let ux = dx / len
+                let uy = dy / len
+                
+                let tabStartPt = CGPoint(
+                    x: p1.x + ux * CGFloat(state.glueTabStartOffset),
+                    y: p1.y + uy * CGFloat(state.glueTabStartOffset)
+                )
+                let tabEndPt = CGPoint(
+                    x: p2.x - ux * CGFloat(state.glueTabEndOffset),
+                    y: p2.y - uy * CGFloat(state.glueTabEndOffset)
+                )
+                
+                let startScreen = toScreen(dx: Double(tabStartPt.x), dy: Double(tabStartPt.y), size: size, bounds: modelBounds)
+                let endScreen = toScreen(dx: Double(tabEndPt.x), dy: Double(tabEndPt.y), size: size, bounds: modelBounds)
+                
+                if hypot(pt.x - startScreen.x, pt.y - startScreen.y) < 16.0 {
+                    return true
+                }
+                if hypot(pt.x - endScreen.x, pt.y - endScreen.y) < 16.0 {
+                    return true
+                }
             }
         }
         return false

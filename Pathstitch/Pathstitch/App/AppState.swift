@@ -236,6 +236,13 @@ struct ProjectSaveContainer: Codable {
     var holeSide: String? = nil
     var holeRowSpacing: Double? = nil
     var exportMeasurementLines: Bool? = nil
+    
+    // Paper tab generation settings
+    var glueTabHeight: Double? = nil
+    var glueTabType: String? = nil
+    var glueTabSide: String? = nil
+    var glueTabStartOffset: Double? = nil
+    var glueTabEndOffset: Double? = nil
 
     // Persisted batch session (optional / backward-compatible).
     var batchItems: [BatchItemSave]? = nil
@@ -327,6 +334,14 @@ class AppState {
     
     var consolidateSvgStrokes: Bool = true
     var cleanupTolerance: Double = 0.1
+    
+    // Paper/Glue Tab configs
+    var glueTabHeight: Double = 5.0
+    var glueTabType: String = "trapezoid" // "trapezoid" or "triangle"
+    var glueTabSide: String = "left" // "left" or "right"
+    var glueTabStartOffset: Double = 0.0
+    var glueTabEndOffset: Double = 0.0
+    var isPaperFoldingExpanded: Bool = false
     
     // Sketch Tool configs
     var sketchFilletRadius: Double = 0.0
@@ -2373,6 +2388,11 @@ class AppState {
                 holeSide: holeSide,
                 holeRowSpacing: holeRowSpacing,
                 exportMeasurementLines: exportMeasurementLines,
+                glueTabHeight: glueTabHeight,
+                glueTabType: glueTabType,
+                glueTabSide: glueTabSide,
+                glueTabStartOffset: glueTabStartOffset,
+                glueTabEndOffset: glueTabEndOffset,
                 batchItems: savedBatch
             )
 
@@ -2492,6 +2512,11 @@ class AppState {
             if let hSide = validContainer.holeSide { self.holeSide = hSide }
             if let hRow = validContainer.holeRowSpacing { self.holeRowSpacing = hRow }
             if let expMeasure = validContainer.exportMeasurementLines { self.exportMeasurementLines = expMeasure }
+            if let gHeight = validContainer.glueTabHeight { self.glueTabHeight = gHeight }
+            if let gType = validContainer.glueTabType { self.glueTabType = gType }
+            if let gSide = validContainer.glueTabSide { self.glueTabSide = gSide }
+            if let gStart = validContainer.glueTabStartOffset { self.glueTabStartOffset = gStart }
+            if let gEnd = validContainer.glueTabEndOffset { self.glueTabEndOffset = gEnd }
 
             // Restore a persisted batch session, if any (MAS-24). DXFs are
             // written back to the session batch dir; svg/entities come straight
@@ -2827,7 +2852,7 @@ class AppState {
         }
     }
     
-    func applyGlueTabs(height: Double, type: String, side: String) {
+    func applyGlueTabs(height: Double, type: String, side: String, startOffset: Double, endOffset: Double) {
         guard let url = currentFilePath, !selectedHandles.isEmpty else { return }
         saveToHistory()
         isProcessing = true
@@ -2845,6 +2870,8 @@ class AppState {
                         "height": height,
                         "type": type,
                         "side": side,
+                        "start_offset": startOffset,
+                        "end_offset": endOffset,
                         "layer": "GLUE_TABS"
                     ]
                 )
