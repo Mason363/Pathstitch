@@ -1,4 +1,3 @@
-![Uploading Screenshot 2026-06-15 at 4.51.56 PM.png…]()
 <h1 align="center">Pathstitch</h1>
 
 <p align="center"><b>A native macOS CAD/CAM studio for leathercraft, pattern making, and sewing.</b></p>
