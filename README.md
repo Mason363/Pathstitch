@@ -1,3 +1,4 @@
+![Uploading Screenshot 2026-06-15 at 4.51.56 PM.png…]()
 <h1 align="center">Pathstitch</h1>
 
 <p align="center"><b>A native macOS CAD/CAM studio for leathercraft, pattern making, and sewing.</b></p>
@@ -16,7 +17,7 @@ cut‑ready DXF/SVG/PDF — or import a 3D `.step` model and **unfold it into fl
 and sew. It's a fast, native SwiftUI app backed by a real geometry kernel (`ezdxf`, `shapely`, OpenCASCADE),
 not a web wrapper.
 
-> ### 🟥 [IMAGE: Hero shot — the 2D editor with a finished leather wallet/bag pattern open: filleted corners, visible dimensions, stitch holes along the edges, layers panel on the right]
+<img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 52 39 PM" src="https://github.com/user-attachments/assets/63cfbd20-b581-47fe-a3eb-1ff0c9cac5cb" />
 
 ---
 
@@ -38,7 +39,7 @@ engine ships inside the app.
 Line, circle, rectangle, text, and an Illustrator‑style **pen** tool, all with point/edge **snapping** and
 **on‑creation dimensions** — type a width, `Tab`, type a height, `Enter`, done.
 
-> ### 🟥 [IMAGE: Drawing a rectangle — the dimension input boxes (e.g. “80.00 mm” / “40.00 mm”) shown live on the canvas]
+<img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 53 33 PM" src="https://github.com/user-attachments/assets/e4abe9a9-303a-477e-a92a-b73f2b6d0251" />
 
 ### Edit
 - **Parametric fillet & chamfer** (G1/G2). Every corner is independent, draggable to size, and stays
@@ -48,22 +49,24 @@ Line, circle, rectangle, text, and an Illustrator‑style **pen** tool, all with
   several — to cut at every intersection.
 - Move/rotate gizmo, point‑to‑point move, scale, mirror, reflect, duplicate.
 
-> ### 🟥 [IMAGE: Fillet in action — a rectangle with one corner mid‑drag showing the radius arrow and a large rounded corner, the others still sharp]
+<img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 54 20 PM" src="https://github.com/user-attachments/assets/85944b0c-71b1-4632-8773-ce5b9ddc906c" />
 
-> ### 🟥 [IMAGE: Trim hover preview — a line crossing a shape with the to‑be‑removed segment highlighted in red]
+<img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 56 42 PM" src="https://github.com/user-attachments/assets/b6631183-029f-43dc-8e88-8190f379d08b" />
 
 ### Make
 - **Stitch holes & saddle‑stitch patterns** generated along any path, with spacing and corner controls.
 - **Offset**, **convert‑lines** (dashed/perforated styles), **patterning**, and **paper folding**
   (crease lines + glue tabs) for assembling 3D objects from flat stock.
 
-> ### 🟥 [IMAGE: Stitch‑hole generation — evenly spaced holes following the outline of a leather piece]
+<img width="1313" height="913" alt="Screenshot 2026-06-15 at 5 03 09 PM" src="https://github.com/user-attachments/assets/5959eb5d-2da1-4abb-9f9f-e1c15734566c" />
 
 ### Go 3D → 2D
 Import `.step` / `.stp`, inspect it in a Three.js viewport, and **unfold developable surfaces into flat
 nets** ready for the 2D tools.
 
-> ### 🟥 [IMAGE: Split view — a 3D STEP model on the left, its unfolded 2D net with fold lines on the right]
+<img width="1312" height="912" alt="Screenshot 2026-06-15 at 5 05 53 PM" src="https://github.com/user-attachments/assets/802bf6e9-4b0f-4159-962b-fa0768eef29b" />
+
+<img width="1312" height="912" alt="Screenshot 2026-06-15 at 5 06 01 PM" src="https://github.com/user-attachments/assets/dde22397-fa07-4e84-a05b-7b8d92b379c0" />
 
 ### Export & integrate
 DXF, SVG, PDF, and PNG export; native `.stch` project files; and **Finder QuickLook previews + thumbnails**
