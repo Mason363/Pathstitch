@@ -47,6 +47,10 @@ struct DxfCanvasView: View {
     @State private var isDraggingOffset = false
     @State private var gizmoDragRotation: Double = 0.0
     @State private var isDraggingRotation = false
+    // Scale tool (MAS-128): live preview factor + drag state.
+    @State private var gizmoDragScale: CGFloat = 1.0
+    @State private var isDraggingScale = false
+    @State private var scaleDragStartDist: CGFloat = 0.0
     @State private var gizmoRotationStartAngle: Double? = nil
 
     // Precision movement dimension box (MAS-57). `gizmoDimKind` is "x", "y" or
@@ -72,13 +76,25 @@ struct DxfCanvasView: View {
     @State private var editingDimension: MeasurementLine? = nil
     @State private var editingDimensionText: String = ""
     @State private var editingDimensionScreenPos: CGPoint = .zero
+    /// Invalid-formula flash on the dimension field (MAS-110 §4 / MAS-111).
+    @State private var dimensionFieldError: Bool = false
+    /// First picked point for a two-point linear dimension (MAS-110 §1).
+    @State private var dimensionFirstPoint: CGPoint? = nil
     @FocusState private var isTextEditorFocused: Bool
     @FocusState private var isDimensionEditorFocused: Bool
     
     var selectionCenterModel: CGPoint? {
         state.selectionCenterModel
     }
-    
+
+    /// Pivot the Scale tool scales around: the picked scale point if set, else the
+    /// selection's bounding-box center (MAS-128).
+    var scalePivotModel: CGPoint? {
+        if let p = state.scalePivotModel { return p }
+        if let b = state.selectionBBox { return CGPoint(x: b.midX, y: b.midY) }
+        return nil
+    }
+
     var body: some View {
         @Bindable var state = state
         GeometryReader { geo in
@@ -159,6 +175,13 @@ struct DxfCanvasView: View {
                         if state.currentTool != .select { state.currentTool = .select }
                         return
                     }
+                    // Enter commits the offset and exits to Select (MAS-109).
+                    if state.currentTool == .offset {
+                        if !state.selectedHandles.isEmpty {
+                            state.applyOffset(exitAfterApply: true)
+                        }
+                        return
+                    }
                     // Return/Enter finishes the in-progress shape at the cursor.
                     if state.currentTool == .pen {
                         finishPenPath()
@@ -184,6 +207,11 @@ struct DxfCanvasView: View {
                         // returns to Select.
                         state.cancelCornerToolSession()
                         if state.currentTool != .select { state.currentTool = .select }
+                        return
+                    }
+                    // Esc drops the Offset tool without generating geometry (MAS-109).
+                    if state.currentTool == .offset {
+                        state.cancelOffsetTool()
                         return
                     }
                     if state.currentTool == .pen && !penAnchors.isEmpty {
@@ -346,13 +374,15 @@ struct DxfCanvasView: View {
     @ViewBuilder
     private func canvasOverlays(size viewSize: CGSize, modelBounds: CGRect) -> some View {
         ZStack {
-            // Translation Gizmo Layer
-            if let centerModel = selectionCenterModel {
+            // Translation Gizmo Layer. Hidden while a corner tool (Fillet/Chamfer)
+            // is active so the move/rotate handles don't overlap and steal grabs
+            // from the per-corner radius controls (MAS-101).
+            if let centerModel = selectionCenterModel, !state.currentTool.isCornerTool, state.currentTool != .scale {
                 let centerScreen = toScreen(dx: Double(centerModel.x), dy: Double(centerModel.y), size: viewSize, bounds: modelBounds)
-                
+
                     GeometryReader { g in
                         let c = CGPoint(x: g.size.width / 2, y: g.size.height / 2)
-                        
+
                         // X-axis constraint handle (Red Line & Arrow)
                         Path { p in
                             p.move(to: c)
@@ -505,6 +535,67 @@ struct DxfCanvasView: View {
                 filletArrowOverlay(size: viewSize, bounds: modelBounds)
             }
 
+            // Scale tool gizmo (MAS-128): a draggable corner handle that scales the
+            // selection live around the pivot, plus a pivot marker and factor pill.
+            if state.currentTool == .scale, !state.selectedHandles.isEmpty,
+               let bbox = state.selectionBBox, let pivot = scalePivotModel {
+                let pivotScreen = toScreen(dx: Double(pivot.x), dy: Double(pivot.y), size: viewSize, bounds: modelBounds)
+                // Handle sits at the bbox's far corner from the pivot — scaled live.
+                let cornerModel = CGPoint(x: bbox.maxX, y: bbox.maxY)
+                let baseScreen = toScreen(dx: Double(cornerModel.x), dy: Double(cornerModel.y), size: viewSize, bounds: modelBounds)
+                let handleScreen = CGPoint(
+                    x: pivotScreen.x + (baseScreen.x - pivotScreen.x) * gizmoDragScale,
+                    y: pivotScreen.y + (baseScreen.y - pivotScreen.y) * gizmoDragScale
+                )
+
+                // Pivot marker.
+                Image(systemName: "scope")
+                    .font(.system(size: 16))
+                    .foregroundColor(Color.accent)
+                    .position(pivotScreen)
+                    .allowsHitTesting(false)
+
+                // Diagonal guide from pivot to handle.
+                Path { p in p.move(to: pivotScreen); p.addLine(to: handleScreen) }
+                    .stroke(Color.accent.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .allowsHitTesting(false)
+
+                Rectangle()
+                    .fill(isDraggingScale ? Color.accent : Color.accent.opacity(0.85))
+                    .frame(width: 14, height: 14)
+                    .overlay(Rectangle().stroke(Color.white, lineWidth: 1.5))
+                    .rotationEffect(.degrees(45))
+                    .frame(width: 26, height: 26)
+                    .contentShape(Rectangle())
+                    .position(handleScreen)
+                    .gesture(
+                        DragGesture(coordinateSpace: .named("canvas"))
+                            .onChanged { val in
+                                let d0 = hypot(baseScreen.x - pivotScreen.x, baseScreen.y - pivotScreen.y)
+                                if !isDraggingScale { isDraggingScale = true; scaleDragStartDist = d0 }
+                                let d1 = hypot(val.location.x - pivotScreen.x, val.location.y - pivotScreen.y)
+                                let f = max(0.05, d1 / max(d0, 0.0001))
+                                gizmoDragScale = f
+                                state.scaleFactor = Double(f)
+                            }
+                            .onEnded { _ in
+                                let f = Double(gizmoDragScale)
+                                isDraggingScale = false
+                                gizmoDragScale = 1.0
+                                if abs(f - 1.0) > 0.001 { state.scaleSelected(factor: f) }
+                            }
+                    )
+
+                // Live factor pill.
+                Text(String(format: "×%.3f", gizmoDragScale))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.accent.opacity(0.9)))
+                    .position(x: handleScreen.x + 40, y: handleScreen.y - 14)
+                    .allowsHitTesting(false)
+            }
+
             // Fillet Drag Handle Overlay — only on a just-created rectangle, not
             // on plain re-selection (MAS-62).
             if let selected = state.selectedMeasurement,
@@ -591,11 +682,63 @@ struct DxfCanvasView: View {
                             }
                             .onEnded { _ in
                                 isDraggingOffset = false
-                                state.applyOffset()
+                                // Dragging only sizes the live preview; the user
+                                // commits with OK / Enter (MAS-109).
                             }
                     )
+
+                // Floating distance pill next to the handle (MAS-109).
+                Text(String(format: "%.2f mm", state.offsetDistance))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.status_warn.opacity(0.9)))
+                    .position(x: handleScreen.x + 38, y: handleScreen.y - 14)
+                    .allowsHitTesting(false)
             }
-            
+
+            // Add Holes — draggable margin handle (MAS-121). Brings the standard
+            // perpendicular-arrow handle to the sewing-margin distance, which was
+            // previously editable only via the numeric field.
+            if state.currentTool == .addHoles,
+               let handleInfo = getOffsetHandleInfo() {
+                let scaleDir: CGFloat = state.holeSide == "left" ? 1.0 : -1.0
+                let handlePt = CGPoint(
+                    x: handleInfo.basePoint.x + handleInfo.normal.x * CGFloat(state.holeOffsetDistance) * scaleDir,
+                    y: handleInfo.basePoint.y + handleInfo.normal.y * CGFloat(state.holeOffsetDistance) * scaleDir
+                )
+                let handleScreen = toScreen(dx: Double(handlePt.x), dy: Double(handlePt.y), size: viewSize, bounds: modelBounds)
+
+                Circle()
+                    .fill(Color.purple)
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .shadow(radius: 2)
+                    .position(handleScreen)
+                    .gesture(
+                        DragGesture(coordinateSpace: .named("canvas"))
+                            .onChanged { val in
+                                let modelPt = toModel(point: val.location, size: viewSize, bounds: modelBounds)
+                                let vecX = modelPt.x - handleInfo.basePoint.x
+                                let vecY = modelPt.y - handleInfo.basePoint.y
+                                let proj = vecX * handleInfo.normal.x + vecY * handleInfo.normal.y
+                                state.holeOffsetDistance = max(0.0, abs(proj))
+                                state.holeSide = proj >= 0 ? "left" : "right"
+                                state.updateLivePreview()
+                            }
+                    )
+
+                Text(String(format: "%.2f mm", state.holeOffsetDistance))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.purple.opacity(0.9)))
+                    .position(x: handleScreen.x + 40, y: handleScreen.y - 14)
+                    .allowsHitTesting(false)
+            }
+
             // Glue Tab Start/End Offset Drag Handles
             if state.currentTool == .paperFolding,
                let ent = getSelectedLineEntity(),
@@ -726,40 +869,53 @@ struct DxfCanvasView: View {
         @Bindable var state = state
         Group {
             if let editing = editingDimension {
+                let isParam = editing.isParametric
                 TextField("", text: $editingDimensionText, onCommit: {
-                    commitDimensionEdit()
+                    commitDimensionField(size: viewSize, modelBounds: modelBounds)
                 })
                 .onSubmit {
-                    commitDimensionEdit()
+                    commitDimensionField(size: viewSize, modelBounds: modelBounds)
                 }
+                .onChange(of: editingDimensionText) { _, _ in dimensionFieldError = false }
                 .focused($isDimensionEditorFocused)
                 .onKeyPress(.tab) {
-                    cycleDimension(size: viewSize, modelBounds: modelBounds)
+                    // Parametric dimensions are placed one at a time, so Tab just
+                    // commits; auto-dimensions cycle width→height (MAS-90).
+                    if isParam {
+                        commitDimensionField(size: viewSize, modelBounds: modelBounds)
+                    } else {
+                        cycleDimension(size: viewSize, modelBounds: modelBounds)
+                    }
                     return .handled
                 }
                 .onKeyPress(.escape) {
-                    // Esc dismisses the dimension and returns to the Select tool,
-                    // hiding the auto-dimension lines (same as Enter).
+                    // Esc drops the dimension box and returns to Select, hiding the
+                    // auto-dimension lines (same as Enter).
                     finishDimensioning()
                     return .handled
                 }
-                .onKeyPress(characters: CharacterSet.letters) { _ in
-                    // Any letter key exits the line dimensioning box.
-                    editingDimension = nil
-                    isDimensionEditorFocused = false
-                    return .handled
+                .ifCondition(!isParam) { view in
+                    // Auto-dimension fields are numeric-only; a letter exits them.
+                    // Parametric fields must accept letters for formulas (d1, sqrt).
+                    view.onKeyPress(characters: CharacterSet.letters) { _ in
+                        editingDimension = nil
+                        isDimensionEditorFocused = false
+                        return .handled
+                    }
                 }
                 .textFieldStyle(PlainTextFieldStyle())
                 .font(.system(size: 11, weight: .bold))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Color.bg_panel)
-                .foregroundColor(Color.text_primary)
+                .foregroundColor(dimensionFieldError ? Color.status_err : Color.text_primary)
                 .cornerRadius(4)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accent, lineWidth: 1.5))
-                .frame(width: 80)
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .stroke(dimensionFieldError ? Color.status_err : Color.accent, lineWidth: 1.5))
+                .frame(width: isParam ? 110 : 80)
                 .position(editingDimensionScreenPos)
                 .shadow(radius: 4)
+                .help(isParam ? "Type a value or formula — e.g. 50, d1*2+10, sqrt(d2^2+d3^2), 1 inch" : "")
             }
             
             if state.isEditingText {
@@ -876,6 +1032,15 @@ struct DxfCanvasView: View {
                         context.translateBy(x: -centerScreen.x, y: -centerScreen.y)
                     }
 
+                    // Live scale preview around the pivot (MAS-128) — identity when
+                    // not scaling, so it never disturbs move/rotate.
+                    if gizmoDragScale != 1.0, let pivot = scalePivotModel {
+                        let ps = toScreen(dx: Double(pivot.x), dy: Double(pivot.y), size: size, bounds: modelBounds)
+                        context.translateBy(x: ps.x, y: ps.y)
+                        context.scaleBy(x: gizmoDragScale, y: gizmoDragScale)
+                        context.translateBy(x: -ps.x, y: -ps.y)
+                    }
+
                     drawEntity(ent, baseColor: baseColor, strokeColor: strokeColor, strokeWidth: strokeWidth, size: size, modelBounds: modelBounds, context: &context)
                 }
             } else {
@@ -912,6 +1077,13 @@ struct DxfCanvasView: View {
                 hp.addLine(to: b)
                 context.stroke(hp, with: .color(Color.status_err), style: StrokeStyle(lineWidth: 4.0, lineCap: .round))
             }
+        }
+
+        // Patterning v2 live ghost preview (MAS-113): dashed translucent copies of
+        // the selection at every instance position, updated as the panel/handles
+        // change. Faithful (re-draws the real entities transformed), not a bbox.
+        if state.currentTool == .patterning, !state.selectedHandles.isEmpty {
+            drawPatterningGhost(size: size, modelBounds: modelBounds, context: &context)
         }
 
         // Draw Live Preview Entities (Dashed Orange Lines)
@@ -1025,6 +1197,26 @@ struct DxfCanvasView: View {
             
             let labelText = String(format: "R: %.2f mm", rModel)
             context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: endScreen.x, y: endScreen.y - 10), anchor: .center)
+        } else if state.currentTool == .sketchPolygon, let centerModel = sketchStartPoint {
+            // Live preview: center + cursor define radius and rotation (MAS-118).
+            let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
+            let endModel = snapped.point
+            let r = Double(hypot(centerModel.x - endModel.x, centerModel.y - endModel.y))
+            let rot = Double(atan2(endModel.y - centerModel.y, endModel.x - centerModel.x))
+            let pts = polygonPoints(center: centerModel, radius: r, rotation: rot, sides: state.polygonSides)
+            if pts.count >= 3 {
+                var path = SwiftUI.Path()
+                path.move(to: toScreen(dx: pts[0].x, dy: pts[0].y, size: size, bounds: modelBounds))
+                for p in pts.dropFirst() {
+                    path.addLine(to: toScreen(dx: p.x, dy: p.y, size: size, bounds: modelBounds))
+                }
+                path.closeSubpath()
+                context.stroke(path, with: .color(Color.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+            }
+            let endScreen = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
+            context.draw(Text("Sides: \(state.polygonSides)  •  R: \(String(format: "%.2f", r)) mm")
+                .font(.system(size: 10, weight: .bold)).foregroundColor(.accent),
+                at: CGPoint(x: endScreen.x, y: endScreen.y - 12), anchor: .center)
         } else if state.currentTool == .sketchRectangle, let startModel = sketchStartPoint {
             let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
             let endModel = snapped.point
@@ -1618,7 +1810,7 @@ struct DxfCanvasView: View {
     private func mirrorAxisOverlay(size: CGSize, bounds: CGRect) -> some View {
         let start = state.mirrorAxisStart
         let end = state.mirrorAxisEnd
-        ZStack {
+        return ZStack {
             if let a = start {
                 let pa = toScreen(dx: Double(a.x), dy: Double(a.y), size: size, bounds: bounds)
                 if let b = end {
@@ -1633,6 +1825,26 @@ struct DxfCanvasView: View {
                         p.addLine(to: CGPoint(x: pb.x + ux * ext, y: pb.y + uy * ext))
                     }
                     .stroke(Color.accent, style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+
+                    // Dynamic ghost of the mirrored geometry (MAS-119): reflect the
+                    // selection across the axis using a Canvas so any entity type
+                    // previews faithfully, the moment a valid axis exists.
+                    Canvas { ctx, _ in
+                        let selected = state.entities.filter { state.selectedHandles.contains($0.handle) }
+                        let theta = atan2(Double(pb.y - pa.y), Double(pb.x - pa.x))
+                        ctx.translateBy(x: pa.x, y: pa.y)
+                        ctx.rotate(by: Angle(radians: theta))
+                        ctx.scaleBy(x: 1, y: -1)               // reflect across the axis
+                        ctx.rotate(by: Angle(radians: -theta))
+                        ctx.translateBy(x: -pa.x, y: -pa.y)
+                        let ghost = Color.accent.opacity(0.5)
+                        for ent in selected {
+                            drawEntity(ent, baseColor: ghost, strokeColor: ghost, strokeWidth: 1.0,
+                                       size: size, modelBounds: bounds, context: &ctx)
+                        }
+                    }
+                    .allowsHitTesting(false)
+
                     Circle().fill(Color.accent).frame(width: 7, height: 7).position(pb)
                 }
                 Circle().fill(Color.accent).frame(width: 7, height: 7).position(pa)
@@ -1709,7 +1921,12 @@ struct DxfCanvasView: View {
             // define the from→to translation. Otherwise the move tool selects.
             if state.currentTool == .move {
                 if state.moveP2PActive {
-                    let modelPt = toModel(point: point, size: size, bounds: modelBounds)
+                    // Snap each pick to exact geometry (endpoint/midpoint/center) so
+                    // the from→to translation is precise, not cursor-approximate —
+                    // point-to-point must be exact (MAS-127). Falls back to the raw
+                    // model point only when nothing snappable is nearby.
+                    let modelPt = getSnappedPoint(for: point, size: size, bounds: modelBounds)?.snappedModelPt
+                        ?? toModel(point: point, size: size, bounds: modelBounds)
                     state.moveP2PClick(modelPt)
                     return
                 }
@@ -1722,13 +1939,28 @@ struct DxfCanvasView: View {
             if state.currentTool == .mirror {
                 let modelPt = toModel(point: point, size: size, bounds: modelBounds)
                 let shift = NSEvent.modifierFlags.contains(.shift)
-                if state.selectedHandles.isEmpty || shift {
-                    if let nearest = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: size, bounds: modelBounds) {
-                        if shift { state.selectedHandles.insert(nearest.handle) }
-                        else { state.selectedHandles = [nearest.handle] }
+                if state.mirrorLineMode {
+                    // Mirror Line mode (MAS-119): pick an existing straight line as
+                    // the axis; otherwise fall back to two-point axis placement.
+                    if let nearest = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: size, bounds: modelBounds),
+                       nearest.type == "LINE", let s = nearest.start, let e = nearest.end,
+                       !state.selectedHandles.contains(nearest.handle) {
+                        state.setMirrorAxisFromLine(start: CGPoint(x: s[0], y: s[1]), end: CGPoint(x: e[0], y: e[1]))
+                    } else {
+                        state.mirrorAxisClick(modelPt)
                     }
                 } else {
-                    state.mirrorAxisClick(modelPt)
+                    // Objects mode (default): click to select/toggle shapes to mirror.
+                    if let nearest = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: size, bounds: modelBounds) {
+                        if shift {
+                            if state.selectedHandles.contains(nearest.handle) { state.selectedHandles.remove(nearest.handle) }
+                            else { state.selectedHandles.insert(nearest.handle) }
+                        } else {
+                            state.selectedHandles = [nearest.handle]
+                        }
+                    } else if !shift {
+                        state.selectedHandles.removeAll()
+                    }
                 }
                 return
             }
@@ -1811,7 +2043,7 @@ struct DxfCanvasView: View {
                 
                 if state.currentTool == .pan || NSEvent.modifierFlags.contains(.option) {
                     dragStartOffset = state.canvasOffset
-                } else if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText {
+                } else if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText || state.currentTool == .sketchPolygon {
                     if sketchStartPoint != nil {
                         // A start already exists → this gesture is the second click
                         // (or a chained line segment); it commits rather than re-arming.
@@ -1873,7 +2105,7 @@ struct DxfCanvasView: View {
                 width: dragStartOffset.width + val.translation.width,
                 height: dragStartOffset.height + val.translation.height
             )
-        } else if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText {
+        } else if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText || state.currentTool == .sketchPolygon {
             // mouseLocation is already updated above
         } else if state.currentTool != .measure && !state.currentTool.isCornerTool {
             dragSelectionEnd = val.location
@@ -1997,16 +2229,20 @@ struct DxfCanvasView: View {
         }
         if isDraggingSelection {
             isDraggingSelection = false
-            let startModel = toModel(point: val.startLocation, size: size, bounds: modelBounds)
-            let currentModel = toModel(point: val.location, size: size, bounds: modelBounds)
-            let dx = currentModel.x - startModel.x
-            let dy = currentModel.y - startModel.y
-            state.translateSelected(dx: dx, dy: dy)
             gizmoDragOffset = .zero
-            return
+            // Only an actual drag moves the selection. A click (no real movement)
+            // falls through to the click-select path below, so clicking a selected
+            // shape just re-selects it instead of pushing a zero-length move onto
+            // the undo stack (MAS-116).
+            if hypot(val.translation.width, val.translation.height) >= 4.0 {
+                let startModel = toModel(point: val.startLocation, size: size, bounds: modelBounds)
+                let currentModel = toModel(point: val.location, size: size, bounds: modelBounds)
+                state.translateSelected(dx: currentModel.x - startModel.x, dy: currentModel.y - startModel.y)
+                return
+            }
         }
         
-        if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText {
+        if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText || state.currentTool == .sketchPolygon {
             if let start = sketchStartPoint {
                 let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
                 let end = snapped.point
@@ -2098,6 +2334,20 @@ struct DxfCanvasView: View {
                                 }
                             }
                         }
+                    } else if state.currentTool == .sketchPolygon {
+                        // Bake the polygon as a closed, editable LWPOLYLINE (MAS-118).
+                        let r = Double(hypot(start.x - end.x, start.y - end.y))
+                        let rot = Double(atan2(end.y - start.y, end.x - start.x))
+                        let pts = polygonPoints(center: start, radius: r, rotation: rot, sides: state.polygonSides)
+                        if pts.count >= 3 {
+                            let coords = pts.map { [Double($0.x), Double($0.y)] }
+                            Task {
+                                _ = await state.addSketchedEntity(type: "path", params: ["points": coords, "closed": true])
+                            }
+                        }
+                        sketchStartPoint = nil
+                        sketchAwaitingSecondClick = false
+                        return
                     } else if state.currentTool == .sketchRectangle {
                         Task {
                             // Create a SHARP rectangle; the fillet (if any) is applied
@@ -2188,14 +2438,23 @@ struct DxfCanvasView: View {
         if dragDist < 4.0 {
             // CLICK
             let point = val.startLocation
-            if state.currentTool == .select || state.currentTool == .move || state.currentTool == .offset || state.currentTool == .addHoles || state.currentTool == .cleanup || state.currentTool == .paperFolding {
+            if state.currentTool == .scale && state.pickingScalePivot {
+                // Set the custom scale point (MAS-128) and stop picking.
+                state.scalePivotModel = snappedModelPoint(forScreen: point, ref: nil, size: size, bounds: modelBounds)
+                state.scaleFromCenter = false
+                state.pickingScalePivot = false
+            } else if state.currentTool == .patterning && state.pickingPatternPivot {
+                // Set the circular-pattern center (MAS-113) and stop picking.
+                state.patternPivotModel = snappedModelPoint(forScreen: point, ref: nil, size: size, bounds: modelBounds)
+                state.pickingPatternPivot = false
+            } else if state.currentTool == .select || state.currentTool == .move || state.currentTool == .offset || state.currentTool == .addHoles || state.currentTool == .cleanup || state.currentTool == .paperFolding || state.currentTool == .convertLines || state.currentTool == .scale || state.currentTool == .patterning {
                 let clickedModelPt = toModel(point: point, size: size, bounds: modelBounds)
                 
                 // Check for dimension line click selection first
                 // Any deliberate selection click dismisses the creation-only
                 // fillet handle so it never returns on re-select (MAS-62).
                 state.justCreatedRectangleHandle = nil
-                if let nearestMeasure = findNearestMeasurement(screenPt: point, size: size, bounds: modelBounds) {
+                if let nearestMeasure = findNearestMeasurement(screenPt: point, size: size, bounds: modelBounds, excludeAuto: true) {
                     state.selectedMeasurement = nearestMeasure
                 } else {
                     state.selectedMeasurement = nil
@@ -2237,6 +2496,8 @@ struct DxfCanvasView: View {
                 } else {
                     state.activeMeasureStart = clickedModelPt
                 }
+            } else if state.currentTool == .dimension {
+                placeDimension(at: point, size: size, modelBounds: modelBounds)
             }
         } else {
             // DRAG RELEASE
@@ -2866,11 +3127,16 @@ struct DxfCanvasView: View {
         return t >= 0 && t <= 1 && u >= 0 && u <= 1
     }
 
-    private func findNearestMeasurement(screenPt: CGPoint, size: CGSize, bounds: CGRect, maxDistanceScreen: CGFloat = 12.0) -> MeasurementLine? {
+    private func findNearestMeasurement(screenPt: CGPoint, size: CGSize, bounds: CGRect, maxDistanceScreen: CGFloat = 12.0, excludeAuto: Bool = false) -> MeasurementLine? {
         var nearest: MeasurementLine? = nil
         var minDist = maxDistanceScreen
-        
+
         for measure in state.measurements {
+            // Auto-dimensions lie on top of their entity (e.g. a sketched line),
+            // so for plain selection they must not intercept the click — the user
+            // expects clicking the line to select the line (double-click still
+            // edits the dimension, which passes excludeAuto:false).
+            if excludeAuto && measure.isAutoDimension { continue }
             let a = toScreen(dx: measure.start.x, dy: measure.start.y, size: size, bounds: bounds)
             let b = toScreen(dx: measure.end.x, dy: measure.end.y, size: size, bounds: bounds)
             
@@ -2961,9 +3227,71 @@ struct DxfCanvasView: View {
                 nearest = ent
             }
         }
-        return nearest
+        if let nearest = nearest { return nearest }
+
+        // Fallback (MAS-116): no outline landed within tolerance — select a CLOSED
+        // shape whose filled interior the click is inside, so clicking *inside* a
+        // rectangle/polygon/circle selects it instead of only its hairline border.
+        // Purely additive: it never overrides a boundary hit, so existing
+        // selections are unchanged. The smallest containing shape wins, so an
+        // inner shape is picked over an enclosing one.
+        var bestArea = Double.infinity
+        var contained: DXFEntity? = nil
+        for ent in state.entities {
+            let matched = ent.layerId.flatMap { layerLookup[$0] } ?? layerLookup[ent.layer]
+            if !(matched?.visible ?? true) { continue }
+
+            var area = Double.infinity
+            var inside = false
+            if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
+                if distance(modelPt, CGPoint(x: center[0], y: center[1])) <= radius {
+                    inside = true
+                    area = Double.pi * radius * radius
+                }
+            } else if ent.closed == true, let vertices = ent.vertices, vertices.count >= 3 {
+                let pts = vertices.map { CGPoint(x: $0[0], y: $0[1]) }
+                if pointInPolygon(modelPt, polygon: pts) {
+                    inside = true
+                    area = polygonArea(pts)
+                }
+            }
+            if inside && area < bestArea {
+                bestArea = area
+                contained = ent
+            }
+        }
+        return contained
     }
-    
+
+    /// Even-odd point-in-polygon test (ray casting) in model space.
+    private func pointInPolygon(_ p: CGPoint, polygon: [CGPoint]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        var inside = false
+        var j = polygon.count - 1
+        for i in 0..<polygon.count {
+            let pi = polygon[i], pj = polygon[j]
+            if (pi.y > p.y) != (pj.y > p.y) {
+                let slope = (p.y - pi.y) / (pj.y - pi.y)
+                let xCross = pi.x + slope * (pj.x - pi.x)
+                if p.x < xCross { inside.toggle() }
+            }
+            j = i
+        }
+        return inside
+    }
+
+    /// Absolute area of a (possibly non-convex) polygon via the shoelace formula.
+    private func polygonArea(_ pts: [CGPoint]) -> Double {
+        guard pts.count >= 3 else { return .infinity }
+        var sum: CGFloat = 0
+        var j = pts.count - 1
+        for i in 0..<pts.count {
+            sum += (pts[j].x + pts[i].x) * (pts[j].y - pts[i].y)
+            j = i
+        }
+        return Double(abs(sum) / 2.0)
+    }
+
     private func distanceToSegment(pt: CGPoint, start: CGPoint, end: CGPoint) -> Double {
         let dx = end.x - start.x
         let dy = end.y - start.y
@@ -3264,6 +3592,103 @@ struct DxfCanvasView: View {
         isDimensionEditorFocused = true
     }
 
+    /// Dimension tool click (MAS-110 §1). Context-aware: clicking a line creates a
+    /// linear length dimension, a circle/arc creates a radius dimension; clicking
+    /// empty space starts a two-point linear distance (reference) dimension. Entity
+    /// dimensions open the floating formula field so a typed value/formula drives
+    /// the geometry; reference dimensions are placed at their measured value.
+    private func placeDimension(at point: CGPoint, size: CGSize, modelBounds: CGRect) {
+        let modelPt = toModel(point: point, size: size, bounds: modelBounds)
+
+        if let ent = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 14.0, size: size, bounds: modelBounds) {
+            dimensionFirstPoint = nil
+            if ent.type == "LINE", let s = ent.start, let e = ent.end {
+                let a = CGPoint(x: s[0], y: s[1]), b = CGPoint(x: e[0], y: e[1])
+                let len = Double(hypot(a.x - b.x, a.y - b.y))
+                beginParametricDimension(start: a, end: b, value: len, type: "length",
+                                         handle: ent.handle, size: size, modelBounds: modelBounds)
+                return
+            }
+            if (ent.type == "CIRCLE" || ent.type == "ARC"), let c = ent.center, let r = ent.radius {
+                let center = CGPoint(x: c[0], y: c[1])
+                let edge = CGPoint(x: center.x + CGFloat(r), y: center.y)
+                beginParametricDimension(start: center, end: edge, value: r, type: "radius",
+                                         handle: ent.handle, size: size, modelBounds: modelBounds)
+                return
+            }
+        }
+
+        // Two-point linear (reference) distance.
+        let snapped = snappedModelPoint(forScreen: point, ref: dimensionFirstPoint, size: size, bounds: modelBounds)
+        if let first = dimensionFirstPoint {
+            dimensionFirstPoint = nil
+            let dist = Double(hypot(first.x - snapped.x, first.y - snapped.y))
+            guard dist > 1e-6 else { return }
+            state.saveToHistory()
+            let varName = state.dimensionEngine.nextVarName()
+            state.dimensionEngine.addNumeric(value: dist, id: varName, driven: true)
+            let m = MeasurementLine(start: first, end: snapped, distanceMm: dist,
+                                    isAutoDimension: false, dimensionType: "reference",
+                                    varName: varName, expression: String(format: "%g", dist),
+                                    driven: true, isParametric: true, offsetDistance: 0)
+            state.measurements.append(m)
+        } else {
+            dimensionFirstPoint = snapped
+        }
+    }
+
+    /// Seeds a driving entity dimension and opens the floating field for explicit
+    /// (typed) value/formula entry.
+    private func beginParametricDimension(start: CGPoint, end: CGPoint, value: Double,
+                                          type: String, handle: String,
+                                          size: CGSize, modelBounds: CGRect) {
+        state.saveToHistory()
+        let varName = state.dimensionEngine.nextVarName()
+        state.dimensionEngine.addNumeric(value: value, id: varName, driven: false)
+        // Offset the dimension line clear of the geometry (~26 px) (MAS-110 §2).
+        let offModel = Double(26.0 / max(state.canvasScale, 0.0001))
+        let m = MeasurementLine(start: start, end: end, distanceMm: value,
+                                isAutoDimension: false, entityHandle: handle,
+                                dimensionType: type, varName: varName,
+                                expression: String(format: "%g", value),
+                                driven: false, isParametric: true, offsetDistance: offModel)
+        state.measurements.append(m)
+        state.selectedMeasurement = m
+        editingDimension = m
+        editingDimensionText = String(format: "%.2f", value)
+        let s = toScreen(dx: start.x, dy: start.y, size: size, bounds: modelBounds)
+        let e = toScreen(dx: end.x, dy: end.y, size: size, bounds: modelBounds)
+        editingDimensionScreenPos = CGPoint(x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 - 24)
+        dimensionFieldError = false
+        isDimensionEditorFocused = true
+    }
+
+    /// Routes an Enter/Tab on the floating dimension field. Parametric dimensions
+    /// (placed by the Dimension tool) go through the formula engine — invalid input
+    /// flashes red and keeps focus; a valid value commits, closes the box, and
+    /// leaves the persistent Dimension tool active (MAS-110 / MAS-111). Auto
+    /// dimensions keep the legacy numeric commit.
+    private func commitDimensionField(size: CGSize, modelBounds: CGRect) {
+        guard let editing = editingDimension else { return }
+        if editing.isParametric {
+            if let err = state.commitDimensionExpression(measureId: editing.id, rawExpression: editingDimensionText) {
+                // Invalid — flash red, keep focus for correction (MAS-111).
+                state.errorMessage = err.errorDescription
+                dimensionFieldError = true
+                isDimensionEditorFocused = true
+                return
+            }
+            // Success: close the box but stay in the Dimension tool, ready for the
+            // next pick (persistent-tool behavior).
+            editingDimension = nil
+            isDimensionEditorFocused = false
+            dimensionFieldError = false
+            state.selectedMeasurement = nil
+            return
+        }
+        commitDimensionEdit()
+    }
+
     private func commitDimensionEdit() {
         if let editing = editingDimension {
             if let val = Double(editingDimensionText) {
@@ -3483,7 +3908,16 @@ struct DxfCanvasView: View {
     private func drawMeasurement(_ measure: MeasurementLine, isSelected: Bool, isHovered: Bool, size: CGSize, modelBounds: CGRect, context: inout GraphicsContext) {
         let startScreen = toScreen(dx: measure.start.x, dy: measure.start.y, size: size, bounds: modelBounds)
         let endScreen = toScreen(dx: measure.end.x, dy: measure.end.y, size: size, bounds: modelBounds)
-        
+
+        // Parametric dimensions render proper CAD anatomy: extension lines with a
+        // small gap, an offset dimension line with solid arrowheads, and the
+        // parameter label (fx: for formulas, (parens) for driven) (MAS-110 §2/§3).
+        if measure.isParametric {
+            drawParametricDimension(measure, startScreen: startScreen, endScreen: endScreen,
+                                    isSelected: isSelected, isHovered: isHovered, context: &context)
+            return
+        }
+
         var mPath = SwiftUI.Path()
         mPath.move(to: startScreen)
         mPath.addLine(to: endScreen)
@@ -3546,6 +3980,147 @@ struct DxfCanvasView: View {
             at: CGPoint(x: midScreen.x, y: midScreen.y - 10),
             anchor: .center
         )
+    }
+
+    /// Renders a parametric dimension's anatomy in screen space (MAS-110 §2/§3).
+    private func drawParametricDimension(_ measure: MeasurementLine, startScreen: CGPoint, endScreen: CGPoint,
+                                         isSelected: Bool, isHovered: Bool, context: inout GraphicsContext) {
+        let color: Color = isSelected ? Color.white
+            : (isHovered ? Color.accent_hover : (measure.driven ? Color.text_secondary : Color.text_primary))
+        let lineW: CGFloat = isSelected ? 2.0 : 1.4
+        let label = DimensionEngine.label(value: measure.distanceMm,
+                                          expression: measure.expression ?? "",
+                                          driven: measure.driven)
+
+        // Radius dimension → leader from center to edge with an arrowhead + R label.
+        if measure.dimensionType == "radius" {
+            var leader = SwiftUI.Path()
+            leader.move(to: startScreen)
+            leader.addLine(to: endScreen)
+            context.stroke(leader, with: .color(color), style: StrokeStyle(lineWidth: lineW, lineCap: .round))
+            drawArrowhead(at: endScreen, towards: startScreen, color: color, context: &context)
+            context.draw(Text("R \(label)").font(.system(size: 10, weight: .bold)).foregroundColor(color),
+                         at: CGPoint(x: endScreen.x + 6, y: endScreen.y - 12), anchor: .leading)
+            return
+        }
+
+        // Linear: extension lines + an offset dimension line with arrowheads.
+        let dx = endScreen.x - startScreen.x, dy = endScreen.y - startScreen.y
+        let len = max(hypot(dx, dy), 0.0001)
+        let perp = CGPoint(x: -dy / len, y: dx / len)
+        let off = CGFloat(measure.offsetDistance) * state.canvasScale
+        let gap: CGFloat = 4.0          // gap from geometry to extension line (≈1–2mm)
+        let overshoot: CGFloat = 6.0    // extension line past the dimension line
+
+        let a0 = startScreen, b0 = endScreen
+        let a1 = CGPoint(x: a0.x + perp.x * off, y: a0.y + perp.y * off)
+        let b1 = CGPoint(x: b0.x + perp.x * off, y: b0.y + perp.y * off)
+
+        if abs(off) > 0.5 {
+            for (p0, p1) in [(a0, a1), (b0, b1)] {
+                let s = CGPoint(x: p0.x + perp.x * gap, y: p0.y + perp.y * gap)
+                let e = CGPoint(x: p1.x + perp.x * overshoot, y: p1.y + perp.y * overshoot)
+                var ext = SwiftUI.Path(); ext.move(to: s); ext.addLine(to: e)
+                context.stroke(ext, with: .color(color.opacity(0.7)), style: StrokeStyle(lineWidth: 1.0))
+            }
+        }
+
+        var dim = SwiftUI.Path(); dim.move(to: a1); dim.addLine(to: b1)
+        context.stroke(dim, with: .color(color), style: StrokeStyle(lineWidth: lineW, lineCap: .round))
+        drawArrowhead(at: a1, towards: b1, color: color, context: &context)
+        drawArrowhead(at: b1, towards: a1, color: color, context: &context)
+
+        let mid = CGPoint(x: (a1.x + b1.x) / 2, y: (a1.y + b1.y) / 2)
+        context.draw(Text(label).font(.system(size: 10, weight: isSelected ? .black : .bold)).foregroundColor(color),
+                     at: CGPoint(x: mid.x + perp.x * 9, y: mid.y + perp.y * 9 - 2), anchor: .center)
+    }
+
+    /// Draws the patterning ghost preview + instance-count pills (MAS-113).
+    private func drawPatterningGhost(size: CGSize, modelBounds: CGRect, context: inout GraphicsContext) {
+        let selected = state.entities.filter { state.selectedHandles.contains($0.handle) }
+        guard !selected.isEmpty, let bbox = state.selectionBBox else { return }
+        let ghost = Color.accent.opacity(0.55)
+        let dashed = StrokeStyle(lineWidth: 1.0, dash: [4, 3])
+
+        func drawGhostInstance(translate: CGSize, rotate: Double, pivotScreen: CGPoint?) {
+            context.drawLayer { ctx in
+                ctx.translateBy(x: translate.width, y: translate.height)
+                if rotate != 0, let ps = pivotScreen {
+                    ctx.translateBy(x: ps.x, y: ps.y)
+                    ctx.rotate(by: Angle(degrees: rotate))
+                    ctx.translateBy(x: -ps.x, y: -ps.y)
+                }
+                for ent in selected {
+                    drawEntity(ent, baseColor: ghost, strokeColor: ghost, strokeWidth: 1.0,
+                               size: size, modelBounds: modelBounds, context: &ctx)
+                }
+            }
+        }
+
+        if state.patternMode == "rectangular" {
+            let nx = max(1, state.patternCountX), ny = max(1, state.patternCountY)
+            let sx = state.patternSpacingX * Double(state.canvasScale)
+            // Screen Y is inverted relative to model Y, so a +Y model step moves up.
+            let sy = -state.patternSpacingY * Double(state.canvasScale)
+            for i in 0..<nx {
+                for j in 0..<ny {
+                    if i == 0 && j == 0 { continue }
+                    drawGhostInstance(translate: CGSize(width: Double(i) * sx, height: Double(j) * sy),
+                                      rotate: 0, pivotScreen: nil)
+                }
+            }
+            // Count pill near the far corner.
+            let corner = toScreen(dx: bbox.maxX, dy: bbox.maxY, size: size, bounds: modelBounds)
+            context.draw(Text("\(nx) × \(ny)").font(.system(size: 11, weight: .bold)).foregroundColor(Color.accent),
+                         at: CGPoint(x: corner.x + Double(nx) * sx + 12, y: corner.y + Double(ny) * sy - 8), anchor: .leading)
+        } else {
+            let count = max(2, state.patternCircCount)
+            let pivot = state.patternPivotModel ?? CGPoint(x: bbox.midX, y: bbox.midY)
+            let pivotScreen = toScreen(dx: Double(pivot.x), dy: Double(pivot.y), size: size, bounds: modelBounds)
+            let full = abs(state.patternCircAngle.truncatingRemainder(dividingBy: 360.0)) < 1e-6 && abs(state.patternCircAngle) >= 1e-6
+            let denom = full ? Double(count) : Double(max(1, count - 1))
+            let step = state.patternCircAngle / denom
+            for k in 1..<count {
+                // Model CCW (+angle) maps to screen CW under the flipped Y, which is
+                // exactly what context.rotate(by: +angle) does — so match the sign.
+                drawGhostInstance(translate: .zero, rotate: step * Double(k), pivotScreen: pivotScreen)
+            }
+            // Pivot ring guide + count pill.
+            var ring = SwiftUI.Path()
+            let r = hypot(toScreen(dx: bbox.maxX, dy: bbox.maxY, size: size, bounds: modelBounds).x - pivotScreen.x,
+                          toScreen(dx: bbox.maxX, dy: bbox.maxY, size: size, bounds: modelBounds).y - pivotScreen.y)
+            ring.addEllipse(in: CGRect(x: pivotScreen.x - r, y: pivotScreen.y - r, width: r * 2, height: r * 2))
+            context.stroke(ring, with: .color(Color.accent.opacity(0.3)), style: dashed)
+            context.draw(Text("×\(count)").font(.system(size: 11, weight: .bold)).foregroundColor(Color.accent),
+                         at: CGPoint(x: pivotScreen.x, y: pivotScreen.y - r - 12), anchor: .center)
+        }
+    }
+
+    /// Vertices of a regular polygon (MAS-118): `sides` points on a circle of
+    /// `radius` about `center`, with the first vertex at angle `rotation`.
+    private func polygonPoints(center: CGPoint, radius: Double, rotation: Double, sides: Int) -> [CGPoint] {
+        let n = max(3, min(64, sides))
+        guard radius > 1e-6 else { return [] }
+        return (0..<n).map { i in
+            let a = rotation + Double(i) * (2.0 * Double.pi / Double(n))
+            return CGPoint(x: center.x + CGFloat(radius * cos(a)), y: center.y + CGFloat(radius * sin(a)))
+        }
+    }
+
+    /// Draws a small solid arrowhead at `tip` pointing from `from` → `tip`.
+    private func drawArrowhead(at tip: CGPoint, towards from: CGPoint, color: Color, context: inout GraphicsContext) {
+        let dx = tip.x - from.x, dy = tip.y - from.y
+        let len = max(hypot(dx, dy), 0.0001)
+        let ux = dx / len, uy = dy / len
+        let size: CGFloat = 7.0, wide: CGFloat = 2.6
+        let base = CGPoint(x: tip.x - ux * size, y: tip.y - uy * size)
+        let perp = CGPoint(x: -uy, y: ux)
+        var head = SwiftUI.Path()
+        head.move(to: tip)
+        head.addLine(to: CGPoint(x: base.x + perp.x * wide, y: base.y + perp.y * wide))
+        head.addLine(to: CGPoint(x: base.x - perp.x * wide, y: base.y - perp.y * wide))
+        head.closeSubpath()
+        context.fill(head, with: .color(color))
     }
 }
 
@@ -3751,11 +4326,18 @@ extension View {
                 if isHovered { NSCursor.openHand.set() }
                 else { NSCursor.arrow.set() }
             }
-        case .select, .move, .offset, .addHoles, .cleanup, .measure, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning:
+        case .select, .move, .offset, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning:
             return self.onHover { isHovered in
                 if isHovered { NSCursor.crosshair.set() }
                 else { NSCursor.arrow.set() }
             }
         }
+    }
+
+    /// Conditionally applies a modifier — used so the dimension field only blocks
+    /// letters for numeric (auto) dimensions, not formula-capable ones.
+    @ViewBuilder
+    func ifCondition<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition { transform(self) } else { self }
     }
 }

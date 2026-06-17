@@ -19,6 +19,17 @@ enum ToolbarItemKind: Equatable {
     case duplicate
 }
 
+/// Functional zone of a main-toolbar item (MAS-117). Items are grouped into these
+/// zones and a thin divider is drawn between zones in the sidebar.
+enum ToolbarZone: Int, Comparable {
+    case selection = 0   // Select, Move, Pan
+    case modify = 1      // Offset, Holes, Cleanup, Trim
+    case precision = 2   // Measure, Fillet, Chamfer
+    case creation = 3    // Shapes, Patterning, Paper
+
+    static func < (l: ToolbarZone, r: ToolbarZone) -> Bool { l.rawValue < r.rawValue }
+}
+
 /// Static metadata for one draggable toolbar item.
 struct ToolbarItemDef: Identifiable, Equatable {
     let id: String
@@ -28,33 +39,38 @@ struct ToolbarItemDef: Identifiable, Equatable {
     /// into Shapes. Everything else is barred from the Shapes container (MAS-99).
     let shapesOrigin: Bool
     let kind: ToolbarItemKind
+    /// Functional zone for divider grouping in the main sidebar (MAS-117).
+    var zone: ToolbarZone = .modify
 }
 
 /// The registry of every organizable toolbar item, keyed by a stable id.
 enum ToolbarRegistry {
     static let all: [ToolbarItemDef] = [
-        // — Main tools —
-        .init(id: "select",       title: "Select",        icon: "cursorarrow",                                    shapesOrigin: false, kind: .tool(.select)),
-        .init(id: "move",         title: "Move",          icon: "arrow.up.and.down.and.arrow.left.and.right",     shapesOrigin: false, kind: .tool(.move)),
-        .init(id: "pan",          title: "Pan",           icon: "hand.raised",                                    shapesOrigin: false, kind: .tool(.pan)),
-        .init(id: "offset",       title: "Offset",        icon: "arrow.up.and.down",                              shapesOrigin: false, kind: .tool(.offset)),
-        .init(id: "addHoles",     title: "Add Holes",     icon: "circle.dashed",                                  shapesOrigin: false, kind: .tool(.addHoles)),
-        .init(id: "cleanup",      title: "Cleanup",       icon: "sparkles",                                       shapesOrigin: false, kind: .tool(.cleanup)),
-        .init(id: "measure",      title: "Measure",       icon: "ruler",                                          shapesOrigin: false, kind: .tool(.measure)),
-        .init(id: "fillet",       title: "Fillet",        icon: "square",                                         shapesOrigin: false, kind: .tool(.fillet)),
-        .init(id: "chamfer",      title: "Chamfer",       icon: "square",                                         shapesOrigin: false, kind: .tool(.chamfer)),
-        .init(id: "paperFolding", title: "Paper Folding", icon: "scissors",                                       shapesOrigin: false, kind: .tool(.paperFolding)),
-        .init(id: "patterning",   title: "Patterning",    icon: "square.grid.3x3",                                shapesOrigin: false, kind: .tool(.patterning)),
+        // — Main tools — (zones drive the MAS-117 divider grouping)
+        .init(id: "select",       title: "Select",        icon: "cursorarrow",                                    shapesOrigin: false, kind: .tool(.select),       zone: .selection),
+        .init(id: "move",         title: "Move",          icon: "arrow.up.and.down.and.arrow.left.and.right",     shapesOrigin: false, kind: .tool(.move),         zone: .selection),
+        .init(id: "pan",          title: "Pan",           icon: "hand.raised",                                    shapesOrigin: false, kind: .tool(.pan),          zone: .selection),
+        .init(id: "scale",        title: "Scale",         icon: "arrow.up.left.and.arrow.down.right",             shapesOrigin: false, kind: .tool(.scale),        zone: .selection),
+        .init(id: "offset",       title: "Offset",        icon: "arrow.up.and.down",                              shapesOrigin: false, kind: .tool(.offset),       zone: .modify),
+        .init(id: "addHoles",     title: "Add Holes",     icon: "circle.dashed",                                  shapesOrigin: false, kind: .tool(.addHoles),     zone: .modify),
+        .init(id: "cleanup",      title: "Cleanup",       icon: "sparkles",                                       shapesOrigin: false, kind: .tool(.cleanup),      zone: .modify),
+        .init(id: "trim",         title: "Trim",          icon: "scissors.badge.ellipsis",                        shapesOrigin: false, kind: .tool(.trim),         zone: .modify),
+        .init(id: "measure",      title: "Measure",       icon: "ruler",                                          shapesOrigin: false, kind: .tool(.measure),      zone: .precision),
+        .init(id: "dimension",    title: "Dimension",     icon: "ruler.fill",                                     shapesOrigin: false, kind: .tool(.dimension),    zone: .precision),
+        .init(id: "fillet",       title: "Fillet",        icon: "square",                                         shapesOrigin: false, kind: .tool(.fillet),       zone: .precision),
+        .init(id: "chamfer",      title: "Chamfer",       icon: "square",                                         shapesOrigin: false, kind: .tool(.chamfer),      zone: .precision),
+        .init(id: "patterning",   title: "Patterning",    icon: "square.grid.3x3",                                shapesOrigin: false, kind: .tool(.patterning),   zone: .creation),
+        .init(id: "paperFolding", title: "Paper Folding", icon: "scissors",                                       shapesOrigin: false, kind: .tool(.paperFolding), zone: .creation),
         // — Shapes flyout —
         .init(id: "sketchLine",      title: "Line",      icon: "line.diagonal",          shapesOrigin: true, kind: .tool(.sketchLine)),
         .init(id: "sketchCircle",    title: "Circle",    icon: "circle",                 shapesOrigin: true, kind: .tool(.sketchCircle)),
         .init(id: "sketchRectangle", title: "Rectangle", icon: "rectangle",              shapesOrigin: true, kind: .tool(.sketchRectangle)),
         .init(id: "sketchText",      title: "Text",      icon: "character.cursor.ibeam", shapesOrigin: true, kind: .tool(.sketchText)),
+        .init(id: "sketchPolygon",   title: "Polygon",   icon: "hexagon",                shapesOrigin: true, kind: .tool(.sketchPolygon)),
         .init(id: "pen",             title: "Pen",       icon: "pencil.tip",             shapesOrigin: true, kind: .tool(.pen)),
-        // — Extra / "More tools" —
+        // — Utilities flyout ("Other Tools" •••) —
         .init(id: "mirror",    title: "Mirror",    icon: "flip.horizontal",                                          shapesOrigin: false, kind: .tool(.mirror)),
         .init(id: "convert",   title: "Convert",   icon: "scribble",                                                 shapesOrigin: false, kind: .tool(.convertLines)),
-        .init(id: "trim",      title: "Trim",      icon: "scissors.badge.ellipsis",                                  shapesOrigin: false, kind: .tool(.trim)),
         .init(id: "flipH",     title: "Flip H",    icon: "arrow.left.and.right.righttriangle.left.righttriangle.right", shapesOrigin: false, kind: .flipH),
         .init(id: "flipV",     title: "Flip V",    icon: "arrow.up.and.down.righttriangle.up.righttriangle.down",      shapesOrigin: false, kind: .flipV),
         .init(id: "duplicate", title: "Duplicate", icon: "plus.square.on.square",                                     shapesOrigin: false, kind: .duplicate),
@@ -64,9 +80,9 @@ enum ToolbarRegistry {
 
     static func def(_ id: String) -> ToolbarItemDef? { byId[id] }
 
-    static let defaultMain   = ["select", "move", "pan", "offset", "addHoles", "cleanup", "measure", "fillet", "chamfer", "paperFolding", "patterning"]
-    static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchText", "pen"]
-    static let defaultExtra  = ["mirror", "convert", "trim", "flipH", "flipV", "duplicate"]
+    static let defaultMain   = ["select", "move", "pan", "scale", "offset", "addHoles", "cleanup", "trim", "measure", "dimension", "fillet", "chamfer", "patterning", "paperFolding"]
+    static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchPolygon", "sketchText", "pen"]
+    static let defaultExtra  = ["mirror", "convert", "flipH", "flipV", "duplicate"]
 }
 
 /// Persisted, user-rearrangeable toolbar layout (MAS-99). Holds the ordered item
@@ -77,7 +93,9 @@ enum ToolbarRegistry {
 final class ToolbarLayout {
     static let shared = ToolbarLayout()
 
-    private static let key = "toolbarLayout.v1"
+    // v2 — re-baselined into functional zones with Trim in Modifications and the
+    // Utilities flyout consolidated (MAS-117).
+    private static let key = "toolbarLayout.v3"
 
     var main: [String]
     var extra: [String]

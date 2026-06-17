@@ -216,5 +216,3 @@ Issues and ideas are welcome via the tracker.
 ## Credits
 
 Built with ❤️ by **Mason Chen**.
-
-> *No license file is included yet — add one before accepting outside contributions or redistribution.*

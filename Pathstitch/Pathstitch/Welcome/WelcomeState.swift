@@ -15,6 +15,34 @@ struct RecentFile: Identifiable, Equatable {
     }
 }
 
+/// Persists which recent projects the user has explicitly removed (MAS-139).
+/// The Spotlight query and AppKit's recent-documents list would otherwise keep
+/// re-surfacing a removed file, so removal is recorded here and filtered out on
+/// every refresh. Re-opening a file un-hides it. Shared with `WindowManager`.
+enum RecentsHiding {
+    private static let key = "welcome.hiddenRecentPaths.v1"
+
+    static func hidden() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+
+    static func hide(_ path: String) {
+        var set = hidden()
+        set.insert(path)
+        UserDefaults.standard.set(Array(set), forKey: key)
+    }
+
+    static func unhide(_ path: String) {
+        var set = hidden()
+        guard set.remove(path) != nil else { return }
+        if set.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(Array(set), forKey: key)
+        }
+    }
+}
+
 @Observable
 class WelcomeState {
     var recentFiles: [RecentFile] = []
@@ -107,7 +135,9 @@ class WelcomeState {
     }
     
     private func updateList(with urls: [URL]) {
-        let targetURLs = Array(urls.prefix(20))
+        // Drop any projects the user explicitly removed from recents (MAS-139).
+        let hidden = RecentsHiding.hidden()
+        let targetURLs = Array(urls.filter { !hidden.contains($0.standardized.path) }.prefix(20))
         var newFiles: [RecentFile] = []
         
         for url in targetURLs {
@@ -183,6 +213,16 @@ class WelcomeState {
         let file = recentFiles[idx]
         if file.isAvailable {
             WindowManager.shared.openDocument(url: file.url)
+        }
+    }
+
+    /// Removes a project from the recents list and remembers the removal so it
+    /// doesn't reappear on the next Spotlight/AppKit refresh (MAS-139).
+    func removeFromRecents(_ file: RecentFile) {
+        RecentsHiding.hide(file.url.standardized.path)
+        recentFiles.removeAll { $0.url.standardized.path == file.url.standardized.path }
+        if let sel = selectedIndex {
+            selectedIndex = recentFiles.isEmpty ? nil : min(sel, recentFiles.count - 1)
         }
     }
 }

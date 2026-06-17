@@ -237,10 +237,15 @@ struct ContentView: View {
     @State private var isMoreToolsHovered = false
     @State private var showMoreTools = false
     @State private var offsetMode = "curve" // "curve" or "bbox"
+    @State private var activeToolOptionsCollapsed = false   // MAS-114
     @State private var customLayerName: String = ""
     @State private var selectedExistingLayer: String = ""
     @State private var rotationAngle: Double = 90.0
     @State private var leftSidebarTopHeight: CGFloat = 350
+    // Resizable panel widths (MAS-131). Right inspector drag-resizes; left tool
+    // sidebar widens in whole-column steps.
+    @State private var rightPanelWidth: CGFloat = 240
+    @State private var leftToolbarWidth: CGFloat = 48
     // Active-tool option panels open by default ("full and open on the get-go", MAS-60).
     @State private var isSelectionExpanded = true
     @State private var isHolesSewingExpanded = true
@@ -342,6 +347,7 @@ struct ContentView: View {
         .onChange(of: state.filletContinuity) { _ in state.refreshActiveCornerShape() }
         .onChange(of: state.offsetDistance) { _ in state.updateLivePreview() }
         .onChange(of: state.offsetSide) { _ in state.updateLivePreview() }
+        .onChange(of: state.offsetConstruction) { _ in state.updateLivePreview() }
         .onChange(of: state.holeOffsetDistance) { _ in state.updateLivePreview() }
         .onChange(of: state.holeDiameter) { _ in state.updateLivePreview() }
         .onChange(of: state.holeSpacing) { _ in state.updateLivePreview() }
@@ -851,6 +857,11 @@ extension ContentView {
                                 .font(PlasticityFont.body)
                                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
                                 .help("Offset distance in millimeters")
+                                // Enter commits and exits the single-action Offset
+                                // tool, returning to Select (MAS-111).
+                                .onSubmit {
+                                    if !state.selectedHandles.isEmpty { state.applyOffset(exitAfterApply: true) }
+                                }
                             
                             Text("Side")
                                 .font(PlasticityFont.label)
@@ -862,13 +873,47 @@ extension ContentView {
                             }
                             .pickerStyle(SegmentedPickerStyle())
                             .help("Select side to offset: left or right")
-                            
-                            Button("Apply Offset") {
+
+                            // Flip the offset to the opposite side (MAS-109).
+                            Button {
+                                state.flipOffsetDirection()
+                            } label: {
+                                Label("Flip Direction", systemImage: "arrow.left.arrow.right")
+                            }
+                            .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                            .help("Invert the positive/negative side of the offset")
+
+                            Text("Geometry Type")
+                                .font(PlasticityFont.label)
+                                .foregroundColor(Color.text_secondary)
+                            Picker("", selection: $state.offsetConstruction) {
+                                Text("Normal").tag(false)
+                                Text("Construction").tag(true)
+                            }
+                            .pickerStyle(SegmentedPickerStyle())
+                            .help("Normal — solid sketch lines. Construction — dashed reference lines.")
+
+                            HStack(spacing: 8) {
+                                Button("OK") {
+                                    state.applyOffset(exitAfterApply: true)
+                                }
+                                .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
+                                .disabled(state.selectedHandles.isEmpty)
+                                .help("Commit the offset and exit the tool")
+
+                                Button("Cancel") {
+                                    state.cancelOffsetTool()
+                                }
+                                .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                                .help("Drop the tool without generating geometry (Esc)")
+                            }
+
+                            Button("Apply (keep tool)") {
                                 state.applyOffset()
                             }
                             .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
                             .disabled(state.selectedHandles.isEmpty)
-                            .help("Apply parallel curve offset to the selected path entities")
+                            .help("Commit the offset but stay in the tool to offset again")
                         } else {
                             Text("Offset Distance (mm)")
                                 .font(PlasticityFont.label)
@@ -977,7 +1022,7 @@ extension ContentView {
                             .font(PlasticityFont.label)
                             .foregroundColor(Color.accent)
                         if state.isLearnModeEnabled {
-                            Text("Click and drag on the canvas to draw a line segment. Dimensions are automatically measured and saved.")
+                            Text("Drag to draw.")
                                 .font(PlasticityFont.body)
                                 .foregroundColor(Color.text_secondary)
                         }
@@ -988,7 +1033,7 @@ extension ContentView {
                             .font(PlasticityFont.label)
                             .foregroundColor(Color.accent)
                         if state.isLearnModeEnabled {
-                            Text("Click at center and drag outward to draw a circle. Radius is automatically measured and saved.")
+                            Text("Drag from the center outward.")
                                 .font(PlasticityFont.body)
                                 .foregroundColor(Color.text_secondary)
                         }
@@ -1013,7 +1058,7 @@ extension ContentView {
                             .help("Fillet radius in millimeters for rounding sketched rectangle corners")
                         
                         if state.isLearnModeEnabled {
-                            Text("Click and drag corner-to-corner. Corners are filleted using the radius specified above.")
+                            Text("Drag corner-to-corner.")
                                 .font(PlasticityFont.body)
                                 .foregroundColor(Color.text_secondary)
                         }
@@ -1024,7 +1069,7 @@ extension ContentView {
                             .font(PlasticityFont.label)
                             .foregroundColor(Color.accent)
                         if state.isLearnModeEnabled {
-                            Text("Click and drag a bounding box on the canvas. When you release, you can type the text to place inside the box.")
+                            Text("Drag a box, then type.")
                                 .font(PlasticityFont.body)
                                 .foregroundColor(Color.text_secondary)
                         }
@@ -1289,6 +1334,47 @@ extension ContentView {
                             .padding(.leading, 8)
                         }
                         
+                        Divider().background(Color.border_subtle)
+
+                        // Proximity Avoidance / Keep-Out (MAS-120 Phase 1).
+                        Text("KEEP-OUT AVOIDANCE")
+                            .font(PlasticityFont.label).fontWeight(.bold).foregroundColor(Color.accent)
+                        Toggle("Avoid Keep-Out Zones", isOn: $state.holeEnableAvoidance)
+                            .toggleStyle(.checkbox)
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_primary)
+                            .help("Suppress stitch holes within the clearance radius of tagged hardware/keep-out geometry")
+                        if state.holeEnableAvoidance {
+                            HStack {
+                                Text("  Clearance (mm)")
+                                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                                Spacer()
+                                TextField("Clearance", value: $state.holeAvoidanceRadius, format: .number)
+                                    .textFieldStyle(PlainTextFieldStyle())
+                                    .padding(4).frame(width: 60)
+                                    .background(Color.bg_input).cornerRadius(4)
+                                    .foregroundColor(Color.text_primary)
+                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                            }
+                            .padding(.leading, 8)
+                            HStack {
+                                Text("  Tagged: \(state.sewingKeepoutHandles.count)")
+                                    .font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                                Spacer()
+                                Button("Tag Selected") {
+                                    state.sewingKeepoutHandles.formUnion(state.selectedHandles)
+                                }
+                                .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
+                                .disabled(state.selectedHandles.isEmpty)
+                                .help("Mark the selected geometry as keep-out elements")
+                                if !state.sewingKeepoutHandles.isEmpty {
+                                    Button("Clear") { state.sewingKeepoutHandles.removeAll() }
+                                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                                }
+                            }
+                            .padding(.leading, 8)
+                        }
+
                         Button("Apply Sewing Holes") {
                             state.applySewingHoles()
                         }
@@ -1371,7 +1457,7 @@ extension ContentView {
 
             Text(activeCorners == 0
                  ? "Select a shape (or click its corners) to \(isChamfer ? "chamfer" : "fillet")."
-                 : "\(activeCorners) corner\(activeCorners == 1 ? "" : "s") — each is individual. Drag the corner arrow or edit the active corner's value.")
+                 : "\(activeCorners) corner\(activeCorners == 1 ? "" : "s") selected — they share this radius. Drag the corner arrow or edit the value.")
                 .font(PlasticityFont.label)
                 .foregroundColor(Color.text_muted)
         }
@@ -1544,124 +1630,87 @@ extension ContentView {
             .help("Toggle Patterning (grid / path duplicate) settings panel")
             
             if isPatterningExpanded {
-                    VStack(alignment: .leading, spacing: 10) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("GRID PATTERN")
-                                .font(PlasticityFont.label)
-                                .fontWeight(.bold)
-                                .foregroundColor(Color.accent)
-                            
-                            HStack {
-                                Text("Columns / Rows")
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.text_secondary)
-                                Spacer()
-                                TextField("Cols", value: $gridCols, format: .number)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding(4)
-                                    .frame(width: 45)
-                                    .background(Color.bg_input)
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                                    .help("Number of columns in the grid pattern")
-                                Text("x")
-                                TextField("Rows", value: $gridRows, format: .number)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding(4)
-                                    .frame(width: 45)
-                                    .background(Color.bg_input)
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                                    .help("Number of rows in the grid pattern")
-                            }
-                            
-                            HStack {
-                                Text("Spacing Col / Row")
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.text_secondary)
-                                Spacer()
-                                TextField("Col Sp", value: $gridColSpacing, format: .number)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding(4)
-                                    .frame(width: 50)
-                                    .background(Color.bg_input)
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                                    .help("Spacing between columns in millimeters")
-                                Text("/")
-                                TextField("Row Sp", value: $gridRowSpacing, format: .number)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding(4)
-                                    .frame(width: 50)
-                                    .background(Color.bg_input)
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                                    .help("Spacing between rows in millimeters")
-                            }
-                            
-                            Button("Apply Grid Pattern") {
-                                state.applyPatternGrid(columns: gridCols, rows: gridRows, colSpacing: gridColSpacing, rowSpacing: gridRowSpacing)
-                            }
-                            .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
-                            .disabled(state.selectedHandles.isEmpty)
-                            .help("Duplicate selected shapes into a 2D grid pattern")
-                        }
-                        
-                        Divider().background(Color.border_subtle)
-                        
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("PATH PATTERN")
-                                .font(PlasticityFont.label)
-                                .fontWeight(.bold)
-                                .foregroundColor(Color.accent)
-                            
-                            HStack {
-                                Text("Path Handle")
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.text_secondary)
-                                Spacer()
-                                TextField("Handle", text: $pathHandle)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding(4)
-                                    .frame(width: 80)
-                                    .background(Color.bg_input)
-                                    .cornerRadius(4)
-                                    .foregroundColor(Color.text_primary)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                                    .help("Handle identifier of the path to duplicate shapes along")
-                            }
-                            
-                            HStack {
-                                Text("Spacing (mm)")
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.text_secondary)
-                                Spacer()
-                                TextField("Spacing", value: $pathPatternSpacing, format: .number)
-                                    .textFieldStyle(PlainTextFieldStyle())
-                                    .padding(4)
-                                    .frame(width: 80)
-                                    .background(Color.bg_input)
-                                    .cornerRadius(4)
-                                    .foregroundColor(Color.text_primary)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                                    .help("Spacing interval in millimeters between duplicated shapes along the path")
-                            }
-                            
-                            Button("Apply Path Pattern") {
-                                state.applyPatternPath(pathHandle: pathHandle, spacing: pathPatternSpacing)
-                            }
-                            .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty && !pathHandle.isEmpty))
-                            .disabled(state.selectedHandles.isEmpty || pathHandle.isEmpty)
-                            .help("Duplicate selected shapes along the specified path entity")
-                        }
+                VStack(alignment: .leading, spacing: 10) {
+                    if state.selectedHandles.isEmpty {
+                        Text("Select geometry to pattern.")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
                     }
-                    .padding(.vertical, 4)
+                    Picker("", selection: $state.patternMode) {
+                        Text("Rectangular").tag("rectangular")
+                        Text("Circular").tag("circular")
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+
+                    if state.patternMode == "rectangular" {
+                        Text("Drag the on-canvas arrows, or set values:")
+                            .font(PlasticityFont.label).foregroundColor(Color.text_muted)
+                        HStack {
+                            Text("Count X / Y").font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                            Spacer()
+                            patternField(Binding(get: { Double(state.patternCountX) }, set: { state.patternCountX = max(1, Int($0)) }))
+                            Text("×")
+                            patternField(Binding(get: { Double(state.patternCountY) }, set: { state.patternCountY = max(1, Int($0)) }))
+                        }
+                        HStack {
+                            Text("Spacing X / Y").font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                            Spacer()
+                            patternField($state.patternSpacingX)
+                            Text("/")
+                            patternField($state.patternSpacingY)
+                        }
+                        Button("Apply Pattern") {
+                            state.applyPatternGrid(columns: state.patternCountX, rows: state.patternCountY,
+                                                   colSpacing: state.patternSpacingX, rowSpacing: state.patternSpacingY)
+                        }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
+                        .disabled(state.selectedHandles.isEmpty)
+                    } else {
+                        HStack {
+                            Text("Count").font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                            Spacer()
+                            patternField(Binding(get: { Double(state.patternCircCount) }, set: { state.patternCircCount = max(2, Int($0)) }))
+                        }
+                        HStack {
+                            Text("Total Angle (°)").font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                            Spacer()
+                            patternField($state.patternCircAngle)
+                        }
+                        Button {
+                            state.pickingPatternPivot = true
+                        } label: {
+                            Label(state.patternPivotModel == nil ? "Pick Center…" : "Re-pick Center…", systemImage: "scope")
+                        }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                        if state.pickingPatternPivot {
+                            Text("Click a center point on the canvas…")
+                                .font(PlasticityFont.label).foregroundColor(Color.accent)
+                        }
+                        Button("Apply Pattern") {
+                            state.applyPatternCircular(count: state.patternCircCount, angle: state.patternCircAngle)
+                        }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
+                        .disabled(state.selectedHandles.isEmpty)
+                    }
                 }
+                .padding(.vertical, 4)
+            }
             }
             .padding(8)
             .background(Color.bg_input.opacity(0.4))
             .cornerRadius(4)
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_subtle, lineWidth: 1))
+    }
+
+    /// Compact numeric field used across the patterning panel.
+    private func patternField(_ value: Binding<Double>) -> some View {
+        TextField("", value: value, format: .number)
+            .textFieldStyle(PlainTextFieldStyle())
+            .padding(4)
+            .frame(width: 48)
+            .background(Color.bg_input)
+            .cornerRadius(4)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -2193,6 +2242,57 @@ extension ContentView {
 }
 
 extension ContentView {
+    /// True when the active tool / selection actually has options to show, so the
+    /// collapsible card only appears when there's something in it (MAS-114).
+    private var hasActiveToolOptions: Bool {
+        switch state.currentTool {
+        case .offset, .cleanup, .addHoles, .sketchRectangle, .sketchText,
+             .sketchLine, .sketchCircle, .fillet, .chamfer, .paperFolding,
+             .patterning, .move, .convertLines, .mirror, .select, .dimension, .scale,
+             .sketchPolygon:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Active tool options wrapped in their own collapsible, bordered sub-boundary
+    /// (MAS-114). A header with a chevron toggles visibility; the body is the
+    /// existing per-tool option views.
+    @ViewBuilder
+    var activeToolOptionsPanel: some View {
+        if hasActiveToolOptions {
+            VStack(alignment: .leading, spacing: 0) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) { activeToolOptionsCollapsed.toggle() }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: activeToolOptionsCollapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("TOOL OPTIONS")
+                            .font(PlasticityFont.header)
+                            .tracking(0.5)
+                        Spacer()
+                    }
+                    .foregroundColor(Color.text_secondary)
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(PlainButtonStyle())
+
+                if !activeToolOptionsCollapsed {
+                    Divider().background(Color.border_subtle)
+                    activeToolOptions
+                        .padding(10)
+                }
+            }
+            .background(Color.bg_input.opacity(0.2))
+            .cornerRadius(6)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.border_subtle, lineWidth: 1))
+        }
+    }
+
     @ViewBuilder
     private var activeToolOptions: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2218,6 +2318,12 @@ extension ContentView {
                 moveSection
             } else if state.currentTool == .convertLines {
                 convertLinesSection
+            } else if state.currentTool == .dimension {
+                dimensionToolSection
+            } else if state.currentTool == .scale {
+                scaleToolSection
+            } else if state.currentTool == .sketchPolygon {
+                polygonToolSection
             } else if state.currentTool == .mirror {
                 mirrorSection
             } else if state.currentTool == .select {
@@ -2226,6 +2332,156 @@ extension ContentView {
                 // Editing an existing converted-line group inline (MAS-58).
                 if state.selectedConvertedGroupId != nil {
                     convertLinesSection
+                }
+            }
+        }
+    }
+
+    /// POLYGON tool options (MAS-118): the sides count for the next polygon.
+    private var polygonToolSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "hexagon").foregroundColor(Color.accent)
+                Text("POLYGON")
+                    .font(PlasticityFont.header)
+                    .foregroundColor(Color.text_primary).tracking(0.5)
+                Spacer()
+            }
+            Text("Drag from the center to set radius and rotation.")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+
+            HStack {
+                Text("Sides")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_secondary)
+                Spacer()
+                Stepper(value: Binding(
+                    get: { state.polygonSides },
+                    set: { state.polygonSides = max(3, min(64, $0)) }
+                ), in: 3...64) {
+                    Text("\(state.polygonSides)")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundColor(Color.text_primary)
+                        .frame(minWidth: 24)
+                }
+            }
+        }
+    }
+
+    /// SCALE tool options (MAS-128): pivot mode, factor entry, and a scale-point
+    /// picker. Drag the on-canvas handle for a live scale, or type an exact factor.
+    private var scaleToolSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "arrow.up.left.and.arrow.down.right").foregroundColor(Color.accent)
+                Text("SCALE")
+                    .font(PlasticityFont.header)
+                    .foregroundColor(Color.text_primary).tracking(0.5)
+                Spacer()
+            }
+            Text("Select geometry, then drag the handle or enter a factor.")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+
+            Text("Scale From")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+            Picker("", selection: Binding(
+                get: { state.scaleFromCenter },
+                set: { useCenter in
+                    state.scaleFromCenter = useCenter
+                    if useCenter { state.scalePivotModel = nil; state.pickingScalePivot = false }
+                }
+            )) {
+                Text("Center").tag(true)
+                Text("Point").tag(false)
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .help("Scale around the selection's own center, or a point you pick.")
+
+            if !state.scaleFromCenter {
+                Button {
+                    state.pickingScalePivot = true
+                } label: {
+                    Label(state.scalePivotModel == nil ? "Pick Scale Point…" : "Re-pick Scale Point…",
+                          systemImage: "scope")
+                }
+                .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                .help("Click a point on the canvas to scale around")
+                if state.pickingScalePivot {
+                    Text("Click a point on the canvas…")
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.accent)
+                }
+            }
+
+            Text("Factor")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+            TextField("1.0", value: $state.scaleFactor, format: .number)
+                .textFieldStyle(PlainTextFieldStyle())
+                .padding(6)
+                .background(Color.bg_input)
+                .cornerRadius(4)
+                .foregroundColor(Color.text_primary)
+                .font(PlasticityFont.body)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                // Enter applies the exact factor (MAS-111).
+                .onSubmit {
+                    if !state.selectedHandles.isEmpty, state.scaleFactor > 0 {
+                        state.scaleSelected(factor: state.scaleFactor)
+                    }
+                }
+
+            Button("Apply Scale") {
+                if !state.selectedHandles.isEmpty, state.scaleFactor > 0 {
+                    state.scaleSelected(factor: state.scaleFactor)
+                }
+            }
+            .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty && state.scaleFactor > 0))
+            .disabled(state.selectedHandles.isEmpty || state.scaleFactor <= 0)
+        }
+    }
+
+    /// DIMENSION tool options (MAS-110): a short hint plus the live sketch
+    /// parameter table so the user can reference variables in formulas.
+    private var dimensionToolSection: some View {
+        let params = state.dimensionEngine.params
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "ruler.fill").foregroundColor(Color.accent)
+                Text("DIMENSION")
+                    .font(PlasticityFont.header)
+                    .foregroundColor(Color.text_primary).tracking(0.5)
+                Spacer()
+            }
+            Text("Click a line for length, a circle for radius, or two points for a distance. Type a value or formula and press Enter.")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+            Text("Formulas: 20*2, d1*0.5+10, sqrt(d2^2+d3^2). Units: 50, 2.54cm, 1 inch.")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_muted)
+
+            if !params.isEmpty {
+                Divider().background(Color.border_subtle)
+                Text("PARAMETERS")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_secondary).tracking(0.5)
+                ForEach(params) { p in
+                    HStack(spacing: 6) {
+                        Text(p.id)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(p.driven ? Color.text_muted : Color.accent)
+                        Text(p.isFormula ? "= \(p.expression)" : "")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color.text_secondary)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(String(format: p.driven ? "(%.2f)" : "%.2f", p.value))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.text_primary)
+                    }
                 }
             }
         }
@@ -2371,6 +2627,38 @@ extension ContentView {
                     .foregroundColor(Color.text_primary).tracking(0.5)
                 Spacer()
             }
+            // Selection mode (MAS-119): Objects (pick geometry) vs Mirror Line (pick axis).
+            Picker("", selection: $state.mirrorLineMode) {
+                Text("Objects").tag(false)
+                Text("Mirror Line").tag(true)
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .help("Objects: click shapes to mirror.  Mirror Line: click a line (or two points) for the axis.")
+
+            // Objects select box (count + clear).
+            HStack {
+                Text("Objects: \(state.selectedHandles.count)")
+                    .font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                Spacer()
+                if !state.selectedHandles.isEmpty {
+                    Button { state.selectedHandles.removeAll() } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundColor(Color.text_muted)
+                    }.buttonStyle(PlainButtonStyle()).help("Clear objects")
+                }
+            }
+            // Mirror line select box.
+            HStack {
+                Text(state.mirrorAxisEnd != nil ? "Mirror line: set" : "Mirror line: —")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(state.mirrorAxisEnd != nil ? Color.accent : Color.text_secondary)
+                Spacer()
+                if state.mirrorAxisStart != nil {
+                    Button { state.mirrorAxisStart = nil; state.mirrorAxisEnd = nil } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundColor(Color.text_muted)
+                    }.buttonStyle(PlainButtonStyle()).help("Clear mirror line")
+                }
+            }
+
             Toggle("Mirror (flip) copy", isOn: $state.mirrorFlip)
                 .font(PlasticityFont.label)
             Toggle("Keep live link", isOn: $state.mirrorKeepLink)
@@ -2378,12 +2666,13 @@ extension ContentView {
             Text(state.mirrorStageHint)
                 .font(PlasticityFont.label)
                 .foregroundColor(Color.text_secondary)
-            if state.mirrorAxisStart != nil {
-                Button("Confirm Mirror") { state.confirmMirror() }
+            HStack(spacing: 8) {
+                Button("OK") { state.confirmMirror() }
+                    .buttonStyle(PlasticityButtonStyle(isEnabled: state.mirrorAxisEnd != nil && !state.selectedHandles.isEmpty))
+                    .disabled(state.mirrorAxisEnd == nil || state.selectedHandles.isEmpty)
+                Button("Cancel") { state.resetMirrorTool() }
                     .buttonStyle(PlasticityButtonStyle(isEnabled: true))
             }
-            Button("Reset") { state.resetMirrorTool() }
-                .buttonStyle(PlasticityButtonStyle(isEnabled: true))
         }
     }
 }
@@ -2405,11 +2694,29 @@ extension ContentView {
                         .padding(.vertical, 4)
                     
                     if state.activeMode == .twoD {
-                        // Main tools, ordered by the persisted layout. Each one is
-                        // Command-draggable to reorder or move into another group
-                        // (MAS-99); a plain click still just activates it.
-                        ForEach(layout.items(in: .main)) { def in
-                            OrganizableToolButton(def: def, state: state, layout: layout)
+                        // Main tools, grouped into functional zones with dividers
+                        // (MAS-117) and reflowed into N columns as the sidebar is
+                        // widened (MAS-131). Each button is still Command-draggable
+                        // to reorder / move groups (MAS-99).
+                        let mainItems = layout.items(in: .main)
+                        let cols = max(1, Int(leftToolbarWidth / 44))
+                        let gridCols = Array(repeating: GridItem(.fixed(44), spacing: 0), count: cols)
+                        let zones: [ToolbarZone] = [.selection, .modify, .precision, .creation]
+                        ForEach(Array(zones.enumerated()), id: \.element.rawValue) { zi, zone in
+                            let zoneItems = mainItems.filter { $0.zone == zone }
+                            if !zoneItems.isEmpty {
+                                if zi > 0 {
+                                    Divider()
+                                        .background(Color.border_subtle)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 2)
+                                }
+                                LazyVGrid(columns: gridCols, spacing: 0) {
+                                    ForEach(zoneItems) { def in
+                                        OrganizableToolButton(def: def, state: state, layout: layout)
+                                    }
+                                }
+                            }
                         }
 
                         // Shapes — opens a flyout grid of sketch tools (MAS-93). The
@@ -2422,19 +2729,20 @@ extension ContentView {
                         Button(action: {
                             showShapes.toggle()
                         }) {
-                            HStack(spacing: 0) {
-                                Image(systemName: "triangle")
-                                    .font(.system(size: 14))
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 8))
-                                    .padding(.leading, 2)
-                            }
-                            .frame(width: 28, height: 24)
-                            .padding(8)
-                            .contentShape(Rectangle())
+                            Image(systemName: "triangle")
+                                .font(.system(size: 14))
+                                .frame(width: 24, height: 24)
+                                .padding(10)
+                                .overlay(alignment: .bottomTrailing) {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 7, weight: .bold))
+                                        .padding(5)
+                                        .opacity(0.7)
+                                }
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .background(isShapeActive ? Color.bg_selected.opacity(0.6) : (isShapesHovered ? Color.accent.opacity(0.08) : Color.clear))
+                        .background(isShapeActive ? Color.bg_selected : (isShapesHovered ? Color.accent.opacity(0.08) : Color.clear))
                         .foregroundColor(isShapeActive ? Color.accent : (isShapesHovered ? Color.accent_hover : Color.text_secondary))
                         .help("Shapes Sketching  (⌘-drop a shape tool here)")
                         .onHover { hover in
@@ -2451,8 +2759,13 @@ extension ContentView {
                                 .padding(10)
                         }
 
-                        // "More tools" overflow (MAS-66). ⌘-dropping a tool onto the
-                        // ••• icon moves it into the More-tools group (MAS-99).
+                        Divider()
+                            .background(Color.border_subtle)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 2)
+
+                        // "Other Tools" utilities flyout (MAS-66 / MAS-117). ⌘-dropping
+                        // a tool onto the ••• icon moves it into this group (MAS-99).
                         Button(action: { showMoreTools.toggle() }) {
                             Image(systemName: "ellipsis")
                                 .font(.system(size: 14))
@@ -2481,9 +2794,31 @@ extension ContentView {
                 }
             }
         }
-        .frame(width: 48)
+        .frame(width: leftToolbarWidth)
         .background(Color.bg_panel)
         .border(Color.border_subtle, width: 1)
+        .overlay(alignment: .trailing) {
+            // Drag the trailing edge to widen; tools reflow into more columns. The
+            // default 48 is the minimum (can't go narrower) (MAS-131).
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 6)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                }
+                .gesture(
+                    DragGesture()
+                        .onChanged { val in
+                            leftToolbarWidth = min(232, max(48, leftToolbarWidth + val.translation.width))
+                        }
+                        .onEnded { _ in
+                            // Snap to a whole number of 44px columns past the 48 base.
+                            let cols = max(1, Int((leftToolbarWidth + 4) / 44))
+                            leftToolbarWidth = cols <= 1 ? 48 : CGFloat(cols) * 44
+                        }
+                )
+        }
     }
     @ViewBuilder
     private var twoDEditorView: some View {
@@ -2647,25 +2982,45 @@ extension ContentView {
             }
             .frame(maxWidth: .infinity)
             
-            // Right Panel (240px wide, resizable unified sidebar)
-            VStack(alignment: .leading, spacing: 0) {
-                VSplitView(
-                    top: ScrollView {
-                        activeToolOptions
-                            .padding(14)
-                    },
-                    bottom: ScrollView {
-                        layersSection
-                            .padding(14)
-                    },
-                    topHeight: $leftSidebarTopHeight,
-                    minTopHeight: 100,
-                    minBottomHeight: 100
-                )
+            // Right Panel — drag the left edge to resize its width (MAS-131).
+            HStack(spacing: 0) {
+                // Resize grabber on the leading edge.
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 6)
+                    .contentShape(Rectangle())
+                    .overlay(Rectangle().fill(Color.border_subtle).frame(width: 1), alignment: .leading)
+                    .onHover { hovering in
+                        if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture()
+                            .onChanged { val in
+                                // Drag left → wider. Clamp to a sane range; content
+                                // scales to fit, text stays the same size (MAS-131).
+                                rightPanelWidth = min(520, max(200, rightPanelWidth - val.translation.width))
+                            }
+                    )
+
+                VStack(alignment: .leading, spacing: 0) {
+                    VSplitView(
+                        top: ScrollView {
+                            activeToolOptionsPanel
+                                .padding(14)
+                        },
+                        bottom: ScrollView {
+                            layersSection
+                                .padding(14)
+                        },
+                        topHeight: $leftSidebarTopHeight,
+                        minTopHeight: 100,
+                        minBottomHeight: 100
+                    )
+                }
+                .frame(maxWidth: .infinity)
             }
-            .frame(width: 240)
+            .frame(width: rightPanelWidth)
             .background(Color.bg_panel)
-            .border(width: 1, edges: [.leading], color: Color.border_subtle)
         }
     }
 

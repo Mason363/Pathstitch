@@ -329,6 +329,7 @@ def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
     handles = args.get("handles", [])
     distance = float(args.get("distance", 1.0))
     side = args.get("side", "left")
+    construction = bool(args.get("construction", False))
     layer = sanitize_layer_name(args.get("layer", "OFFSET"))
 
     if not input_path or not os.path.exists(input_path):
@@ -341,6 +342,17 @@ def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
 
     if layer not in doc.layers:
         doc.layers.new(layer, dxfattribs={"color": 3})  # Green by default
+
+    # Construction offsets are emitted as dashed reference geometry (MAS-109).
+    base_attribs = {"layer": layer}
+    if construction:
+        if "DASHED" not in doc.linetypes:
+            try:
+                doc.linetypes.add("DASHED", pattern="A,.5,-.25")
+            except Exception:
+                pass
+        base_attribs["linetype"] = "DASHED"
+        base_attribs["color"] = 8  # gray
 
     # Find target entities
     targets = []
@@ -370,7 +382,7 @@ def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 r_offset = r - distance
             if r_offset > 0:
-                new_ent = msp.add_circle(center=(cx, cy), radius=r_offset, dxfattribs={"layer": layer})
+                new_ent = msp.add_circle(center=(cx, cy), radius=r_offset, dxfattribs=dict(base_attribs))
                 new_handles.append(new_ent.dxf.handle)
 
     # For non-circles, snap and merge them first to prevent segment gaps/skipping
@@ -416,7 +428,7 @@ def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
                 coords = coords[:-1]
             if len(coords) < 2:
                 return
-            new_ent = msp.add_lwpolyline(coords, dxfattribs={"layer": layer})
+            new_ent = msp.add_lwpolyline(coords, dxfattribs=dict(base_attribs))
             new_ent.closed = closed
             new_handles.append(new_ent.dxf.handle)
 
@@ -1757,6 +1769,14 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     variable_spacing_min = float(args.get("variable_spacing_min", 4.0))
     variable_spacing_max = float(args.get("variable_spacing_max", 5.0))
 
+    # MAS-120 Phase 1 — Proximity Avoidance (Keep-Out). Entities tagged as keep-out
+    # (hardware, rivets, etc.) create a clearance zone of `avoidance_radius` (C);
+    # any stitch hole inside that zone is suppressed (Gap Mode), leaving a clean gap
+    # in the stitch line around the obstruction.
+    keepout_handles = args.get("keepout_handles", []) or []
+    enable_avoidance = bool(args.get("enable_avoidance", False))
+    avoidance_radius = float(args.get("avoidance_radius", 3.0))
+
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
@@ -1796,6 +1816,21 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Keep-out geometry (MAS-120 Phase 1): build shapely geoms for the tagged
+    # handles so holes inside the clearance zone can be removed.
+    keepout_geoms = []
+    if enable_avoidance and keepout_handles:
+        for h in keepout_handles:
+            try:
+                ent = doc.entitydb[h]
+                path_k = make_path(ent)
+                verts = [(p.x, p.y) for p in path_k.flattening(distance=0.05)]
+                if len(verts) >= 2:
+                    is_cl = ent.dxftype() == "CIRCLE" or getattr(ent, "closed", False) or getattr(ent, "is_closed", False)
+                    keepout_geoms.append(LinearRing(verts) if is_cl else LineString(verts))
+            except Exception:
+                pass
+
     geoms: List[LineString] = []
     for ent in targets:
         try:
@@ -1823,10 +1858,13 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     hole_centers: List[Tuple[float, float]] = []
     hole_radius = hole_diameter / 2.0
 
-    def check_collision_with_others(p_pt, geoms_list, radius: float, og_distances: dict, og_contains_path: dict) -> bool:
+    def check_collision_with_others(p_pt, geoms_list, radius: float, og_distances: dict, og_contains_path: dict, og_is_contour: dict) -> bool:
         for og in geoms_list:
-            dist_to_path = og_distances.get(id(og), 9999.0)
-            if dist_to_path < 0.05:
+            # Skip only geometry that *is* part of the sewing contour (collinear
+            # overlap). Geometry that merely *crosses* the contour is a real
+            # obstacle and must still filter holes — the old `dist < 0.05` skip
+            # wrongly excluded crossing lines, so holes landed across them (MAS-106).
+            if og_is_contour.get(id(og), False):
                 continue
             if enable_line_proximity_filter and og.distance(p_pt) < line_proximity_threshold:
                 return True
@@ -1848,12 +1886,23 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         # Precompute path-to-other-geoms distances and containment checks to avoid O(N*M) heavy calculations in the hot loop
         og_distances = {}
         og_contains_path = {}
+        og_is_contour = {}
         for og in other_geoms:
             try:
                 og_distances[id(og)] = og.distance(path)
             except Exception:
                 og_distances[id(og)] = 9999.0
-            
+
+            # An "other" geometry that overlaps the contour along a length (not just
+            # a crossing point) is really part of the contour itself — skip it as an
+            # obstacle. A crossing line meets the contour at a point and is kept so
+            # holes near it are filtered (MAS-106).
+            try:
+                inter = og.intersection(path)
+                og_is_contour[id(og)] = bool(getattr(inter, "length", 0.0) > 0.5)
+            except Exception:
+                og_is_contour[id(og)] = og_distances[id(og)] < 0.05
+
             if isinstance(og, LinearRing):
                 from shapely.geometry import Polygon
                 try:
@@ -1934,7 +1983,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                                         if d_diff > 3.0 * offset_distance:
                                             continue
                                             
-                                    if check_collision_with_others(p_pt, other_geoms, hole_radius, og_distances, og_contains_path):
+                                    if check_collision_with_others(p_pt, other_geoms, hole_radius, og_distances, og_contains_path, og_is_contour):
                                         continue
                                     if is_internal:
                                         contour_internal_candidates.append(p)
@@ -1966,7 +2015,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                         if d_diff > 3.0 * offset_distance:
                             continue
                             
-                    if check_collision_with_others(p_pt, other_geoms, hole_radius, og_distances, og_contains_path):
+                    if check_collision_with_others(p_pt, other_geoms, hole_radius, og_distances, og_contains_path, og_is_contour):
                         continue
                     if is_internal:
                         contour_internal_candidates.append(p)
@@ -2050,17 +2099,55 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
             filtered_centers.append(hc)
     hole_centers = filtered_centers
 
+    # Keep-out clearance (MAS-120 Phase 1, Gap Mode): drop any hole whose center is
+    # within `avoidance_radius` (C) of a keep-out element, or inside a closed one.
+    suppressed_by_keepout = 0
+    if keepout_geoms:
+        kept = []
+        for hc in hole_centers:
+            p_pt = ShapelyPoint(hc)
+            blocked = False
+            for kg in keepout_geoms:
+                if kg.distance(p_pt) < avoidance_radius:
+                    blocked = True
+                    break
+                if isinstance(kg, LinearRing):
+                    from shapely.geometry import Polygon
+                    try:
+                        if Polygon(kg).contains(p_pt):
+                            blocked = True
+                            break
+                    except Exception:
+                        pass
+            if blocked:
+                suppressed_by_keepout += 1
+            else:
+                kept.append(hc)
+        hole_centers = kept
+
     for cx, cy in hole_centers:
         msp.add_circle(center=(cx, cy), radius=hole_radius, dxfattribs={"layer": "SEWING_HOLES"})
 
     doc.saveas(output_path)
-    return {"status": "ok", "data": {"hole_count": len(hole_centers)}}
+    return {"status": "ok", "data": {"hole_count": len(hole_centers), "suppressed_by_keepout": suppressed_by_keepout}}
 
 def op_cleanup(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Cleans up and joins coincident endpoint segments within the DXF."""
+    """Join/cleanup — bridge hanging endpoints with straight lines (MAS-130).
+
+    The previous implementation deleted every line/arc/spline, snapped + linemerged
+    them and re-emitted polylines — which destroyed the very geometry the user was
+    trying to repair. This rewrite is non-destructive: it leaves all existing
+    geometry untouched and simply draws a straight line between pairs of *hanging*
+    endpoints that sit within ``tolerance`` of each other (a real gap, not already
+    coincident). The bridge line inherits the layer/color of the entity owning one
+    of the endpoints, so the join lands on the same layer.
+    """
+    import math
     input_path = args.get("input")
     output_path = args.get("output")
     tolerance = float(args.get("tolerance", 0.1))
+    # Endpoints closer than this are already joined — nothing to bridge.
+    eps = max(1e-7, tolerance * 1e-3)
 
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
@@ -2069,67 +2156,69 @@ def op_cleanup(args: Dict[str, Any]) -> Dict[str, Any]:
 
     doc = ezdxf.readfile(input_path)
     msp = doc.modelspace()
-
-    # Collect and remove original target entities
-    targets = []
-    for ent in list(msp):
-        if ent.dxftype() in ("LINE", "ARC", "LWPOLYLINE", "SPLINE"):
-            targets.append(ent)
-
     before_count = len(list(msp))
-    geoms = []
-    
-    for ent in targets:
+
+    # Collect the two terminal endpoints of every open entity. Closed shapes have
+    # no hanging endpoints, so they're skipped.
+    endpoints = []  # list of (x, y, layer, color)
+    for ent in list(msp):
+        if ent.dxftype() not in ("LINE", "ARC", "LWPOLYLINE", "POLYLINE", "SPLINE"):
+            continue
         try:
             path = make_path(ent)
-            vertices = [(p.x, p.y) for p in path.flattening(distance=0.01)]
-            if len(vertices) < 2:
-                # Remove zero-length entities
-                msp.delete_entity(ent)
-                continue
-            
-            # Keep tracks of properties
-            geoms.append((LineString(vertices), ent.dxf.layer, ent.dxf.color))
-            msp.delete_entity(ent)
+            verts = [(p.x, p.y) for p in path.flattening(distance=0.05)]
         except Exception:
-            pass
-
-    # Group geometry by layer to keep structural isolation
-    layer_groups: Dict[str, List[Tuple[LineString, int]]] = {}
-    for geom, layer, color in geoms:
-        if layer not in layer_groups:
-            layer_groups[layer] = []
-        layer_groups[layer].append((geom, color))
-
-    joins_count = 0
-    
-    for layer, items in layer_groups.items():
-        if not items:
             continue
-        
-        linestrings = [item[0] for item in items]
-        default_color = items[0][1]
-        
-        # Snap and merge
-        snapped = snap_endpoints(linestrings, tolerance)
-        merged = linemerge(snapped)
-        
-        final_components = []
-        if isinstance(merged, MultiLineString):
-            final_components.extend(merged.geoms)
-        elif isinstance(merged, LineString):
-            final_components.append(merged)
-            
-        for path in final_components:
-            # Simplify collinear segments
-            simplified = path.simplify(tolerance=1e-5)
-            coords = list(simplified.coords)
-            if len(coords) < 2:
+        if len(verts) < 2:
+            continue
+        first, last = verts[0], verts[-1]
+        # Closed entity (or one that loops back on itself) — no hanging ends.
+        if math.hypot(first[0] - last[0], first[1] - last[1]) <= eps:
+            continue
+        layer = ent.dxf.layer
+        color = getattr(ent.dxf, "color", 256)
+        endpoints.append((first[0], first[1], layer, color))
+        endpoints.append((last[0], last[1], layer, color))
+
+    # An endpoint is "hanging" if no *other* endpoint is already coincident with
+    # it (i.e. it isn't an interior junction of two segments meeting cleanly).
+    n = len(endpoints)
+    hanging = []
+    for i in range(n):
+        xi, yi = endpoints[i][0], endpoints[i][1]
+        coincident = False
+        for j in range(n):
+            if j == i:
                 continue
-            
-            # Re-insert joined polyline
-            msp.add_lwpolyline(coords, dxfattribs={"layer": layer, "color": default_color})
-            joins_count += len(coords) - 1
+            if math.hypot(xi - endpoints[j][0], yi - endpoints[j][1]) <= eps:
+                coincident = True
+                break
+        if not coincident:
+            hanging.append(i)
+
+    # Candidate bridges: pairs of hanging endpoints within (eps, tolerance].
+    candidates = []
+    for a_idx in range(len(hanging)):
+        for b_idx in range(a_idx + 1, len(hanging)):
+            i, j = hanging[a_idx], hanging[b_idx]
+            d = math.hypot(endpoints[i][0] - endpoints[j][0],
+                           endpoints[i][1] - endpoints[j][1])
+            if eps < d <= tolerance:
+                candidates.append((d, i, j))
+
+    # Greedy nearest matching so each hanging endpoint is bridged at most once.
+    candidates.sort(key=lambda c: c[0])
+    used = set()
+    joins_count = 0
+    for d, i, j in candidates:
+        if i in used or j in used:
+            continue
+        used.add(i)
+        used.add(j)
+        a = endpoints[i]
+        msp.add_line((a[0], a[1]), (endpoints[j][0], endpoints[j][1]),
+                     dxfattribs={"layer": a[2], "color": a[3]})
+        joins_count += 1
 
     doc.saveas(output_path)
     after_count = len(list(msp))
@@ -2954,6 +3043,59 @@ def op_pattern_grid(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "ok", "data": {"new_entities": new_handles}}
     except Exception as e:
         return {"status": "error", "message": f"Failed to pattern grid: {str(e)}"}
+
+
+def op_pattern_circular(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Circular pattern (MAS-113): copy the selection `count` times around a pivot
+    (cx, cy), evenly spread over `total_angle` degrees. Copies inherit each source
+    entity's own layer so they're first-class geometry. `suppress` is a list of
+    instance indices (1-based, excluding the original) to skip."""
+    import math
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", [])
+    count = max(2, int(args.get("count", 6)))
+    cx = float(args.get("cx", 0.0))
+    cy = float(args.get("cy", 0.0))
+    total_angle = float(args.get("total_angle", 360.0))
+    suppress = set(int(i) for i in args.get("suppress", []))
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handles:
+        return {"status": "error", "message": "Please select entities to pattern."}
+
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        # A full 360° sweep shouldn't duplicate the start/end instance.
+        full = abs(total_angle % 360.0) < 1e-6 and abs(total_angle) >= 1e-6
+        denom = count if full else max(1, count - 1)
+        step = math.radians(total_angle / denom)
+
+        new_handles = []
+        for i in range(1, count):
+            if i in suppress:
+                continue
+            ang = step * i
+            m = (Matrix44.translate(-cx, -cy, 0.0)
+                 @ Matrix44.z_rotate(ang)
+                 @ Matrix44.translate(cx, cy, 0.0))
+            for h in handles:
+                try:
+                    ent = doc.entitydb[h]
+                    new_ent = ent.copy()
+                    new_ent.transform(m)
+                    msp.add_entity(new_ent)
+                    new_handles.append(new_ent.dxf.handle)
+                except KeyError:
+                    pass
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_entities": new_handles}}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to pattern circular: {str(e)}"}
 
 def op_pattern_path(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
@@ -4114,6 +4256,7 @@ OPERATIONS = {
     "add_dashed_creases": op_add_dashed_creases,
     "add_glue_tabs": op_add_glue_tabs,
     "pattern_grid": op_pattern_grid,
+    "pattern_circular": op_pattern_circular,
     "pattern_path": op_pattern_path,
     "add_text": op_add_text,
     "update_text": op_update_text,

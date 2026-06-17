@@ -40,10 +40,13 @@ enum TwoDTool: String, CaseIterable {
     case addHoles = "Add Holes (D)"
     case cleanup = "Join/Cleanup (J)"
     case measure = "Measure (M)"
+    case dimension = "Dimension (D)"
+    case scale = "Scale"
     case sketchLine = "Line (L)"
     case sketchCircle = "Circle (C)"
     case sketchRectangle = "Rectangle (R)"
     case sketchText = "Text (T)"
+    case sketchPolygon = "Polygon"
     case pen = "Pen"
     case fillet = "Fillet (K)"
     case chamfer = "Chamfer (B)"
@@ -64,10 +67,13 @@ enum TwoDTool: String, CaseIterable {
         case .addHoles: return "circle.dashed"
         case .cleanup: return "sparkles"
         case .measure: return "ruler"
+        case .dimension: return "ruler.fill"
+        case .scale: return "arrow.up.left.and.arrow.down.right"
         case .sketchLine: return "line.diagonal"
         case .sketchCircle: return "circle"
         case .sketchRectangle: return "rectangle"
         case .sketchText: return "character.cursor.ibeam"
+        case .sketchPolygon: return "hexagon"
         case .pen: return "pencil.tip"
         case .fillet: return "square"
         case .chamfer: return "square"
@@ -93,7 +99,19 @@ struct MeasurementLine: Identifiable, Codable, Hashable {
     var rectP1: CGPoint?
     var rectP2: CGPoint?
     var filletRadius: Double = 0.0
-    
+    /// Parametric dimension fields (MAS-110). `varName` is this dimension's sketch
+    /// variable (`d1`…); `expression` is the raw text the user typed (a number or
+    /// formula); `driven` marks a reference dimension (rendered in parentheses).
+    /// `isParametric` distinguishes a placed Dimension-tool constraint from a plain
+    /// auto-dimension. All default so older `.stch` files still decode.
+    var varName: String? = nil
+    var expression: String? = nil
+    var driven: Bool = false
+    var isParametric: Bool = false
+    /// Perpendicular offset (mm) of the dimension line from the geometry, so a
+    /// placed dimension sits clear of the part with extension lines (MAS-110 §2).
+    var offsetDistance: Double = 0.0
+
     init(
         id: UUID = UUID(),
         start: CGPoint,
@@ -104,7 +122,12 @@ struct MeasurementLine: Identifiable, Codable, Hashable {
         dimensionType: String? = nil,
         rectP1: CGPoint? = nil,
         rectP2: CGPoint? = nil,
-        filletRadius: Double = 0.0
+        filletRadius: Double = 0.0,
+        varName: String? = nil,
+        expression: String? = nil,
+        driven: Bool = false,
+        isParametric: Bool = false,
+        offsetDistance: Double = 0.0
     ) {
         self.id = id
         self.start = start
@@ -116,6 +139,11 @@ struct MeasurementLine: Identifiable, Codable, Hashable {
         self.rectP1 = rectP1
         self.rectP2 = rectP2
         self.filletRadius = filletRadius
+        self.varName = varName
+        self.expression = expression
+        self.driven = driven
+        self.isParametric = isParametric
+        self.offsetDistance = offsetDistance
     }
 }
 
@@ -509,13 +537,49 @@ class AppState {
 
     
     // 2D Canvas State
-    var currentTool: TwoDTool = .select
+    var currentTool: TwoDTool = .select {
+        didSet {
+            guard currentTool != oldValue else { return }
+            if currentTool == .offset {
+                // Entering Offset: chain-select defaults ON when nothing is loaded,
+                // so a click grabs the whole connected profile; an existing
+                // selection is kept and previewed immediately (MAS-109).
+                if selectedHandles.isEmpty {
+                    chainSelectionEnabled = true
+                } else {
+                    updateLivePreview()
+                }
+            } else if oldValue == .offset {
+                previewEntities = []
+            }
+            if currentTool == .scale {
+                // Fresh scale session: default to the selection's own center.
+                scaleFactor = 1.0
+                scalePivotModel = nil
+                scaleFromCenter = true
+                pickingScalePivot = false
+            }
+            if currentTool == .patterning {
+                // Fresh pattern session: circular center defaults to selection center.
+                patternPivotModel = nil
+                pickingPatternPivot = false
+            }
+        }
+    }
     var chainSelectionEnabled: Bool = false
+    /// Offset tool: emit construction (dashed reference) lines instead of normal
+    /// solid sketch lines (MAS-109).
+    var offsetConstruction: Bool = false
     var selectedHandles: Set<String> = [] {
         didSet {
             updateActiveLayersFromSelection()
             // A new selection starts a fresh rotation accumulation (MAS-57).
             if selectedHandles != oldValue { gizmoAccumulatedRotation = 0 }
+            // Picking geometry with the Offset tool shows the ghost preview at the
+            // current distance the moment a selection exists (MAS-109).
+            if currentTool == .offset && selectedHandles != oldValue {
+                updateLivePreview()
+            }
         }
     }
 
@@ -592,7 +656,13 @@ class AppState {
     var holeProximityDistance: Double = 3.0
     var holeVariableSpacingMin: Double = 4.0
     var holeVariableSpacingMax: Double = 5.0
-    
+
+    // Sewing v2 — Proximity Avoidance / Keep-Out (MAS-120 Phase 1). Entities tagged
+    // as keep-out create a clearance gap in the stitch line around hardware.
+    var sewingKeepoutHandles: Set<String> = []
+    var holeEnableAvoidance: Bool = false
+    var holeAvoidanceRadius: Double = 3.0
+
     var consolidateSvgStrokes: Bool = true
     var cleanupTolerance: Double = 0.1
     var exportFormat: String = "dxf"
@@ -622,6 +692,11 @@ class AppState {
     /// The last corner the user toggled — the one the radius box / arrow edits.
     /// Fillets are individual (MAS-91): there is no single radius for all corners.
     var activeCornerIndex: Int? = nil
+    /// Corners selected *together* in the current fillet/chamfer session. Setting a
+    /// radius (box, drag arrow, or Enter) applies to every corner in this set, so
+    /// corners picked together share one value — without being permanently linked
+    /// (MAS-103). Reset whenever a new session begins or the shape changes.
+    var activeCornerIndices: Set<Int> = []
     /// Sharp base polygon + per-corner fillet/chamfer specs, keyed by entity
     /// handle. The visible curve is regenerated from this, so a fillet can be
     /// re-edited, resized, or converted to a chamfer at any time.
@@ -654,6 +729,28 @@ class AppState {
     var moveP2PActive: Bool = false        // point-to-point picking armed
     var moveP2PFrom: CGPoint? = nil        // first picked point
 
+    // Polygon tool (MAS-118): number of sides for the next polygon (3–64).
+    var polygonSides: Int = 6
+
+    // Patterning v2 (MAS-113). Rectangular grid or circular array, with a live
+    // ghost preview + draggable handles driven from the canvas.
+    var patternMode: String = "rectangular"   // "rectangular" | "circular"
+    var patternCountX: Int = 3
+    var patternCountY: Int = 1
+    var patternSpacingX: Double = 20
+    var patternSpacingY: Double = 20
+    var patternCircCount: Int = 6
+    var patternCircAngle: Double = 360
+    var patternPivotModel: CGPoint? = nil      // nil = selection bbox center
+    var pickingPatternPivot: Bool = false
+
+    // Scale tool state (MAS-128). Scales the selection from its own center, or
+    // from a user-picked scale point when one is set.
+    var scaleFactor: Double = 1.0
+    var scaleFromCenter: Bool = true       // false = use scalePivotModel (picked)
+    var scalePivotModel: CGPoint? = nil    // custom scale point in model coords
+    var pickingScalePivot: Bool = false    // next canvas click sets the scale point
+
     /// Bounding box (model coords) of the current selection, or nil if empty.
     var selectionBBox: CGRect? {
         var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude
@@ -683,12 +780,14 @@ class AppState {
 
     /// Scales the selection by `factor` about its center (or bbox corner), with
     /// optional create-copy (MAS-80).
-    func scaleSelected(factor: Double) {
+    func scaleSelected(factor: Double, pivotOverride: CGPoint? = nil) {
         guard let url = currentFilePath, !selectedHandles.isEmpty, factor > 0,
               let bbox = selectionBBox else { return }
-        let pivot: CGPoint = moveScaleFromCenter
-            ? CGPoint(x: bbox.midX, y: bbox.midY)
-            : CGPoint(x: bbox.minX, y: bbox.minY)
+        let pivot: CGPoint = pivotOverride
+            ?? scalePivotModel
+            ?? (moveScaleFromCenter
+                ? CGPoint(x: bbox.midX, y: bbox.midY)
+                : CGPoint(x: bbox.minX, y: bbox.minY))
         let handles = Array(selectedHandles)
         let copy = moveCreateCopy
         saveToHistory()
@@ -785,12 +884,16 @@ class AppState {
     var mirrorSelection: Set<String> = [] // entities chosen to mirror
     var mirrorAxisStart: CGPoint? = nil   // first click of the mirror axis
     var mirrorAxisEnd: CGPoint? = nil     // second click (live until confirm)
+    /// Mirror selection mode (MAS-119): false = Objects (pick geometry to mirror),
+    /// true = Mirror Line (pick the symmetry axis — an existing line or two points).
+    var mirrorLineMode: Bool = false
 
     /// One-line guidance for the current mirror-tool stage, shown in options.
     var mirrorStageHint: String {
-        if selectedHandles.isEmpty { return "Select shapes to mirror, then click two points for the axis." }
-        if mirrorAxisStart == nil { return "Click to place the first axis point." }
-        if mirrorAxisEnd == nil { return "Click to place the second axis point." }
+        if selectedHandles.isEmpty { return "Objects mode: click shapes to mirror." }
+        if !mirrorLineMode && mirrorAxisStart == nil { return "Switch to Mirror Line, then pick the axis." }
+        if mirrorLineMode && mirrorAxisStart == nil { return "Click a line (or two points) for the mirror axis." }
+        if mirrorAxisEnd == nil { return "Click the second axis point." }
         return "Adjust options, then Confirm Mirror."
     }
 
@@ -798,6 +901,13 @@ class AppState {
         mirrorSelection.removeAll()
         mirrorAxisStart = nil
         mirrorAxisEnd = nil
+        mirrorLineMode = false
+    }
+
+    /// Use an existing straight line as the mirror axis (MAS-119 Mirror Line mode).
+    func setMirrorAxisFromLine(start: CGPoint, end: CGPoint) {
+        mirrorAxisStart = start
+        mirrorAxisEnd = end
     }
 
     /// Records a mirror-axis click (canvas), filling start then end (MAS-55).
@@ -1541,7 +1651,82 @@ class AppState {
             }
         }
     }
-    
+
+    // MARK: - Parametric dimension engine (MAS-110)
+
+    /// Sketch parameter table (`d1`, `d2`, …) shared by all placed dimensions.
+    var dimensionEngine = DimensionEngine()
+
+    /// Commit a typed value or formula to a dimension. Returns `nil` on success or
+    /// a `DimensionError` for the field to flash red and keep focus (MAS-110 §3/§4,
+    /// MAS-111 error handling). Supports plain numbers, formulas (`d1*2+10`,
+    /// `sqrt(...)`), unit suffixes (`1 inch`), and rejects circular references.
+    @discardableResult
+    func commitDimensionExpression(measureId: UUID, rawExpression: String) -> DimensionError? {
+        guard let idx = measurements.firstIndex(where: { $0.id == measureId }) else { return nil }
+        let raw = rawExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return .syntax("empty") }
+
+        // Evaluate against the current table first (cheap, catches syntax / unknown
+        // var before we mutate anything).
+        let value: Double
+        do { value = try dimensionEngine.preview(raw) }
+        catch let e as DimensionError { return e }
+        catch { return .syntax("\(error)") }
+        if !value.isFinite || value <= 0 { return .syntax("must be a positive length") }
+
+        // Register / update this dimension's variable, detecting cycles.
+        let varName = measurements[idx].varName ?? dimensionEngine.nextVarName()
+        do { try dimensionEngine.setExpression(varName, raw, driven: measurements[idx].driven) }
+        catch let e as DimensionError { return e }
+        catch { return .syntax("\(error)") }
+
+        measurements[idx].varName = varName
+        measurements[idx].expression = raw
+        measurements[idx].isParametric = true
+
+        // Drive the geometry to the evaluated value through the existing resize path.
+        selectedMeasurement = measurements[idx]
+        updateSelectedDimensionValue(newValue: value)
+
+        // Re-evaluate dependents and refresh their labels (associativity, MAS-110 §3).
+        repropagateDimensions()
+        return nil
+    }
+
+    /// After any parameter change, refresh every parametric dimension's cached
+    /// value from the engine so formula labels (`fx:`) stay correct.
+    func repropagateDimensions() {
+        for i in measurements.indices {
+            guard let v = measurements[i].varName,
+                  let p = dimensionEngine.parameter(v) else { continue }
+            measurements[i].distanceMm = p.value
+            measurements[i].driven = p.driven
+        }
+    }
+
+    /// Rebuild the parameter table from saved measurements after opening a project,
+    /// so formula references resolve and dimensions stay editable (MAS-110).
+    func rebuildDimensionEngine() {
+        dimensionEngine = DimensionEngine()
+        for m in measurements {
+            guard let v = m.varName else { continue }
+            dimensionEngine.addNumeric(value: m.distanceMm, id: v, driven: m.driven)
+        }
+        for m in measurements {
+            guard let v = m.varName, let expr = m.expression else { continue }
+            try? dimensionEngine.setExpression(v, expr, driven: m.driven)
+        }
+    }
+
+    /// Toggle a placed dimension between driving and driven/reference (MAS-110 §4).
+    func setDimensionDriven(measureId: UUID, driven: Bool) {
+        guard let idx = measurements.firstIndex(where: { $0.id == measureId }),
+              let v = measurements[idx].varName else { return }
+        measurements[idx].driven = driven
+        try? dimensionEngine.setExpression(v, measurements[idx].expression ?? String(format: "%g", measurements[idx].distanceMm), driven: driven)
+    }
+
     init() {
         let uuid = UUID().uuidString
         let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("pathstitch_\(uuid)")
@@ -1798,6 +1983,34 @@ class AppState {
         }
     }
 
+    /// Loads a 3D STEP/STP model into the CURRENT workspace (same window) and
+    /// switches it to 3D mode, leaving any existing 2D geometry and the open
+    /// project path intact. 3D and 2D share one workspace, one window, one
+    /// `.stch` (MAS-107) — only Batch mode and full `.stch` projects get their
+    /// own window. Unlike `loadFile`, this never detaches `currentProjectPath`
+    /// or wipes the 2D drawing, so importing a model into an open project keeps
+    /// everything in place.
+    func importStepModel(url: URL) {
+        let isSecurityScoped = url.startAccessingSecurityScopedResource()
+        defer { if isSecurityScoped { url.stopAccessingSecurityScopedResource() } }
+
+        let tempDir = sessionTempDirectory
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let targetURL = tempDir.appendingPathComponent("active.step")
+        do {
+            try? FileManager.default.removeItem(at: targetURL)
+            try FileManager.default.copyItem(at: url, to: targetURL)
+            currentStepFilePath = targetURL
+            selectedFaces3D.removeAll()
+            activeMode = .threeD
+            reloadSTEP()   // sets hasUnsavedChanges = true on success
+            logAction("Import STEP", details: "Loaded 3D model into workspace: \(url.lastPathComponent)")
+        } catch {
+            errorMessage = "Failed to import STEP file: \(error.localizedDescription)"
+            logAction("Import STEP Error", details: "Failed to copy STEP into workspace: \(error.localizedDescription)")
+        }
+    }
+
     func importFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         if activeMode == .batch {
@@ -1805,15 +2018,28 @@ class AppState {
             return
         }
 
-        // Projects (.stch) and 3D models (.step/.stp) are their own workspace —
-        // a window = a workspace — so they open in a NEW window rather than being
-        // merged into the current 2D drawing (MAS-13/MAS-24).
-        let newWindowExts: Set<String> = ["stch", "step", "stp"]
-        let openInNewWindow = urls.filter { newWindowExts.contains($0.pathExtension.lowercased()) }
-        let toMerge = urls.filter { !newWindowExts.contains($0.pathExtension.lowercased()) }
+        // A window = a workspace. Full projects (.stch) are a whole workspace, so
+        // they open in their OWN window. 3D models (.step/.stp) load into THIS
+        // workspace and switch it to 3D — 2D and 3D share one window (MAS-107).
+        // Everything else (DXF/SVG/PDF/images) merges onto the current 2D canvas.
+        let projectExts: Set<String> = ["stch"]
+        let stepExts: Set<String> = ["step", "stp"]
+        let openInNewWindow = urls.filter { projectExts.contains($0.pathExtension.lowercased()) }
+        let stepModels = urls.filter { stepExts.contains($0.pathExtension.lowercased()) }
+        let toMerge = urls.filter {
+            let e = $0.pathExtension.lowercased()
+            return !projectExts.contains(e) && !stepExts.contains(e)
+        }
 
         for fileURL in openInNewWindow {
             WindowManager.shared.openAnyFile(url: fileURL)
+        }
+
+        // Load 3D models into this same window/workspace (MAS-107). A workspace
+        // holds a single active model; if several are dropped at once they load
+        // in order (multi-model distribution is tracked separately in MAS-125).
+        for modelURL in stepModels {
+            importStepModel(url: modelURL)
         }
 
         guard !toMerge.isEmpty else { return }
@@ -2066,7 +2292,10 @@ class AppState {
                             "line_proximity_threshold": holeLineProximityThreshold,
                             "proximity_filter_distance": holeProximityDistance,
                             "variable_spacing_min": holeVariableSpacingMin,
-                            "variable_spacing_max": holeVariableSpacingMax
+                            "variable_spacing_max": holeVariableSpacingMax,
+                            "enable_avoidance": holeEnableAvoidance,
+                            "avoidance_radius": holeAvoidanceRadius,
+                            "keepout_handles": Array(sewingKeepoutHandles)
                         ]
                     )
                     
@@ -2752,20 +2981,34 @@ class AppState {
         model.corners = targets.compactMap { existing[$0] }
         parametricShapes[handle] = model
         activeCornerIndex = targets.last
+        // Activating the tool on a selected shape selects all its corners together,
+        // so adjusting the radius drives them uniformly (MAS-103).
+        activeCornerIndices = Set(targets)
         applyParametricShape(handle: handle)
     }
 
     /// Toggle one corner's modifier (click on a corner with the tool active).
+    /// Clicking corner-after-corner (without leaving the tool) accumulates them
+    /// into one active group that shares a radius (MAS-103); the new corner adopts
+    /// the group's current value so they immediately match.
     func toggleCorner(handle: String, index: Int) {
         guard ensureParametricModel(for: handle) != nil, var model = parametricShapes[handle] else { return }
+        // Switching to a different shape starts a fresh group.
+        if filletSelectedHandle != handle { activeCornerIndices.removeAll() }
         filletSelectedHandle = handle
         if let i = model.corners.firstIndex(where: { $0.index == index }) {
             model.corners.remove(at: i)
-            if activeCornerIndex == index { activeCornerIndex = model.corners.last?.index }
+            activeCornerIndices.remove(index)
+            if activeCornerIndex == index { activeCornerIndex = activeCornerIndices.max() ?? model.corners.last?.index }
         } else {
-            let value = defaultFilletRadius(base: model.base, closed: model.closed, index: index)
+            // Join the active group at its shared radius if one exists, otherwise
+            // fall back to the per-corner fitting default (MAS-91).
+            let value = activeCornerIndices.isEmpty
+                ? defaultFilletRadius(base: model.base, closed: model.closed, index: index)
+                : filletToolRadius
             model.corners.append(CornerMod(index: index, kind: cornerToolKind, value: value, continuity: filletContinuity))
-            activeCornerIndex = index    // last selected — the radius box / arrow edits this one
+            activeCornerIndex = index    // last selected — the radius box / arrow anchors here
+            activeCornerIndices.insert(index)
             filletToolRadius = value
         }
         parametricShapes[handle] = model
@@ -2787,10 +3030,18 @@ class AppState {
     /// Sets only the active corner's value (radius box / drag arrow), leaving all
     /// other corners untouched (MAS-91).
     func setActiveCornerValue(_ value: Double) {
-        guard let handle = filletSelectedHandle, var model = parametricShapes[handle],
-              let idx = activeCornerIndex,
-              let i = model.corners.firstIndex(where: { $0.index == idx }) else { return }
-        model.corners[i].value = max(0, value)
+        guard let handle = filletSelectedHandle, var model = parametricShapes[handle] else { return }
+        let v = max(0, value)
+        // Apply to every corner selected together (MAS-103); falls back to just the
+        // active corner when only one is selected.
+        let group = activeCornerIndices.isEmpty ? Set(activeCornerIndex.map { [$0] } ?? []) : activeCornerIndices
+        var changed = false
+        for i in model.corners.indices where group.contains(model.corners[i].index) {
+            model.corners[i].value = v
+            changed = true
+        }
+        guard changed else { return }
+        filletToolRadius = v
         parametricShapes[handle] = model
         applyParametricShape(handle: handle)
     }
@@ -2800,10 +3051,13 @@ class AppState {
     /// blended preview; `commitActiveCornerValue()` persists once on release. This
     /// is what makes the fillet drag fluid instead of one round-trip per frame.
     func setActiveCornerValueLocal(_ value: Double) {
-        guard let handle = filletSelectedHandle, var model = parametricShapes[handle],
-              let idx = activeCornerIndex,
-              let i = model.corners.firstIndex(where: { $0.index == idx }) else { return }
-        model.corners[i].value = max(0, value)
+        guard let handle = filletSelectedHandle, var model = parametricShapes[handle] else { return }
+        let v = max(0, value)
+        // Drag the radius arrow → all corners selected together follow (MAS-103).
+        let group = activeCornerIndices.isEmpty ? Set(activeCornerIndex.map { [$0] } ?? []) : activeCornerIndices
+        for i in model.corners.indices where group.contains(model.corners[i].index) {
+            model.corners[i].value = v
+        }
         parametricShapes[handle] = model
     }
 
@@ -2819,6 +3073,7 @@ class AppState {
     /// applied. Enter confirms (keep), Esc cancels (revert to here).
     func beginCornerToolSession() {
         cornerSessionUndoDepth = undoStack.count
+        activeCornerIndices.removeAll()   // fresh group each session (MAS-103)
     }
 
     /// Enter — confirm the in-progress fillet/chamfer: keep the changes.
@@ -2833,6 +3088,7 @@ class AppState {
             cornerSessionUndoDepth = nil
             filletSelectedHandle = nil
             activeCornerIndex = nil
+            activeCornerIndices.removeAll()
         }
         guard let depth = cornerSessionUndoDepth, undoStack.count > depth else { return }
         // The first session edit pushed the pre-fillet state at `depth`; restore it
@@ -2905,6 +3161,7 @@ class AppState {
                     self.parametricShapes[handle] = model
                     self.filletSelectedHandle = handle
                     self.activeCornerIndex = 1
+                    self.activeCornerIndices = [1]
                     self.filletToolRadius = value
                     self.selectedHandles = [handle]
                     // Reload to pick up the joined polyline, then blend the corner.
@@ -3016,11 +3273,27 @@ class AppState {
         }
     }
 
-    func applyOffset() {
+    /// Flip the offset to the other side of the source geometry (MAS-109).
+    func flipOffsetDirection() {
+        offsetSide = (offsetSide == "left") ? "right" : "left"
+        updateLivePreview()
+    }
+
+    /// Offset tool with no committed geometry: just leave the tool (Cancel / Esc).
+    func cancelOffsetTool() {
+        previewEntities = []
+        currentTool = .select
+    }
+
+    /// `exitAfterApply` true → single-action behavior: commit and return to the
+    /// Select arrow (MAS-109 / MAS-111). False keeps the tool active so the user
+    /// can offset again (e.g. offsetting an offset line).
+    func applyOffset(exitAfterApply: Bool = false) {
         saveToHistory()
         guard let url = currentFilePath else { return }
         isProcessing = true
-        
+        let construction = offsetConstruction
+
         Task {
             do {
                 await reconcileBufferIfNeeded()
@@ -3036,14 +3309,17 @@ class AppState {
                         "handles": Array(selectedHandles),
                         "distance": offsetDistance,
                         "side": offsetSide,
-                        "layer": "OFFSET"
+                        "layer": construction ? "CONSTRUCTION" : "OFFSET",
+                        "construction": construction
                     ]
                 )
-                
+
                 await MainActor.run {
                     self.currentFilePath = activeDxfURL
                     self.selectedHandles.removeAll()
+                    self.previewEntities = []
                     self.reloadDXF()
+                    if exitAfterApply { self.currentTool = .select }
                 }
             } catch {
                 await MainActor.run {
@@ -3087,10 +3363,13 @@ class AppState {
                         "line_proximity_threshold": holeLineProximityThreshold,
                         "proximity_filter_distance": holeProximityDistance,
                         "variable_spacing_min": holeVariableSpacingMin,
-                        "variable_spacing_max": holeVariableSpacingMax
+                        "variable_spacing_max": holeVariableSpacingMax,
+                        "enable_avoidance": holeEnableAvoidance,
+                        "avoidance_radius": holeAvoidanceRadius,
+                        "keepout_handles": Array(sewingKeepoutHandles)
                     ]
                 )
-                
+
                 await MainActor.run {
                     self.currentFilePath = activeDxfURL
                     self.selectedHandles.removeAll()
@@ -3467,7 +3746,8 @@ class AppState {
                             "handles": Array(selectedHandles),
                             "distance": offsetDistance,
                             "side": offsetSide,
-                            "layer": "PREVIEW"
+                            "layer": "PREVIEW",
+                            "construction": offsetConstruction
                         ]
                     )
                 } else {
@@ -3494,7 +3774,10 @@ class AppState {
                             "line_proximity_threshold": holeLineProximityThreshold,
                             "proximity_filter_distance": holeProximityDistance,
                             "variable_spacing_min": holeVariableSpacingMin,
-                            "variable_spacing_max": holeVariableSpacingMax
+                            "variable_spacing_max": holeVariableSpacingMax,
+                            "enable_avoidance": holeEnableAvoidance,
+                            "avoidance_radius": holeAvoidanceRadius,
+                            "keepout_handles": Array(sewingKeepoutHandles)
                         ]
                     )
                 }
@@ -3890,6 +4173,7 @@ class AppState {
 
             self.currentProjectPath = url
             self.measurements = validContainer.measurements
+            self.rebuildDimensionEngine()   // restore parameter table (MAS-110)
             self.layers = validContainer.savedLayers ?? []
             self.layerFolders = validContainer.savedLayerFolders ?? []
             self.activeLayerId = validContainer.savedActiveLayerId
@@ -4775,6 +5059,43 @@ class AppState {
         }
     }
     
+    /// Circular pattern (MAS-113): `count` copies of the selection spread over
+    /// `angle` degrees about the pivot (picked point, or selection bbox center).
+    func applyPatternCircular(count: Int, angle: Double) {
+        guard let url = currentFilePath, !selectedHandles.isEmpty, let bbox = selectionBBox else { return }
+        let pivot = patternPivotModel ?? CGPoint(x: bbox.midX, y: bbox.midY)
+        let handles = Array(selectedHandles)
+        saveToHistory()
+        isProcessing = true
+        Task {
+            do {
+                let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+                let res = try await PythonBridge.shared.run(
+                    module: "dxf_ops", op: "pattern_circular",
+                    args: ["input": url.path, "output": activeDxfURL.path,
+                           "handles": handles, "count": count,
+                           "cx": Double(pivot.x), "cy": Double(pivot.y),
+                           "total_angle": angle])
+                await MainActor.run {
+                    if let status = res["status"] as? String, status != "ok" {
+                        self.errorMessage = (res["message"] as? String) ?? "Circular pattern failed."
+                        self.isProcessing = false
+                        return
+                    }
+                    self.currentFilePath = activeDxfURL
+                    self.selectedHandles.removeAll()
+                    self.reloadDXF()
+                    self.logEntries.append(LogEntry(action: "Circular Pattern", details: "×\(count) over \(Int(angle))°"))
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isProcessing = false
+                }
+            }
+        }
+    }
+
     func applyPatternPath(pathHandle: String, spacing: Double) {
         guard let url = currentFilePath, !selectedHandles.isEmpty else { return }
         saveToHistory()

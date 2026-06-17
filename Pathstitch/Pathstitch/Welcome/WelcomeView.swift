@@ -212,6 +212,34 @@ struct RecentFileCard: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(isSelected ? Color.accent : (isHovered ? Color.border_strong : Color.border_subtle), lineWidth: isSelected ? 2.0 : 1.0)
             )
+            .overlay(alignment: .topTrailing) {
+                // Three-dot menu in the thumbnail's top-right corner (MAS-139).
+                Menu {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([file.url])
+                    } label: {
+                        Label("Reveal in Finder", systemImage: "folder")
+                    }
+                    Button(role: .destructive) {
+                        state.removeFromRecents(file)
+                    } label: {
+                        Label("Remove from Recent Projects", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.black.opacity(0.5)))
+                        .contentShape(Circle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .padding(6)
+                .opacity(isHovered ? 1.0 : 0.0)
+                .help("More…")
+            }
             .shadow(color: Color.black.opacity(isHovered ? 0.25 : 0.1), radius: isHovered ? 6 : 2, x: 0, y: 3)
             .scaleEffect(isHovered ? 1.02 : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.75), value: isHovered)
@@ -252,17 +280,12 @@ struct RecentFileCard: View {
             }
             .disabled(!file.isAvailable)
             
-            Button("Show in Finder") {
+            Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([file.url])
             }
-            
-            Button("Remove from Recents") {
-                if let idx = state.recentFiles.firstIndex(where: { $0.url == file.url }) {
-                    state.recentFiles.remove(at: idx)
-                    if state.selectedIndex == idx {
-                        state.selectedIndex = nil
-                    }
-                }
+
+            Button("Remove from Recent Projects") {
+                state.removeFromRecents(file)
             }
         }
     }

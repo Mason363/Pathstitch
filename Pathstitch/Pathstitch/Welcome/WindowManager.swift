@@ -75,41 +75,17 @@ class WindowManager: NSObject, NSApplicationDelegate {
         welcomeWindowController?.close()
     }
     
+    /// `true` while at least one document workspace window is open. Used by the
+    /// welcome window to decide whether closing it should quit the app (MAS-138).
+    var hasOpenDocumentWindows: Bool { !documentWindows.isEmpty }
+
+    /// New File always opens a NEW workspace window, leaving any existing window
+    /// untouched (MAS-104). `fromWindow` is accepted for call-site compatibility
+    /// but no longer replaces that window's document.
     func createNewDocument(fromWindow: NSWindow? = nil) {
-        if let targetWindow = fromWindow,
-           let delegate = targetWindow.delegate as? DocumentWindowDelegate {
-            if delegate.state.hasUnsavedChanges {
-                let alert = NSAlert()
-                alert.messageText = "Do you want to save the changes made to this document?"
-                alert.informativeText = "Your changes will be lost if you don't save them."
-                alert.addButton(withTitle: "Save")
-                alert.addButton(withTitle: "Cancel")
-                alert.addButton(withTitle: "Don't Save")
-                
-                alert.beginSheetModal(for: targetWindow) { response in
-                    if response == .alertFirstButtonReturn {
-                        if let current = delegate.state.currentProjectPath {
-                            delegate.state.saveProject(to: current)
-                            delegate.state.startBlankDocument()
-                        } else {
-                            // prompt for location
-                            delegate.state.saveProjectWithDialog()
-                            if !delegate.state.hasUnsavedChanges {
-                                delegate.state.startBlankDocument()
-                            }
-                        }
-                    } else if response == .alertThirdButtonReturn {
-                        delegate.state.startBlankDocument()
-                    }
-                }
-            } else {
-                delegate.state.startBlankDocument()
-            }
-        } else {
-            let state = AppState()
-            state.startBlankDocument()
-            openDocumentWindow(with: state)
-        }
+        let state = AppState()
+        state.startBlankDocument()
+        openDocumentWindow(with: state)
     }
     
     /// Opens one or more files. Projects (`.stch`) and 3D models open in their own
@@ -119,16 +95,17 @@ class WindowManager: NSObject, NSApplicationDelegate {
         openFilesDistributing(urls)
     }
 
-    /// `.stch`/`.step`/`.stp` each get their own window; the remaining importable
-    /// files (`.dxf`/`.svg`/`.pdf`/images) all land in ONE new workspace and are
-    /// auto-distributed (fewer than 5) or sent to Batch mode (5+) by
-    /// `AppState.importFiles` (MAS-13).
+    /// Only `.stch` projects get their own window. Everything else — 3D models
+    /// (`.step`/`.stp`) and importable 2D files (`.dxf`/`.svg`/`.pdf`/images) —
+    /// lands in ONE new workspace window: 3D and 2D share a workspace (MAS-107),
+    /// and 2D files are auto-distributed (fewer than 5) or sent to Batch mode
+    /// (5+) by `AppState.importFiles` (MAS-13).
     func openFilesDistributing(_ urls: [URL]) {
-        let newWindowExts: Set<String> = ["stch", "step", "stp"]
-        let windowFiles = urls.filter { newWindowExts.contains($0.pathExtension.lowercased()) }
-        let importable = urls.filter { !newWindowExts.contains($0.pathExtension.lowercased()) }
+        let projectExts: Set<String> = ["stch"]
+        let projects = urls.filter { projectExts.contains($0.pathExtension.lowercased()) }
+        let importable = urls.filter { !projectExts.contains($0.pathExtension.lowercased()) }
 
-        for url in windowFiles { openAnyFile(url: url) }
+        for url in projects { openAnyFile(url: url) }
 
         guard !importable.isEmpty else { return }
         let state = AppState()
@@ -142,6 +119,8 @@ class WindowManager: NSObject, NSApplicationDelegate {
         let state = AppState()
         state.loadProject(from: url)
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        // Re-opening a previously-removed project brings it back to recents.
+        RecentsHiding.unhide(url.standardized.path)
         openDocumentWindow(with: state)
     }
 
@@ -221,14 +200,17 @@ class WindowManager: NSObject, NSApplicationDelegate {
         
         if openPanel.runModal() == .OK {
             let urls = openPanel.urls
-            let newWindowExts: Set<String> = ["stch", "step", "stp"]
-            let projects = urls.filter { newWindowExts.contains($0.pathExtension.lowercased()) }
-            let others = urls.filter { !newWindowExts.contains($0.pathExtension.lowercased()) }
-            
+            // Import goes INTO the active workspace. Only full `.stch` projects
+            // open in their own window; 3D models (`.step`/`.stp`) import into the
+            // current window like any other content (MAS-107).
+            let projectExts: Set<String> = ["stch"]
+            let projects = urls.filter { projectExts.contains($0.pathExtension.lowercased()) }
+            let others = urls.filter { !projectExts.contains($0.pathExtension.lowercased()) }
+
             for url in projects {
                 openAnyFile(url: url)
             }
-            
+
             if !others.isEmpty {
                 if let activeState = NSApp.activeAppState {
                     activeState.importFiles(others)
