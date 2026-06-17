@@ -74,6 +74,75 @@ rearrangeable toolbar.
 
 ---
 
+## Feature list
+
+### Available now
+
+**Draw**
+- **Line / Circle / Rectangle** — core primitives with live dimensions.
+- **Polygon** — regular N‑sided shapes, drag for size & rotation.
+- **Text** — place and edit text on the canvas.
+- **Pen** — Illustrator‑style bézier paths.
+- **Snapping** — point/edge/grid snapping while drawing.
+
+**Edit**
+- **Fillet / Chamfer** — parametric, per‑corner, G1/G2, draggable; shared radius for corners picked together.
+- **Trim** — hover‑to‑preview, click or drag to cut at intersections.
+- **Offset** — chain‑select, live ghost, flip side, construction lines.
+- **Join / Cleanup** — bridge hanging endpoints with straight lines.
+- **Convert Lines** — restyle to dashed / perforated / decorative lines.
+- **Move** — gizmo + exact point‑to‑point.
+- **Scale** — live drag, from center or a picked point.
+- **Mirror** — objects/mirror‑line modes with live ghost.
+- **Reflect / Flip / Duplicate** — quick transforms.
+
+**Measure & dimension**
+- **Measure** — ad‑hoc distance lines.
+- **Dimension** — linear / radius / point‑to‑point with a parameter engine (formulas, variables, units, `fx:`/driven).
+
+**Make**
+- **Stitch holes** — saddle‑stitch generation along any path, spacing/corner controls.
+- **Keep‑out avoidance** — gap the stitch line around tagged hardware.
+- **Patterning** — rectangular & circular arrays with live ghost preview.
+- **Paper folding** — crease lines + glue tabs for 3D assembly.
+- **Layers** — organize geometry by layer.
+
+**3D → 2D**
+- **STEP import** — load `.step` / `.stp` into a 3D viewport.
+- **Plane projection** — sketch from a cutting plane.
+- **Unfold** — flatten developable surfaces into cut‑ready nets.
+
+**Export & integrate**
+- **Export** — DXF, SVG, PDF, PNG.
+- **Projects** — native `.stch` files.
+- **QuickLook** — Finder previews + thumbnails for DXF & STEP.
+- **Batch mode** — operate over many files at once.
+
+**Workspace**
+- **Command palette** — `⌘K` to find any tool or action.
+- **Keybinds & themes** — customizable shortcuts, light/dark.
+- **Toolbar** — zoned, rearrangeable, resizable panels with collapsible options.
+- **Recent projects** — welcome screen with reveal/remove.
+
+### Coming soon
+
+- **Angular dimensions** — angle between two lines.
+- **Dimension associativity** — edit a master value, dependents follow.
+- **Scale‑on‑first‑dimension** — proportional whole‑sketch scaling.
+- **Pattern/mirror handles** — draggable gizmos, instance suppression, associative links.
+- **Sewing v2 (phases 2–4)** — flip‑match symmetry, registration keyholes, differential pitch, saved profiles.
+- **Reference images** — import, trace, and vectorize underlays.
+- **Text v3** — system fonts, inline editing, bold/italic/spacing.
+- **Layers v2** — click a layer to select its geometry.
+- **3D bodies** — drag‑in distribution + 3D move gizmo, intersection‑only plane import, cross‑section preview.
+- **Home v2** — reset to the opening view on an empty canvas.
+- **Unwrapping** — curved/LSCM unfolding beyond developable nets.
+- **Export fixes** — reliable export + clearer format/indicator UI.
+- **Better previews** — full curve support in DXF QuickLook, native fast STEP preview.
+- **Search & keybinds** — up‑to‑date palette and accurate shortcut display.
+
+---
+
 ## Under the hood
 
 Pathstitch is a thin, fast SwiftUI front‑end over a persistent Python geometry worker. The UI never blocks on
