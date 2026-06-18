@@ -155,6 +155,9 @@ struct HistoryState {
     // fillets/chamfers stay parametric and in-sync across undo/redo (MAS-62).
     let parametricShapes: [String: ParametricCornerShape]
     let cornerSnapPoints: [String: [CornerSnapPoint]]
+    // Pen paths travel with the geometry too, so they stay editable across
+    // undo/redo (parametric pen lines).
+    let penPaths: [String: PenPathModel]
 }
 
 /// One parametric corner modifier on a shape (MAS-62).
@@ -179,6 +182,23 @@ struct CornerSnapPoint: Codable, Equatable {
     var x: Double
     var y: Double
     var role: String  // "tangent" | "center" | "corner"
+}
+
+/// One pen-tool anchor kept parametrically: the on-curve point plus its optional
+/// incoming/outgoing bezier handles (a straight corner has neither). Stored so a
+/// pen path stays a real curve and can be re-opened for editing (double-click).
+struct PenPathAnchor: Codable, Equatable {
+    var point: [Double]            // [x, y]
+    var handleIn: [Double]? = nil  // [x, y] or nil
+    var handleOut: [Double]? = nil // [x, y] or nil
+}
+
+/// A pen-tool path kept editable as its anchors + handles, keyed by the DXF
+/// entity handle. The visible polyline is flattened from this; the model lets a
+/// double-click restore the exact anchors for further editing.
+struct PenPathModel: Codable, Equatable {
+    var anchors: [PenPathAnchor]
+    var closed: Bool
 }
 
 struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
@@ -449,6 +469,8 @@ struct ProjectSaveContainer: Codable {
     var isLearnModeEnabled: Bool? = nil
     // Parametric fillet/chamfer corner specs, keyed by entity handle (MAS-62).
     var parametricShapes: [String: ParametricCornerShape]? = nil
+    // Parametric pen paths, keyed by entity handle (parametric pen lines).
+    var penPaths: [String: PenPathModel]? = nil
     var offsetDistance: Double? = nil
     var offsetSide: String? = nil
     var holeOffsetDistance: Double? = nil
@@ -704,6 +726,9 @@ class AppState {
     /// Snap points for parametric shapes (two tangent ends + one center per
     /// blend, plus sharp corners), returned by op_apply_corners.
     var cornerSnapPoints: [String: [CornerSnapPoint]] = [:]
+    /// Pen-tool paths kept editable as anchors + bezier handles, keyed by entity
+    /// handle. Lets a pen line be re-opened for editing on double-click.
+    var penPaths: [String: PenPathModel] = [:]
     // The creation fillet handle shows only right after a rectangle is drawn,
     // never again on mere re-selection (MAS-62).
     var justCreatedRectangleHandle: String? = nil
@@ -1372,7 +1397,8 @@ class AppState {
             measurements: measurements,
             selectedHandles: selectedHandles,
             parametricShapes: parametricShapes,
-            cornerSnapPoints: cornerSnapPoints
+            cornerSnapPoints: cornerSnapPoints,
+            penPaths: penPaths
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -1399,7 +1425,8 @@ class AppState {
             measurements: measurements,
             selectedHandles: selectedHandles,
             parametricShapes: parametricShapes,
-            cornerSnapPoints: cornerSnapPoints
+            cornerSnapPoints: cornerSnapPoints,
+            penPaths: penPaths
         )
         redoStack.append(currentState)
 
@@ -1409,6 +1436,7 @@ class AppState {
         self.selectedHandles = previousState.selectedHandles
         self.parametricShapes = previousState.parametricShapes
         self.cornerSnapPoints = previousState.cornerSnapPoints
+        self.penPaths = previousState.penPaths
         self.selectedMeasurement = nil
         self.hasUnsavedChanges = true
         
@@ -1450,7 +1478,8 @@ class AppState {
             measurements: measurements,
             selectedHandles: selectedHandles,
             parametricShapes: parametricShapes,
-            cornerSnapPoints: cornerSnapPoints
+            cornerSnapPoints: cornerSnapPoints,
+            penPaths: penPaths
         )
         undoStack.append(currentState)
 
@@ -1460,6 +1489,7 @@ class AppState {
         self.selectedHandles = nextState.selectedHandles
         self.parametricShapes = nextState.parametricShapes
         self.cornerSnapPoints = nextState.cornerSnapPoints
+        self.penPaths = nextState.penPaths
         self.selectedMeasurement = nil
         self.hasUnsavedChanges = true
         
@@ -2915,6 +2945,36 @@ class AppState {
         }
     }
 
+    /// Updates a re-edited pen path's entity to a new flattened point list and
+    /// persists it (parametric pen lines). Mirrors commitEntityVertices but takes
+    /// the points explicitly, since the live anchors — not the stored vertices —
+    /// are the source of truth while editing.
+    func applyPenEdit(handle: String, points: [[Double]]) {
+        guard points.count >= 2, let idx = entities.firstIndex(where: { $0.handle == handle }) else { return }
+        saveToHistory()
+        entities[idx] = entities[idx].withVertices(points)
+        hasUnsavedChanges = true
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        enqueueBufferWrite {
+            let inputPath = (await MainActor.run { self.currentFilePath?.path }) ?? activeDxfURL.path
+            do {
+                _ = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "edit_vertices",
+                    args: [
+                        "input": inputPath,
+                        "output": activeDxfURL.path,
+                        "handle": handle,
+                        "vertices": points
+                    ]
+                )
+                await MainActor.run { self.currentFilePath = activeDxfURL }
+            } catch {
+                print("Pen edit persist failed: \(error)")
+            }
+        }
+    }
+
     /// Right-click → Expand: drops the rectangle constraint (and its parametric
     /// dimensions) on the selected rectangle(s), leaving a free polyline whose
     /// vertices can be dragged.
@@ -3107,6 +3167,7 @@ class AppState {
         self.selectedHandles = state.selectedHandles
         self.parametricShapes = state.parametricShapes
         self.cornerSnapPoints = state.cornerSnapPoints
+        self.penPaths = state.penPaths
         self.selectedMeasurement = nil
         self.hasUnsavedChanges = true
         Task {
@@ -4067,6 +4128,7 @@ class AppState {
                 refImageCalibrationEndY: calibrationPoints.count > 1 ? Double(calibrationPoints[1].y) : nil,
                 isLearnModeEnabled: isLearnModeEnabled,
                 parametricShapes: parametricShapes.isEmpty ? nil : parametricShapes,
+                penPaths: penPaths.isEmpty ? nil : penPaths,
                 offsetDistance: offsetDistance,
                 offsetSide: offsetSide,
                 holeOffsetDistance: holeOffsetDistance,
@@ -4206,6 +4268,7 @@ class AppState {
             
             if let learn = validContainer.isLearnModeEnabled { self.isLearnModeEnabled = learn }
             if let pShapes = validContainer.parametricShapes { self.parametricShapes = pShapes }
+            if let pp = validContainer.penPaths { self.penPaths = pp }
             if let dist = validContainer.offsetDistance { self.offsetDistance = dist }
             if let side = validContainer.offsetSide { self.offsetSide = side }
             if let hDist = validContainer.holeOffsetDistance { self.holeOffsetDistance = hDist }

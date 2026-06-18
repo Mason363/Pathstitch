@@ -2805,19 +2805,22 @@ def op_apply_corners(args: Dict[str, Any]) -> Dict[str, Any]:
             dt[i] = t
             kinds[i] = spec.get("kind", "fillet")
 
-        # Resolve adjacent fillets sharing an edge: they may not overlap. The
-        # larger one keeps its full reach, the smaller stops where it meets it —
-        # so the first/biggest fillet on an edge can grow to the mathematical
-        # limit while its neighbour halts at the contact point (not the midpoint).
+        # Resolve adjacent fillets sharing an edge. A lone fillet (its neighbour
+        # on that edge is sharp) keeps the full mathematical maximum — it can run
+        # right up to the far vertex. But two fillets that would *touch* on a
+        # shared edge each stop at the edge midpoint, so they meet halfway rather
+        # than the larger one swallowing the edge. The min() accumulates across a
+        # corner's two edges, so the tighter neighbour wins.
         edges = [(i, (i + 1) % n) for i in range(n)] if (closed and n > 2) else [(i, i + 1) for i in range(n - 1)]
         for _ in range(2):
             for a, b in edges:
+                if dt[a] <= 1e-9 or dt[b] <= 1e-9:
+                    continue  # only one fillet on this edge → mathematical max stands
                 L = math.hypot(base[a][0] - base[b][0], base[a][1] - base[b][1])
                 if dt[a] + dt[b] > L + 1e-9:
-                    if dt[a] >= dt[b]:
-                        dt[b] = max(0.0, L - dt[a])
-                    else:
-                        dt[a] = max(0.0, L - dt[b])
+                    half = L / 2.0
+                    dt[a] = min(dt[a], half)
+                    dt[b] = min(dt[b], half)
 
         out = []           # (x, y, bulge)
         snaps = []         # {x, y, role}
@@ -4103,6 +4106,21 @@ def _trim_intersection_params(p0, p1, msp, target_handle):
                 for t in ((-b - sq) / (2 * a), (-b + sq) / (2 * a)):
                     if 1e-9 < t < 1 - 1e-9:
                         ts.append(t)
+        elif et == "ARC":
+            cx, cy = ent.dxf.center.x, ent.dxf.center.y
+            R = ent.dxf.radius
+            fx, fy = p0[0] - cx, p0[1] - cy
+            a = rr
+            b = 2.0 * (fx * rx + fy * ry)
+            c = fx * fx + fy * fy - R * R
+            disc = b * b - 4 * a * c
+            if disc >= 0:
+                sq = math.sqrt(disc)
+                for t in ((-b - sq) / (2 * a), (-b + sq) / (2 * a)):
+                    if 1e-9 < t < 1 - 1e-9:
+                        ix, iy = p0[0] + rx * t, p0[1] + ry * t
+                        if _angle_in_arc(math.atan2(iy - cy, ix - cx), ent.dxf.start_angle, ent.dxf.end_angle):
+                            ts.append(t)
     # Keep only strictly-interior, de-duplicated parameters.
     ts = sorted(t for t in ts if 1e-6 < t < 1 - 1e-6)
     dedup = []
@@ -4136,6 +4154,153 @@ def _emit_path(msp, pts, layer):
     return msp.add_lwpolyline(pts, dxfattribs={"layer": layer, "closed": False}).dxf.handle
 
 
+def _poly_edges(pts, closed):
+    edges = list(zip(pts, pts[1:]))
+    if closed and len(pts) > 2:
+        edges.append((pts[-1], pts[0]))
+    return edges
+
+
+def _seg_circle_angles(q0, q1, cx, cy, R):
+    """Angles (rad) on circle (cx,cy,R) where the segment q0->q1 actually crosses
+    it. A tangent (grazing) contact is ignored — it doesn't divide the circle."""
+    dx, dy = q1[0] - q0[0], q1[1] - q0[1]
+    a = dx * dx + dy * dy
+    if a < 1e-12:
+        return []
+    fx, fy = q0[0] - cx, q0[1] - cy
+    b = 2.0 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - R * R
+    disc = b * b - 4 * a * c
+    if disc < 1e-9:                      # miss or tangent → no real cut
+        return []
+    sq = math.sqrt(disc)
+    out = []
+    for u in ((-b - sq) / (2 * a), (-b + sq) / (2 * a)):
+        if -1e-9 <= u <= 1 + 1e-9:
+            px, py = q0[0] + dx * u, q0[1] + dy * u
+            out.append(math.atan2(py - cy, px - cx))
+    return out
+
+
+def _circle_circle_points(cx, cy, R, ox, oy, oR):
+    """Intersection points of circle (cx,cy,R) with circle (ox,oy,oR). Empty on a
+    miss, containment, or tangency (a tangent point doesn't divide the host)."""
+    d = math.hypot(ox - cx, oy - cy)
+    if d < 1e-9 or d > R + oR - 1e-7 or d < abs(R - oR) + 1e-7:
+        return []
+    a = (R * R - oR * oR + d * d) / (2 * d)
+    h2 = R * R - a * a
+    if h2 <= 1e-12:
+        return []
+    h = math.sqrt(h2)
+    bx, by = cx + a * (ox - cx) / d, cy + a * (oy - cy) / d
+    px, py = -(oy - cy) / d, (ox - cx) / d
+    return [(bx + h * px, by + h * py), (bx - h * px, by - h * py)]
+
+
+def _angle_in_arc(theta, start_deg, end_deg):
+    """True if angle `theta` (rad) lies on the CCW arc start_deg→end_deg."""
+    s = math.radians(start_deg) % (2 * math.pi)
+    e = math.radians(end_deg) % (2 * math.pi)
+    sweep = (e - s) % (2 * math.pi)
+    if sweep < 1e-9:
+        sweep = 2 * math.pi
+    off = (theta % (2 * math.pi) - s) % (2 * math.pi)
+    return off <= sweep + 1e-9
+
+
+def _host_cut_angles(cx, cy, R, msp, target_handle):
+    """Sorted, de-duplicated angles (rad, [0,2π)) where the host circle/arc of
+    radius R about (cx,cy) is crossed by every other entity (MAS, circle trim)."""
+    angs = []
+    for ent in msp:
+        if ent.dxf.handle == target_handle:
+            continue
+        et = ent.dxftype()
+        if et == "LINE":
+            angs += _seg_circle_angles((ent.dxf.start.x, ent.dxf.start.y),
+                                       (ent.dxf.end.x, ent.dxf.end.y), cx, cy, R)
+        elif et in ("LWPOLYLINE", "POLYLINE"):
+            hp = _host_points(ent)
+            if hp is None:
+                continue
+            for q0, q1 in _poly_edges(hp[0], hp[1]):
+                angs += _seg_circle_angles(q0, q1, cx, cy, R)
+        elif et == "CIRCLE":
+            for ix, iy in _circle_circle_points(cx, cy, R, ent.dxf.center.x, ent.dxf.center.y, ent.dxf.radius):
+                angs.append(math.atan2(iy - cy, ix - cx))
+        elif et == "ARC":
+            ocx, ocy, oR = ent.dxf.center.x, ent.dxf.center.y, ent.dxf.radius
+            for ix, iy in _circle_circle_points(cx, cy, R, ocx, ocy, oR):
+                if _angle_in_arc(math.atan2(iy - ocy, ix - ocx), ent.dxf.start_angle, ent.dxf.end_angle):
+                    angs.append(math.atan2(iy - cy, ix - cx))
+    norm = sorted(a % (2 * math.pi) for a in angs)
+    dedup = []
+    for a in norm:
+        if not dedup or abs(a - dedup[-1]) > 1e-6:
+            dedup.append(a)
+    if len(dedup) >= 2 and (dedup[0] + 2 * math.pi - dedup[-1]) < 1e-6:
+        dedup.pop()
+    return dedup
+
+
+def _trim_circular(msp, ent, point):
+    """Trim a CIRCLE or ARC at its crossings, removing only the span under the
+    cursor and leaving real ARC(s). A circle with no crossings deletes whole,
+    mirroring how an unbounded line fragment is removed (MAS, circle trim)."""
+    et = ent.dxftype()
+    cx, cy = ent.dxf.center.x, ent.dxf.center.y
+    R = ent.dxf.radius
+    attribs = {"layer": ent.dxf.layer}
+    if ent.dxf.hasattr("color"):
+        attribs["color"] = ent.dxf.color
+    angs = _host_cut_angles(cx, cy, R, msp, ent.dxf.handle)
+    click_ang = math.atan2(float(point[1]) - cy, float(point[0]) - cx) % (2 * math.pi)
+    new_handles = []
+
+    if et == "CIRCLE":
+        if not angs:
+            msp.delete_entity(ent)
+            return []
+        k = len(angs)
+        lo, hi = angs[-1], angs[0]
+        for i in range(k):
+            a0, a1 = angs[i], angs[(i + 1) % k]
+            span = (a1 - a0) % (2 * math.pi)
+            if (click_ang - a0) % (2 * math.pi) <= span + 1e-12:
+                lo, hi = a0, a1
+                break
+        msp.delete_entity(ent)
+        arc = msp.add_arc(center=(cx, cy), radius=R,
+                          start_angle=math.degrees(hi), end_angle=math.degrees(lo),
+                          dxfattribs=attribs)
+        return [arc.dxf.handle]
+
+    # ARC host: walk the sweep, drop the clicked sub-span, keep the rest.
+    s_r = math.radians(ent.dxf.start_angle) % (2 * math.pi)
+    sweep = (math.radians(ent.dxf.end_angle) - math.radians(ent.dxf.start_angle)) % (2 * math.pi)
+    if sweep < 1e-9:
+        sweep = 2 * math.pi
+    cuts = sorted(o for o in ((a - s_r) % (2 * math.pi) for a in angs) if 1e-9 < o < sweep - 1e-9)
+    click_off = max(0.0, min(sweep, (click_ang - s_r) % (2 * math.pi)))
+    bounds = [0.0] + cuts + [sweep]
+    lo, hi = 0.0, sweep
+    for i in range(len(bounds) - 1):
+        if bounds[i] <= click_off <= bounds[i + 1]:
+            lo, hi = bounds[i], bounds[i + 1]
+            break
+    msp.delete_entity(ent)
+    for a0, a1 in ((0.0, lo), (hi, sweep)):
+        if a1 - a0 > 1e-6:
+            arc = msp.add_arc(center=(cx, cy), radius=R,
+                              start_angle=math.degrees(s_r + a0),
+                              end_angle=math.degrees(s_r + a1),
+                              dxfattribs=attribs)
+            new_handles.append(arc.dxf.handle)
+    return new_handles
+
+
 def op_trim_segment(args: Dict[str, Any]) -> Dict[str, Any]:
     """Fusion-style trim (MAS-98). Cuts the target entity's clicked edge at every
     intersection with other geometry and removes only the sub-segment under the
@@ -4162,9 +4327,14 @@ def op_trim_segment(args: Dict[str, Any]) -> Dict[str, Any]:
         ent = doc.entitydb.get(handle)
         if ent is None:
             return {"status": "error", "message": f"Entity {handle} not found."}
+        # Circles and arcs trim by angle, not by edge parameter (MAS, circle trim).
+        if ent.dxftype() in ("CIRCLE", "ARC"):
+            new_handles = _trim_circular(msp, ent, point)
+            doc.saveas(output_path)
+            return {"status": "ok", "data": {"new_handles": new_handles}}
         host = _host_points(ent)
         if host is None:
-            return {"status": "error", "message": "Trim works on lines and polylines."}
+            return {"status": "error", "message": "Trim works on lines, arcs, circles and polylines."}
         pts, closed = host
         m = len(pts)
         if m < 2:

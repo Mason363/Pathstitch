@@ -21,6 +21,12 @@ struct DxfCanvasView: View {
     @State private var penAnchors: [PenAnchor] = []
     @State private var penDraggingHandle = false
     @State private var penClosePending = false
+    // Re-editing an existing pen path (parametric pen lines): the handle being
+    // edited, whether it's closed, and which anchor/handle a drag is moving.
+    @State private var editingPenHandle: String? = nil
+    @State private var penEditingClosed = false
+    @State private var penEditDragAnchor: Int? = nil
+    @State private var penEditDragHandle: (idx: Int, isOut: Bool)? = nil
 
     @State private var dragStartOffset = CGSize.zero
     @State private var isDragging = false
@@ -136,9 +142,22 @@ struct DxfCanvasView: View {
                                     x: (startScreen.x + endScreen.x) / 2,
                                     y: (startScreen.y + endScreen.y) / 2
                                 )
-                            } else if let nearestEntity = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: geo.size, bounds: modelBounds),
-                                      nearestEntity.type == "TEXT" {
-                                state.startEditingText(entity: nearestEntity)
+                            } else if let nearestEntity = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: geo.size, bounds: modelBounds) {
+                                if nearestEntity.type == "TEXT" {
+                                    state.startEditingText(entity: nearestEntity)
+                                } else if state.currentTool == .select, let model = state.penPaths[nearestEntity.handle] {
+                                    // Re-open a pen path for editing on the Select
+                                    // tool (parametric pen lines).
+                                    loadPenModel(model)
+                                    penEditingClosed = model.closed
+                                    editingPenHandle = nearestEntity.handle
+                                    penEditDragAnchor = nil
+                                    penEditDragHandle = nil
+                                    penDraggingHandle = false
+                                    penClosePending = false
+                                    state.selectedHandles = [nearestEntity.handle]
+                                    state.currentTool = .pen
+                                }
                             }
                         }
                 )
@@ -215,10 +234,9 @@ struct DxfCanvasView: View {
                         return
                     }
                     if state.currentTool == .pen && !penAnchors.isEmpty {
-                        // Esc abandons the in-progress pen path (MAS-94).
-                        penAnchors = []
-                        penDraggingHandle = false
-                        penClosePending = false
+                        // Esc abandons the in-progress pen path, or cancels a
+                        // re-edit and restores the original (parametric pen lines).
+                        resetPenState()
                     } else if state.isEditingText {
                         state.cancelTextEditing()
                     } else if gizmoDimKind != nil {
@@ -244,8 +262,8 @@ struct DxfCanvasView: View {
                     // Leaving the Pen tool finishes an in-progress path (so the
                     // work isn't lost), then clears the staging state (MAS-94).
                     if oldTool == .pen && newTool != .pen {
-                        if penAnchors.count >= 2 { commitPenPath(closed: false) }
-                        else { penAnchors = []; penDraggingHandle = false; penClosePending = false }
+                        if penAnchors.count >= 2 { commitPenPath(closed: editingPenHandle != nil ? penEditingClosed : false) }
+                        else { resetPenState() }
                     }
                     // Create-copy defaults off each time the Move tool is activated,
                     // and any in-progress point-to-point is reset (MAS-80).
@@ -994,6 +1012,11 @@ struct DxfCanvasView: View {
             // in for it, so skip the real entity to avoid a doubled outline.
             if isDraggingFilletArrow && ent.handle == state.filletSelectedHandle { continue }
 
+            // While re-editing a pen path, its baked polyline is replaced by the
+            // live editable overlay (parametric pen lines) — hide the original so
+            // the user doesn't see a doubled outline.
+            if ent.handle == editingPenHandle { continue }
+
             // Viewport culling (MAS-74): skip entities whose screen bounds fall
             // entirely outside the visible canvas. Selected entities are never
             // culled (the gizmo transform can move them into view mid-drag).
@@ -1069,13 +1092,14 @@ struct DxfCanvasView: View {
         // cursor is over — i.e. what a click/drag would remove.
         if state.currentTool == .trim {
             let modelPt = toModel(point: mouseLocation, size: size, bounds: modelBounds)
-            if let target = trimTargetUnderCursor(modelPt: modelPt, size: size, modelBounds: modelBounds) {
-                let a = toScreen(dx: Double(target.killStart.x), dy: Double(target.killStart.y), size: size, bounds: modelBounds)
-                let b = toScreen(dx: Double(target.killEnd.x), dy: Double(target.killEnd.y), size: size, bounds: modelBounds)
+            if let target = trimTargetUnderCursor(modelPt: modelPt, size: size, modelBounds: modelBounds),
+               target.killPath.count >= 2 {
                 var hp = SwiftUI.Path()
-                hp.move(to: a)
-                hp.addLine(to: b)
-                context.stroke(hp, with: .color(Color.status_err), style: StrokeStyle(lineWidth: 4.0, lineCap: .round))
+                hp.move(to: toScreen(dx: Double(target.killPath[0].x), dy: Double(target.killPath[0].y), size: size, bounds: modelBounds))
+                for p in target.killPath.dropFirst() {
+                    hp.addLine(to: toScreen(dx: Double(p.x), dy: Double(p.y), size: size, bounds: modelBounds))
+                }
+                context.stroke(hp, with: .color(Color.status_err), style: StrokeStyle(lineWidth: 4.0, lineCap: .round, lineJoin: .round))
             }
         }
 
@@ -1280,11 +1304,23 @@ struct DxfCanvasView: View {
                                       control2: scr(b.handleIn ?? b.point))
                     }
                 }
+                // Re-editing a closed loop: draw the closing segment too.
+                if editingPenHandle != nil, penEditingClosed, penAnchors.count >= 3 {
+                    let a = penAnchors[penAnchors.count - 1], b = penAnchors[0]
+                    if a.handleOut == nil && b.handleIn == nil {
+                        path.addLine(to: scr(b.point))
+                    } else {
+                        path.addCurve(to: scr(b.point),
+                                      control1: scr(a.handleOut ?? a.point),
+                                      control2: scr(b.handleIn ?? b.point))
+                    }
+                }
                 context.stroke(path, with: .color(Color.accent), lineWidth: 1.5)
             }
 
-            // Rubber-band preview from the last anchor to the cursor.
-            if let last = penAnchors.last, !penDraggingHandle {
+            // Rubber-band preview from the last anchor to the cursor (not while
+            // re-editing a closed loop — there is nothing to extend).
+            if let last = penAnchors.last, !penDraggingHandle, !(editingPenHandle != nil && penEditingClosed) {
                 var rb = SwiftUI.Path()
                 rb.move(to: scr(last.point))
                 if let hOut = last.handleOut {
@@ -1368,6 +1404,10 @@ struct DxfCanvasView: View {
         guard state.currentTool == .select else { return }
         for handle in state.selectedHandles {
             guard let ent = state.entities.first(where: { $0.handle == handle }) else { continue }
+            // Pen paths are re-edited by double-click (parametric pen lines), so
+            // skip their per-vertex dots — for a curve those are dense flattened
+            // points the user can't meaningfully grab.
+            if state.penPaths[handle] != nil { continue }
             // For a parametric shape, the editable vertices include all the dense
             // flattened points along each fillet/chamfer arc — those represent
             // nothing the user can grab, so show only the sharp base corners.
@@ -1476,17 +1516,44 @@ struct DxfCanvasView: View {
     /// other geometry (or the edge's own ends). Mirrors the Python trim so the
     /// hover highlight matches what actually gets cut.
     private func trimTargetUnderCursor(modelPt: CGPoint, size: CGSize, modelBounds: CGRect)
-        -> (handle: String, segIndex: Int, killStart: CGPoint, killEnd: CGPoint)? {
+        -> (handle: String, segIndex: Int, killPath: [CGPoint])? {
         let maxDist = Double(12.0 / state.canvasScale)
-        var best: (handle: String, segIndex: Int, a: CGPoint, b: CGPoint)? = nil
         var bestDist = maxDist
+
+        // Nearest straight edge (line / polyline edge).
+        var bestSeg: (handle: String, segIndex: Int, a: CGPoint, b: CGPoint)? = nil
         for ent in state.entities {
             for (i, seg) in trimEdges(of: ent).enumerated() {
                 let d = distancePointToSegment(modelPt, seg.0, seg.1)
-                if d < bestDist { bestDist = d; best = (ent.handle, i, seg.0, seg.1) }
+                if d < bestDist { bestDist = d; bestSeg = (ent.handle, i, seg.0, seg.1) }
             }
         }
-        guard let b = best else { return nil }
+
+        // Nearest circle / arc (radial distance to the curve; arcs only count
+        // when the cursor is within their angular sweep). Circle trimming routes
+        // through the Python op by click point, so we only need the handle and a
+        // faithful red highlight of the span that a click would remove.
+        var bestCirc: DXFEntity? = nil
+        for ent in state.entities {
+            let t = ent.type.uppercased()
+            guard t == "CIRCLE" || t == "ARC", let c = ent.center, let r = ent.radius, c.count >= 2 else { continue }
+            let dr = abs(hypot(Double(modelPt.x) - c[0], Double(modelPt.y) - c[1]) - r)
+            if dr >= bestDist { continue }
+            if t == "ARC", let sa = ent.start_angle, let ea = ent.end_angle {
+                let ang = atan2(Double(modelPt.y) - c[1], Double(modelPt.x) - c[0])
+                if !angleInArc(ang, sa, ea) { continue }
+            }
+            bestDist = dr; bestCirc = ent
+        }
+
+        if let ce = bestCirc {
+            if let kill = circleKillPath(ent: ce, clickModel: modelPt) {
+                return (ce.handle, 0, kill)
+            }
+            return nil
+        }
+
+        guard let b = bestSeg else { return nil }
         let rx = Double(b.b.x - b.a.x), ry = Double(b.b.y - b.a.y)
         let rr = rx*rx + ry*ry
         guard rr > 1e-12 else { return nil }
@@ -1498,6 +1565,12 @@ struct DxfCanvasView: View {
             }
             if ent.type.uppercased() == "CIRCLE", let c = ent.center, let r = ent.radius, c.count >= 2 {
                 cuts.append(contentsOf: circleIntersectParams(b.a, b.b, cx: c[0], cy: c[1], r: r))
+            } else if ent.type.uppercased() == "ARC", let c = ent.center, let r = ent.radius, c.count >= 2,
+                      let sa = ent.start_angle, let ea = ent.end_angle {
+                for t in circleIntersectParams(b.a, b.b, cx: c[0], cy: c[1], r: r) {
+                    let ix = Double(b.a.x) + rx*t, iy = Double(b.a.y) + ry*t
+                    if angleInArc(atan2(iy - c[1], ix - c[0]), sa, ea) { cuts.append(t) }
+                }
             }
         }
         let interior = cuts.filter { $0 > 1e-6 && $0 < 1 - 1e-6 }.sorted()
@@ -1505,7 +1578,118 @@ struct DxfCanvasView: View {
         for t in interior where t <= tClick { lo = t }
         for t in interior.reversed() where t >= tClick { hi = t }
         func at(_ t: Double) -> CGPoint { CGPoint(x: Double(b.a.x) + rx*t, y: Double(b.a.y) + ry*t) }
-        return (b.handle, b.segIndex, at(lo), at(hi))
+        return (b.handle, b.segIndex, [at(lo), at(hi)])
+    }
+
+    private func norm2pi(_ a: Double) -> Double {
+        let m = a.truncatingRemainder(dividingBy: 2 * .pi)
+        return m < 0 ? m + 2 * .pi : m
+    }
+
+    private func angleInArc(_ theta: Double, _ startDeg: Double, _ endDeg: Double) -> Bool {
+        let s = norm2pi(startDeg * .pi / 180)
+        var sweep = norm2pi(endDeg * .pi / 180 - startDeg * .pi / 180)
+        if sweep < 1e-9 { sweep = 2 * .pi }
+        return norm2pi(theta - s) <= sweep + 1e-9
+    }
+
+    private func segCircleAngles(_ q0: CGPoint, _ q1: CGPoint, cx: Double, cy: Double, R: Double) -> [Double] {
+        let dx = Double(q1.x - q0.x), dy = Double(q1.y - q0.y)
+        let a = dx*dx + dy*dy
+        if a < 1e-12 { return [] }
+        let fx = Double(q0.x) - cx, fy = Double(q0.y) - cy
+        let b = 2*(fx*dx + fy*dy)
+        let c = fx*fx + fy*fy - R*R
+        let disc = b*b - 4*a*c
+        if disc < 1e-9 { return [] }   // miss or tangent
+        let sq = disc.squareRoot()
+        var out: [Double] = []
+        for u in [(-b - sq)/(2*a), (-b + sq)/(2*a)] where u >= -1e-9 && u <= 1 + 1e-9 {
+            out.append(atan2(Double(q0.y) + dy*u - cy, Double(q0.x) + dx*u - cx))
+        }
+        return out
+    }
+
+    private func circleCircleAngles(cx: Double, cy: Double, R: Double, ox: Double, oy: Double, oR: Double) -> [(ang: Double, x: Double, y: Double)] {
+        let d = hypot(ox - cx, oy - cy)
+        if d < 1e-9 || d > R + oR - 1e-7 || d < abs(R - oR) + 1e-7 { return [] }
+        let a = (R*R - oR*oR + d*d) / (2*d)
+        let h2 = R*R - a*a
+        if h2 <= 1e-12 { return [] }
+        let h = h2.squareRoot()
+        let bx = cx + a*(ox - cx)/d, by = cy + a*(oy - cy)/d
+        let px = -(oy - cy)/d, py = (ox - cx)/d
+        var out: [(Double, Double, Double)] = []
+        for sgn in [1.0, -1.0] {
+            let ix = bx + sgn*h*px, iy = by + sgn*h*py
+            out.append((atan2(iy - cy, ix - cx), ix, iy))
+        }
+        return out
+    }
+
+    /// Angles (rad, sorted, deduped) where the host circle/arc of radius R about
+    /// (cx,cy) is crossed by every other entity — mirrors the Python trim so the
+    /// hover highlight matches the cut.
+    private func circleCrossingAngles(cx: Double, cy: Double, R: Double, exclude: String) -> [Double] {
+        var angs: [Double] = []
+        for ent in state.entities where ent.handle != exclude {
+            let t = ent.type.uppercased()
+            if t == "CIRCLE", let c = ent.center, let r = ent.radius, c.count >= 2 {
+                for hit in circleCircleAngles(cx: cx, cy: cy, R: R, ox: c[0], oy: c[1], oR: r) { angs.append(hit.ang) }
+            } else if t == "ARC", let c = ent.center, let r = ent.radius, c.count >= 2,
+                      let sa = ent.start_angle, let ea = ent.end_angle {
+                for hit in circleCircleAngles(cx: cx, cy: cy, R: R, ox: c[0], oy: c[1], oR: r) {
+                    if angleInArc(atan2(hit.y - c[1], hit.x - c[0]), sa, ea) { angs.append(hit.ang) }
+                }
+            } else {
+                for seg in trimEdges(of: ent) { angs += segCircleAngles(seg.0, seg.1, cx: cx, cy: cy, R: R) }
+            }
+        }
+        let normd = angs.map { norm2pi($0) }.sorted()
+        var dedup: [Double] = []
+        for a in normd where dedup.isEmpty || abs(a - dedup.last!) > 1e-6 { dedup.append(a) }
+        if dedup.count >= 2, (dedup[0] + 2 * .pi - dedup.last!) < 1e-6 { dedup.removeLast() }
+        return dedup
+    }
+
+    /// Model-space polyline tracing the span a trim click would remove from a
+    /// circle or arc (for the red hover highlight).
+    private func circleKillPath(ent: DXFEntity, clickModel: CGPoint) -> [CGPoint]? {
+        guard let c = ent.center, let R = ent.radius, c.count >= 2 else { return nil }
+        let cx = c[0], cy = c[1]
+        let angs = circleCrossingAngles(cx: cx, cy: cy, R: R, exclude: ent.handle)
+        let click = norm2pi(atan2(Double(clickModel.y) - cy, Double(clickModel.x) - cx))
+        func pt(_ a: Double) -> CGPoint { CGPoint(x: cx + R*cos(a), y: cy + R*sin(a)) }
+        func tess(_ a0: Double, _ a1: Double) -> [CGPoint] {
+            var hi = a1; if hi < a0 { hi += 2 * .pi }
+            let span = hi - a0
+            let steps = max(2, Int((span / (.pi/24)).rounded(.up)))
+            return (0...steps).map { pt(a0 + span * Double($0) / Double(steps)) }
+        }
+        if ent.type.uppercased() == "CIRCLE" {
+            if angs.isEmpty { return tess(0, 2 * .pi - 1e-9) }   // whole circle removed
+            let k = angs.count
+            var lo = angs[k - 1], hi = angs[0]
+            for i in 0..<k {
+                let a0 = angs[i], a1 = angs[(i + 1) % k]
+                let span = norm2pi(a1 - a0)
+                if norm2pi(click - a0) <= span + 1e-12 { lo = a0; hi = a1; break }
+            }
+            return tess(lo, hi)
+        }
+        // ARC
+        guard let saD = ent.start_angle, let eaD = ent.end_angle else { return nil }
+        let s = norm2pi(saD * .pi / 180)
+        var sweep = norm2pi(eaD * .pi / 180 - saD * .pi / 180)
+        if sweep < 1e-9 { sweep = 2 * .pi }
+        let cuts = angs.map { norm2pi($0 - s) }.filter { $0 > 1e-9 && $0 < sweep - 1e-9 }.sorted()
+        let clickOff = min(max(norm2pi(click - s), 0), sweep)
+        let bounds = [0.0] + cuts + [sweep]
+        var lo = 0.0, hi = sweep
+        for i in 0..<(bounds.count - 1) where bounds[i] <= clickOff && clickOff <= bounds[i + 1] {
+            lo = bounds[i]; hi = bounds[i + 1]; break
+        }
+        return tess(s + lo, s + hi)
     }
 
     /// Corner picking for the Fillet/Chamfer tools — toggles the nearest corner
@@ -1901,7 +2085,21 @@ struct DxfCanvasView: View {
             // extrudes a symmetric bezier handle (smooth point). Pressing on the
             // first anchor (with ≥2 placed) closes the path on release.
             if state.currentTool == .pen {
-                if penAnchors.count >= 2 {
+                // Re-editing an existing path: grab the anchor/handle under the
+                // cursor and drag it (parametric pen lines).
+                if let hit = penHitTest(screen: point, size: size, modelBounds: modelBounds) {
+                    switch hit.kind {
+                    case "anchor": penEditDragAnchor = hit.idx
+                    case "handleOut": penEditDragHandle = (hit.idx, true)
+                    case "handleIn": penEditDragHandle = (hit.idx, false)
+                    default: break
+                    }
+                    penDraggingHandle = false
+                    return
+                }
+                // A closed path being edited is a finished loop — no extending it.
+                let isClosedEdit = (editingPenHandle != nil && penEditingClosed)
+                if penAnchors.count >= 2 && !isClosedEdit {
                     let firstScreen = toScreen(dx: penAnchors[0].point.x, dy: penAnchors[0].point.y, size: size, bounds: modelBounds)
                     if hypot(point.x - firstScreen.x, point.y - firstScreen.y) < 10.0 {
                         penClosePending = true
@@ -1909,6 +2107,7 @@ struct DxfCanvasView: View {
                         return
                     }
                 }
+                if isClosedEdit { return }
                 let modelPt = snappedModelPoint(forScreen: point, ref: penAnchors.last?.point, size: size, bounds: modelBounds)
                 penAnchors.append(PenAnchor(point: modelPt))
                 penDraggingHandle = true
@@ -2070,6 +2269,29 @@ struct DxfCanvasView: View {
         
         // Handle active dragging updates
         if state.currentTool == .pen {
+            // Re-editing: drag an existing anchor (moving its handles with it) or
+            // reshape a bezier handle (parametric pen lines).
+            if let ai = penEditDragAnchor, ai < penAnchors.count {
+                var mp = toModel(point: val.location, size: size, bounds: modelBounds)
+                if state.snapEnabled, let snap = getSnappedPoint(for: val.location, size: size, bounds: modelBounds) {
+                    mp = snap.snappedModelPt
+                }
+                let old = penAnchors[ai].point
+                let dx = mp.x - old.x, dy = mp.y - old.y
+                penAnchors[ai].point = mp
+                if let h = penAnchors[ai].handleOut {
+                    penAnchors[ai].handleOut = CGPoint(x: h.x + dx, y: h.y + dy)
+                }
+                return
+            }
+            if let hd = penEditDragHandle, hd.idx < penAnchors.count {
+                let mp = toModel(point: val.location, size: size, bounds: modelBounds)
+                let pt = penAnchors[hd.idx].point
+                // The incoming handle is the mirror of handleOut, so dragging it
+                // sets handleOut to the reflected point (keeps a smooth point).
+                penAnchors[hd.idx].handleOut = hd.isOut ? mp : CGPoint(x: 2 * pt.x - mp.x, y: 2 * pt.y - mp.y)
+                return
+            }
             // Dragging after placing an anchor extrudes its outgoing bezier
             // handle (the incoming handle is the mirror — symmetric smooth point).
             if penDraggingHandle, !penAnchors.isEmpty, !penClosePending {
@@ -2155,23 +2377,82 @@ struct DxfCanvasView: View {
         return pts
     }
 
-    /// Commits the in-progress pen path as an editable polyline, then resets.
-    private func commitPenPath(closed: Bool) {
-        let pts = penFlattenedPoints(closed: closed)
+    /// The current pen anchors as a persistable parametric model.
+    private func currentPenModel(closed: Bool) -> PenPathModel {
+        PenPathModel(anchors: penAnchors.map { a in
+            PenPathAnchor(point: [Double(a.point.x), Double(a.point.y)],
+                          handleIn: nil,
+                          handleOut: a.handleOut.map { [Double($0.x), Double($0.y)] })
+        }, closed: closed)
+    }
+
+    /// Loads a stored pen model back into the live anchors for editing.
+    private func loadPenModel(_ m: PenPathModel) {
+        penAnchors = m.anchors.map { pa in
+            var a = PenAnchor(point: CGPoint(x: pa.point[0], y: pa.point[1]))
+            if let h = pa.handleOut, h.count >= 2 { a.handleOut = CGPoint(x: h[0], y: h[1]) }
+            return a
+        }
+    }
+
+    private func resetPenState() {
         penAnchors = []
         penDraggingHandle = false
         penClosePending = false
-        guard pts.count >= 2 else { return }
-        Task {
-            _ = await state.addSketchedEntity(type: "path", params: ["points": pts, "closed": closed])
+        editingPenHandle = nil
+        penEditDragAnchor = nil
+        penEditDragHandle = nil
+    }
+
+    /// Commits the in-progress pen path. A fresh path is added as a new editable
+    /// polyline; a re-edited one (parametric pen lines) updates its own entity in
+    /// place. Either way the parametric anchors are stored so it stays editable.
+    private func commitPenPath(closed: Bool) {
+        let model = currentPenModel(closed: closed)
+        let pts = penFlattenedPoints(closed: closed)
+        let editHandle = editingPenHandle
+        resetPenState()
+        guard pts.count >= 2 else {
+            if let h = editHandle { state.penPaths[h] = nil }
+            return
+        }
+        if let h = editHandle {
+            state.penPaths[h] = model
+            state.applyPenEdit(handle: h, points: pts)
+        } else {
+            Task {
+                if let h = await state.addSketchedEntity(type: "path", params: ["points": pts, "closed": closed]) {
+                    await MainActor.run { state.penPaths[h] = model }
+                }
+            }
         }
     }
 
     /// Finishes the current pen path: closes if it ends on the first anchor,
-    /// otherwise commits an open path. Used by double-click / Return.
+    /// otherwise commits an open path. A re-edited path keeps its closed-ness.
     private func finishPenPath() {
-        guard penAnchors.count >= 2 else { penAnchors = []; return }
-        commitPenPath(closed: false)
+        guard penAnchors.count >= 2 else { resetPenState(); return }
+        commitPenPath(closed: editingPenHandle != nil ? penEditingClosed : false)
+    }
+
+    /// Hit-tests the pen anchors and bezier handles under a screen point, for
+    /// re-editing (parametric pen lines). Handles take priority over anchors.
+    private func penHitTest(screen p: CGPoint, size: CGSize, modelBounds: CGRect) -> (kind: String, idx: Int)? {
+        let r: CGFloat = 8.0
+        for (i, a) in penAnchors.enumerated() {
+            guard let hOut = a.handleOut else { continue }
+            let ho = toScreen(dx: hOut.x, dy: hOut.y, size: size, bounds: modelBounds)
+            if hypot(p.x - ho.x, p.y - ho.y) < r { return ("handleOut", i) }
+            if let hIn = a.handleIn {
+                let hi = toScreen(dx: hIn.x, dy: hIn.y, size: size, bounds: modelBounds)
+                if hypot(p.x - hi.x, p.y - hi.y) < r { return ("handleIn", i) }
+            }
+        }
+        for (i, a) in penAnchors.enumerated() {
+            let s = toScreen(dx: a.point.x, dy: a.point.y, size: size, bounds: modelBounds)
+            if hypot(p.x - s.x, p.y - s.y) < r { return ("anchor", i) }
+        }
+        return nil
     }
 
     /// Creates a line entity from `start`→`end` and focuses its length dimension.
@@ -2208,6 +2489,12 @@ struct DxfCanvasView: View {
         // path; otherwise the anchor just placed stays and the path continues.
         if state.currentTool == .pen {
             penDraggingHandle = false
+            // Releasing an edit drag keeps the path live (commit on finish).
+            if penEditDragAnchor != nil || penEditDragHandle != nil {
+                penEditDragAnchor = nil
+                penEditDragHandle = nil
+                return
+            }
             if penClosePending {
                 penClosePending = false
                 commitPenPath(closed: true)
