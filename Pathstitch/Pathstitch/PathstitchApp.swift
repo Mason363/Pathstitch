@@ -6,11 +6,14 @@ import Combine
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var appearanceCancellable: AnyCancellable?
     
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationWillFinishLaunching(_ notification: Notification) {
         // Apply the saved appearance app-wide BEFORE any window is shown so the
         // Start screen, Settings, Help and document windows all open themed (MAS-72).
+        // Calling this early also sets the correct Dock icon before the app finishes launching.
         ThemeManager.apply()
-
+    }
+    
+    func applicationDidFinishLaunching(_ notification: Notification) {
         WindowManager.shared.applicationDidFinishLaunching(notification)
 
         // Monitor system appearance to update dock icon dynamically
@@ -42,6 +45,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `windowShouldClose` isn't consulted on termination.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         return WindowManager.shared.applicationShouldTerminate(sender)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Fast-kill the Python worker process so it doesn't delay app shutdown
+        // (which causes the Dock icon to flash back to light while the process is lingering).
+        let bridge = PythonBridge.shared
+        Task {
+            await bridge.shutdown()
+        }
     }
 }
 

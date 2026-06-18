@@ -128,6 +128,12 @@ actor PythonBridge {
         readerTask?.cancel()
         readerTask = nil
 
+        let stranded = pending
+        pending.removeAll()
+        for (_, p) in stranded {
+            p.continuation.resume(throwing: PythonBridgeError.processFailed("Python worker exited unexpectedly."))
+        }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pythonPath)
         proc.arguments = ["-m", "pathstitch_core.worker"]
@@ -229,6 +235,22 @@ actor PythonBridge {
         dying?.terminate()
         for (_, p) in stranded {
             p.continuation.resume(throwing: PythonBridgeError.processFailed("Python worker was restarted."))
+        }
+    }
+
+    /// Shuts down the persistent worker process.
+    func shutdown() {
+        let dying = process
+        let stranded = pending
+        pending.removeAll()
+        process = nil
+        stdinHandle = nil
+        readerTask?.cancel()
+        readerTask = nil
+        workerGeneration += 1
+        dying?.terminate()
+        for (_, p) in stranded {
+            p.continuation.resume(throwing: PythonBridgeError.processFailed("Python worker was shut down."))
         }
     }
 
