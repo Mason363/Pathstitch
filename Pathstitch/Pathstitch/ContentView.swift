@@ -396,7 +396,8 @@ struct ContentView: View {
             UTType(filenameExtension: "step"),
             UTType(filenameExtension: "stp"),
             UTType(filenameExtension: "svg"),
-            UTType(filenameExtension: "stch")
+            UTType(filenameExtension: "stch"),
+            UTType.image
         ].compactMap { $0 }
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
@@ -1637,8 +1638,9 @@ extension ContentView {
                             .foregroundColor(Color.text_secondary)
                     }
                     Picker("", selection: $state.patternMode) {
-                        Text("Rectangular").tag("rectangular")
+                        Text("Rect").tag("rectangular")
                         Text("Circular").tag("circular")
+                        Text("Path").tag("path")
                     }
                     .pickerStyle(SegmentedPickerStyle())
 
@@ -1665,7 +1667,7 @@ extension ContentView {
                         }
                         .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
                         .disabled(state.selectedHandles.isEmpty)
-                    } else {
+                    } else if state.patternMode == "circular" {
                         HStack {
                             Text("Count").font(PlasticityFont.label).foregroundColor(Color.text_secondary)
                             Spacer()
@@ -1691,6 +1693,33 @@ extension ContentView {
                         }
                         .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty))
                         .disabled(state.selectedHandles.isEmpty)
+                    } else if state.patternMode == "path" {
+                        HStack {
+                            Text("Spacing (mm)").font(PlasticityFont.label).foregroundColor(Color.text_secondary)
+                            Spacer()
+                            patternField($state.patternPathSpacing)
+                        }
+                        Button {
+                            state.pickingPatternPath = true
+                            state.pickingPatternPivot = false
+                        } label: {
+                            Label(state.patternPathHandle == nil ? "Pick Path…" : "Re-pick Path…", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                        if state.pickingPatternPath {
+                            Text("Click a guide path on the canvas…")
+                                .font(PlasticityFont.label).foregroundColor(Color.accent)
+                        } else if let handle = state.patternPathHandle {
+                            Text("Picked Path: \(handle)")
+                                .font(PlasticityFont.label).foregroundColor(Color.text_muted)
+                        }
+                        Button("Apply Pattern") {
+                            if let handle = state.patternPathHandle {
+                                state.applyPatternPath(pathHandle: handle, spacing: state.patternPathSpacing)
+                            }
+                        }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty && state.patternPathHandle != nil))
+                        .disabled(state.selectedHandles.isEmpty || state.patternPathHandle == nil)
                     }
                 }
                 .padding(.vertical, 4)
@@ -2078,20 +2107,27 @@ extension ContentView {
                                         }
                                         .buttonStyle(PlainButtonStyle())
                                         
-                                        // Premium color dot overlaying borderless color picker
-                                        ZStack {
-                                            Circle()
-                                                .fill(item.color ?? Color.clear)
+                                        if item.isReferenceImageLayer {
+                                            Image(systemName: "photo")
+                                                .font(.system(size: 10))
+                                                .foregroundColor(Color.accent)
+                                                .frame(width: 12, height: 12)
+                                        } else {
+                                            // Premium color dot overlaying borderless color picker
+                                            ZStack {
+                                                Circle()
+                                                    .fill(item.color ?? Color.clear)
+                                                    .frame(width: 10, height: 10)
+                                                ColorPicker("", selection: Binding(
+                                                    get: { item.color ?? Color.clear },
+                                                    set: { state.colorLayer(id: item.id, newColorHex: $0.toHex()) }
+                                                ))
+                                                .labelsHidden()
+                                                .opacity(0.015)
                                                 .frame(width: 10, height: 10)
-                                            ColorPicker("", selection: Binding(
-                                                get: { item.color ?? Color.clear },
-                                                set: { state.colorLayer(id: item.id, newColorHex: $0.toHex()) }
-                                            ))
-                                            .labelsHidden()
-                                            .opacity(0.015)
-                                            .frame(width: 10, height: 10)
+                                            }
+                                            .frame(width: 12, height: 12)
                                         }
-                                        .frame(width: 12, height: 12)
                                     }
                                     
                                     // Renamable Name text field / label
@@ -2294,9 +2330,286 @@ extension ContentView {
     }
 
     @ViewBuilder
+    private var referenceImageSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "photo").foregroundColor(Color.accent)
+                Text("REFERENCE IMAGE")
+                    .font(PlasticityFont.header)
+                    .foregroundColor(Color.text_primary)
+                    .tracking(0.5)
+                Spacer()
+            }
+            .padding(.bottom, 4)
+            
+            if let layer = state.activeLayer {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Lock Toggle & Visibility Toggle
+                    HStack {
+                        Toggle("Locked", isOn: Binding(
+                            get: { layer.locked },
+                            set: { state.updateActiveLayerTransform(locked: $0) }
+                        ))
+                        .font(PlasticityFont.label)
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            if let idx = state.layers.firstIndex(where: { $0.id == layer.id }) {
+                                state.layers[idx].visible.toggle()
+                            }
+                        }) {
+                            Label(layer.visible ? "Visible" : "Hidden", systemImage: layer.visible ? "eye" : "eye.slash")
+                                .font(PlasticityFont.label)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    
+                    // Opacity Slider
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Opacity")
+                                .font(PlasticityFont.label)
+                                .foregroundColor(Color.text_secondary)
+                            Spacer()
+                            Text(String(format: "%.0f%%", layer.refImageOpacity * 100))
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(Color.text_primary)
+                        }
+                        Slider(value: Binding(
+                            get: { layer.refImageOpacity },
+                            set: { state.updateActiveLayerTransform(opacity: $0) }
+                        ), in: 0.0...1.0)
+                    }
+                    
+                    // Depth Segmented Control (Front/Back)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Depth")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Picker("", selection: Binding(
+                            get: { layer.refImageDepth },
+                            set: { state.updateActiveLayerTransform(depth: $0) }
+                        )) {
+                            Text("Front").tag("front")
+                            Text("Back").tag("back")
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
+                        .labelsHidden()
+                    }
+                    
+                    // Edit Transform Button
+                    Button(action: {
+                        state.backupActiveLayerTransform()
+                        state.isEditingRefImageTransform.toggle()
+                    }) {
+                        Text(state.isEditingRefImageTransform ? "Finish Transform" : "Edit Transform")
+                            .font(PlasticityFont.body)
+                            .foregroundColor(Color.text_primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color.accent.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    // Calibration Section
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Calibration")
+                            .font(PlasticityFont.header)
+                            .foregroundColor(Color.text_primary)
+                            .padding(.top, 4)
+                        
+                        Text("Enter target distance, click Calibrate, then click 2 points on the image.")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.text_secondary)
+                        
+                        HStack {
+                            Text("Distance (mm)")
+                                .font(PlasticityFont.label)
+                                .foregroundColor(Color.text_secondary)
+                            Spacer()
+                            TextField("Distance", value: $state.calibrationDistance, format: .number)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .frame(width: 60)
+                        }
+                        
+                        Button(action: {
+                            state.calibrationPoints.removeAll()
+                            state.isCalibrationActive.toggle()
+                        }) {
+                            Text(state.isCalibrationActive ? "Cancel Calibration" : "Calibrate Image")
+                                .font(PlasticityFont.body)
+                                .foregroundColor(Color.text_primary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
+                                .background(state.isCalibrationActive ? Color.status_err.opacity(0.15) : Color.accent.opacity(0.15))
+                                .cornerRadius(4)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    
+                    Divider()
+                    
+                    // Trace Image Button
+                    Button(action: {
+                        state.isTracingRefImage = true
+                        state.isEditingRefImageTransform = false
+                        state.updateTracePreview()
+                    }) {
+                        Text("Trace Image (Vectorize)")
+                            .font(PlasticityFont.body)
+                            .foregroundColor(Color.text_primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color.status_ok.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var imageVectorizationSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "wand.and.stars").foregroundColor(Color.accent)
+                Text("IMAGE TRACING")
+                    .font(PlasticityFont.header)
+                    .foregroundColor(Color.text_primary)
+                    .tracking(0.5)
+                Spacer()
+            }
+            .padding(.bottom, 4)
+            
+            Text("Adjust thresholds for auto-vectorization. Previews are drawn in cyan.")
+                .font(.system(size: 10))
+                .foregroundColor(Color.text_secondary)
+                .padding(.bottom, 4)
+            
+            VStack(alignment: .leading, spacing: 10) {
+                // Threshold Slider
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Threshold")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Spacer()
+                        Text(String(format: "%.0f", state.traceThreshold))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.text_primary)
+                    }
+                    Slider(value: $state.traceThreshold, in: 0...255, onEditingChanged: { editing in
+                        if !editing {
+                            state.updateTracePreview()
+                        }
+                    })
+                }
+                
+                // Tolerance Slider
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Tolerance/Detail")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Spacer()
+                        Text(String(format: "%.0f", state.traceTolerance))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.text_primary)
+                    }
+                    Slider(value: $state.traceTolerance, in: 1...100, onEditingChanged: { editing in
+                        if !editing {
+                            state.updateTracePreview()
+                        }
+                    })
+                    Text("Use Left/Right arrows to adjust by 1.")
+                        .font(.system(size: 8))
+                        .foregroundColor(Color.text_muted)
+                }
+                
+                // Corner Smoothness
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Corner Smoothness")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Spacer()
+                        Text(String(format: "%.0f", state.traceCornerSmoothness))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.text_primary)
+                    }
+                    Slider(value: $state.traceCornerSmoothness, in: 0...100, onEditingChanged: { editing in
+                        if !editing {
+                            state.updateTracePreview()
+                        }
+                    })
+                }
+                
+                // Path Optimization
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Path Optimization")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Spacer()
+                        Text(String(format: "%.0f", state.tracePathOptimization))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.text_primary)
+                    }
+                    Slider(value: $state.tracePathOptimization, in: 0...100, onEditingChanged: { editing in
+                        if !editing {
+                            state.updateTracePreview()
+                        }
+                    })
+                }
+                
+                Divider()
+                
+                // Action buttons
+                HStack(spacing: 8) {
+                    Button(action: {
+                        state.isTracingRefImage = false
+                        state.tracePreviewEntities = []
+                    }) {
+                        Text("Cancel")
+                            .font(PlasticityFont.body)
+                            .foregroundColor(Color.text_primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color.status_err.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: {
+                        state.commitTrace()
+                    }) {
+                        Text("Generate Vectors")
+                            .font(PlasticityFont.body)
+                            .foregroundColor(Color.text_primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(Color.status_ok.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var activeToolOptions: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if state.currentTool == .offset {
+            if let activeL = state.activeLayer, activeL.isReferenceImageLayer {
+                if state.isTracingRefImage {
+                    imageVectorizationSection
+                } else {
+                    referenceImageSettingsSection
+                }
+            } else if state.currentTool == .offset {
                 activeToolDetailsSection
             } else if state.currentTool == .cleanup {
                 activeToolDetailsSection
@@ -2513,6 +2826,9 @@ extension ContentView {
                 }
             }
             .pickerStyle(.menu)
+
+            LinePatternPreview(style: style, settings: state.convertLineSettings[style] ?? [:])
+                .padding(.vertical, 4)
 
             ForEach(keys, id: \.self) { key in
                 HStack {
@@ -2973,9 +3289,9 @@ extension ContentView {
                     }
                 }
                 .contentShape(Rectangle())
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers, location in
                     collectDroppedURLs(providers) { urls in
-                        if !urls.isEmpty { state.importFiles(urls) }
+                        if !urls.isEmpty { state.importFiles(urls, dropAt: location) }
                     }
                     return true
                 }
@@ -3102,9 +3418,9 @@ extension ContentView {
                 }
             }
             .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers, location in
                 collectDroppedURLs(providers) { urls in
-                    if !urls.isEmpty { state.importFiles(urls) }
+                    if !urls.isEmpty { state.importFiles(urls, dropAt: location) }
                 }
                 return true
             }
@@ -3260,5 +3576,167 @@ struct LayerDropDelegate: DropDelegate {
             }
         }
         return true
+    }
+}
+
+struct LinePatternPreview: View {
+    let style: String
+    let settings: [String: Double]
+    
+    private func getSetting(_ key: String, default val: Double) -> Double {
+        settings[key] ?? val
+    }
+    
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            let centerY = h / 2.0
+            
+            // 1 mm = 4 points scale
+            let scale: CGFloat = 4.0
+            let xStart: CGFloat = 8.0
+            let xEnd: CGFloat = w - 8.0
+            let L = xEnd - xStart
+            
+            guard L > 0 else { return }
+            
+            switch style {
+            case "dashed":
+                let dash = CGFloat(max(0.1, getSetting("dash_length", default: 4.0))) * scale
+                let gap = CGFloat(max(0.1, getSetting("gap", default: 3.0))) * scale
+                let path = Path { p in
+                    var t: CGFloat = 0.0
+                    while t < L {
+                        let segmentEnd = min(t + dash, L)
+                        p.move(to: CGPoint(x: xStart + t, y: centerY))
+                        p.addLine(to: CGPoint(x: xStart + segmentEnd, y: centerY))
+                        t += max(2.0, dash + gap)
+                    }
+                }
+                context.stroke(path, with: .color(.accent), lineWidth: 1.5)
+                
+            case "dotted":
+                let spacing = CGFloat(max(0.2, getSetting("spacing", default: 3.0))) * scale
+                let r = CGFloat(max(0.05, getSetting("dot_radius", default: 0.5))) * scale
+                let n = max(1, Int(round(Double(L / spacing))))
+                for k in 0...n {
+                    let t = L * CGFloat(k) / CGFloat(n)
+                    let center = CGPoint(x: xStart + t, y: centerY)
+                    let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+                    context.fill(Path(ellipseIn: rect), with: .color(.accent))
+                }
+                
+            case "square":
+                let spacing = CGFloat(max(0.3, getSetting("spacing", default: 4.0))) * scale
+                let sizeVal = CGFloat(max(0.1, getSetting("size", default: 1.5))) * scale
+                let s = sizeVal / 2.0
+                let n = max(1, Int(round(Double(L / spacing))))
+                for k in 0...n {
+                    let t = L * CGFloat(k) / CGFloat(n)
+                    let cx = xStart + t
+                    let cy = centerY
+                    let rect = CGRect(x: cx - s, y: cy - s, width: sizeVal, height: sizeVal)
+                    context.stroke(Path(rect), with: .color(.accent), lineWidth: 1.5)
+                }
+                
+            case "triangle":
+                let spacing = CGFloat(max(0.3, getSetting("spacing", default: 5.0))) * scale
+                let s = CGFloat(max(0.1, getSetting("size", default: 2.0))) * scale
+                let n = max(1, Int(round(Double(L / spacing))))
+                for k in 0...n {
+                    let t = L * CGFloat(k) / CGFloat(n)
+                    let bx = xStart + t
+                    let by = centerY
+                    let tip = CGPoint(x: bx, y: by - s)
+                    let left = CGPoint(x: bx - s / 2.0, y: by)
+                    let right = CGPoint(x: bx + s / 2.0, y: by)
+                    let path = Path { p in
+                        p.move(to: left)
+                        p.addLine(to: right)
+                        p.addLine(to: tip)
+                        p.closeSubpath()
+                    }
+                    context.stroke(path, with: .color(.accent), lineWidth: 1.5)
+                }
+                
+            case "zigzag":
+                let wl = CGFloat(max(0.5, getSetting("wavelength", default: 6.0))) * scale
+                let amp = CGFloat(getSetting("amplitude", default: 2.0)) * scale
+                let n = max(2, Int(round(Double(L / (wl / 2.0)))))
+                let path = Path { p in
+                    for k in 0...n {
+                        let t = L * CGFloat(k) / CGFloat(n)
+                        var off = (k % 2 == 1) ? amp : -amp
+                        if k == 0 || k == n {
+                            off = 0.0
+                        }
+                        let pt = CGPoint(x: xStart + t, y: centerY + off)
+                        if k == 0 {
+                            p.move(to: pt)
+                        } else {
+                            p.addLine(to: pt)
+                        }
+                    }
+                }
+                context.stroke(path, with: .color(.accent), lineWidth: 1.5)
+                
+            case "wave":
+                let wl = CGFloat(max(0.5, getSetting("wavelength", default: 6.0))) * scale
+                let amp = CGFloat(getSetting("amplitude", default: 2.0)) * scale
+                let spw = max(4, Int(getSetting("samples_per_wave", default: 12.0)))
+                let n = max(spw, Int(round(Double(L / wl * CGFloat(spw)))))
+                let path = Path { p in
+                    for k in 0...n {
+                        let t = L * CGFloat(k) / CGFloat(n)
+                        let t_mm = Double(t / scale)
+                        let wl_mm = getSetting("wavelength", default: 6.0)
+                        let off = amp * CGFloat(sin(2.0 * Double.pi * t_mm / wl_mm))
+                        let pt = CGPoint(x: xStart + t, y: centerY + off)
+                        if k == 0 {
+                            p.move(to: pt)
+                        } else {
+                            p.addLine(to: pt)
+                        }
+                    }
+                }
+                context.stroke(path, with: .color(.accent), lineWidth: 1.5)
+                
+            case "striped":
+                let dash = CGFloat(max(0.1, getSetting("dash_length", default: 3.0))) * scale
+                let gap = CGFloat(max(0.1, getSetting("gap", default: 3.0))) * scale
+                let tilt = CGFloat(getSetting("tilt", default: 45.0)) * .pi / 180.0
+                let sdx = cos(tilt)
+                let sdy = sin(tilt)
+                let half = dash / 2.0
+                let path = Path { p in
+                    var t: CGFloat = 0.0
+                    while t < L {
+                        let mx = xStart + t
+                        let my = centerY
+                        let p1 = CGPoint(x: mx - sdx * half, y: my - sdy * half)
+                        let p2 = CGPoint(x: mx + sdx * half, y: my + sdy * half)
+                        p.move(to: p1)
+                        p.addLine(to: p2)
+                        t += max(2.0, gap)
+                    }
+                }
+                context.stroke(path, with: .color(.accent), lineWidth: 1.5)
+                
+            default:
+                let path = Path { p in
+                    p.move(to: CGPoint(x: xStart, y: centerY))
+                    p.addLine(to: CGPoint(x: xEnd, y: centerY))
+                }
+                context.stroke(path, with: .color(.accent), lineWidth: 1.5)
+            }
+        }
+        .frame(height: 48)
+        .background(Color.bg_input)
+        .cornerRadius(6)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.border_strong, lineWidth: 1)
+        )
     }
 }

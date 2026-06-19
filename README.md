@@ -126,7 +126,7 @@ rearrangeable toolbar.
 
 ### Keyboard shortcuts
 
-Single‑key, Fusion/Photoshop‑style defaults (all rebindable in Preferences → Shortcuts).
+Single-key, Fusion/Photoshop-style defaults (all rebindable in Preferences → Shortcuts, taking effect immediately. Secondary standard macOS shortcuts like `⌘K` for search are also supported).
 
 | Key | Tool | Key | Tool | Key | Action |
 |-----|------|-----|------|-----|--------|

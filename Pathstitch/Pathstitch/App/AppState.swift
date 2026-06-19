@@ -438,6 +438,21 @@ struct DXFLayer: Identifiable, Hashable, Codable {
     var visible: Bool = true
     var parentFolderId: String? = nil
     
+    // Reference Image Layer Properties
+    var isReferenceImageLayer: Bool = false
+    var refImageBase64: String? = nil
+    var refImageOffsetX: Double = 0.0
+    var refImageOffsetY: Double = 0.0
+    var refImageScaleX: Double = 1.0
+    var refImageScaleY: Double = 1.0
+    var refImageWidth: Double = 0.0
+    var refImageHeight: Double = 0.0
+    var refImageRotation: Double = 0.0
+    var refImageDepth: String = "back" // "front" or "back"
+    var refImageOpacity: Double = 0.5
+    var refImageCalibrationDistance: Double = 100.0
+    var locked: Bool = false
+    
     var color: Color {
         get { Color(hex: colorHex) }
         set { colorHex = newValue.toHex() }
@@ -457,6 +472,36 @@ struct DXFLayer: Identifiable, Hashable, Codable {
         self.colorHex = color.toHex()
         self.visible = visible
         self.parentFolderId = parentFolderId
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, colorHex, visible, parentFolderId
+        case isReferenceImageLayer, refImageBase64, refImageOffsetX, refImageOffsetY
+        case refImageScaleX, refImageScaleY, refImageWidth, refImageHeight, refImageRotation
+        case refImageDepth, refImageOpacity, refImageCalibrationDistance, locked
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        colorHex = try container.decode(String.self, forKey: .colorHex)
+        visible = try container.decodeIfPresent(Bool.self, forKey: .visible) ?? true
+        parentFolderId = try container.decodeIfPresent(String.self, forKey: .parentFolderId)
+        
+        isReferenceImageLayer = try container.decodeIfPresent(Bool.self, forKey: .isReferenceImageLayer) ?? false
+        refImageBase64 = try container.decodeIfPresent(String.self, forKey: .refImageBase64)
+        refImageOffsetX = try container.decodeIfPresent(Double.self, forKey: .refImageOffsetX) ?? 0.0
+        refImageOffsetY = try container.decodeIfPresent(Double.self, forKey: .refImageOffsetY) ?? 0.0
+        refImageScaleX = try container.decodeIfPresent(Double.self, forKey: .refImageScaleX) ?? 1.0
+        refImageScaleY = try container.decodeIfPresent(Double.self, forKey: .refImageScaleY) ?? 1.0
+        refImageWidth = try container.decodeIfPresent(Double.self, forKey: .refImageWidth) ?? 0.0
+        refImageHeight = try container.decodeIfPresent(Double.self, forKey: .refImageHeight) ?? 0.0
+        refImageRotation = try container.decodeIfPresent(Double.self, forKey: .refImageRotation) ?? 0.0
+        refImageDepth = try container.decodeIfPresent(String.self, forKey: .refImageDepth) ?? "back"
+        refImageOpacity = try container.decodeIfPresent(Double.self, forKey: .refImageOpacity) ?? 0.5
+        refImageCalibrationDistance = try container.decodeIfPresent(Double.self, forKey: .refImageCalibrationDistance) ?? 100.0
+        locked = try container.decodeIfPresent(Bool.self, forKey: .locked) ?? false
     }
 }
 
@@ -595,6 +640,26 @@ class AppState {
     var calibrationPoints: [CGPoint] = []
     var calibrationDistance: Double = 50.0
 
+    // Group 9 Layer-based Reference Image Properties
+    var currentViewportSize: CGSize = CGSize(width: 800, height: 600)
+    var isEditingRefImageTransform: Bool = false
+    var isTracingRefImage: Bool = false
+    var traceThreshold: Double = 127.0
+    var traceTolerance: Double = 50.0
+    var traceCornerSmoothness: Double = 50.0
+    var tracePathOptimization: Double = 50.0
+    var tracePreviewEntities: [DXFEntity] = []
+    
+    // Transform Backup
+    var backupOffsetX: Double = 0.0
+    var backupOffsetY: Double = 0.0
+    var backupScaleX: Double = 1.0
+    var backupScaleY: Double = 1.0
+    var backupRotation: Double = 0.0
+    
+    // Decoded image cache
+    private var decodedImageCache: [String: NSImage] = [:]
+
     
     // 2D Canvas State
     var currentTool: TwoDTool = .select {
@@ -623,6 +688,8 @@ class AppState {
                 // Fresh pattern session: circular center defaults to selection center.
                 patternPivotModel = nil
                 pickingPatternPivot = false
+                patternPathHandle = nil
+                pickingPatternPath = false
             }
         }
     }
@@ -806,6 +873,10 @@ class AppState {
     var patternCircAngle: Double = 360
     var patternPivotModel: CGPoint? = nil      // nil = selection bbox center
     var pickingPatternPivot: Bool = false
+    
+    var patternPathSpacing: Double = 10.0
+    var patternPathHandle: String? = nil
+    var pickingPatternPath: Bool = false
 
     // Scale tool state (MAS-128). Scales the selection from its own center, or
     // from a user-picked scale point when one is set.
@@ -884,6 +955,7 @@ class AppState {
                     self.currentFilePath = activeDxfURL
                     self.reloadDXF()
                     self.selectedHandles = Set(workingHandles)
+                    self.scaleFactor = 1.0
                     self.logEntries.append(LogEntry(action: "Scale", details: String(format: "Scaled selection ×%.3f", factor)))
                 }
             } catch {
@@ -2042,9 +2114,8 @@ class AppState {
                 errorMessage = "Failed to copy input SVG file: \(error.localizedDescription)"
                 logAction("Import SVG Error", details: "Failed to copy input SVG: \(error.localizedDescription)")
             }
-        } else if imageExtensions.contains(ext) {
-            // Decouple from standard flow to trace raster image via Potrace
-            traceRasterImage(url: url)
+        } else if imageExtensions.contains(ext) || ["webp", "avif", "heic", "tiff", "tif"].contains(ext) {
+            loadReferenceImage(from: url)
         } else {
             errorMessage = "Unsupported file extension: .\(url.pathExtension)"
             logAction("Load File Error", details: "Unsupported extension: .\(ext)")
@@ -2079,7 +2150,7 @@ class AppState {
         }
     }
 
-    func importFiles(_ urls: [URL]) {
+    func importFiles(_ urls: [URL], dropAt: CGPoint? = nil) {
         guard !urls.isEmpty else { return }
         if activeMode == .batch {
             importFilesToBatch(urls)
@@ -2092,11 +2163,14 @@ class AppState {
         // Everything else (DXF/SVG/PDF/images) merges onto the current 2D canvas.
         let projectExts: Set<String> = ["stch"]
         let stepExts: Set<String> = ["step", "stp"]
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "bmp", "tiff", "gif", "webp", "avif", "heic"]
+        
         let openInNewWindow = urls.filter { projectExts.contains($0.pathExtension.lowercased()) }
         let stepModels = urls.filter { stepExts.contains($0.pathExtension.lowercased()) }
+        let images = urls.filter { imageExts.contains($0.pathExtension.lowercased()) }
         let toMerge = urls.filter {
             let e = $0.pathExtension.lowercased()
-            return !projectExts.contains(e) && !stepExts.contains(e)
+            return !projectExts.contains(e) && !stepExts.contains(e) && !imageExts.contains(e)
         }
 
         for fileURL in openInNewWindow {
@@ -2108,6 +2182,11 @@ class AppState {
         // in order (multi-model distribution is tracked separately in MAS-125).
         for modelURL in stepModels {
             importStepModel(url: modelURL)
+        }
+
+        // Load reference images as layers
+        for imgURL in images {
+            loadReferenceImage(from: imgURL, dropAt: dropAt)
         }
 
         guard !toMerge.isEmpty else { return }
@@ -2203,7 +2282,7 @@ class AppState {
     /// returned temp file. Shared by distribute-import and batch-import.
     private func convertToTempDXF(_ url: URL) async throws -> URL? {
         let ext = url.pathExtension.lowercased()
-        let imageExtensions = ["png", "jpg", "jpeg", "bmp", "tiff", "gif"]
+        let imageExtensions = ["png", "jpg", "jpeg", "bmp", "tiff", "gif", "webp", "avif", "heic"]
         let tempDir = sessionTempDirectory
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let outURL = tempDir.appendingPathComponent("import_\(UUID().uuidString).dxf")
@@ -3747,7 +3826,12 @@ class AppState {
     func addSketchedEntity(type: String, params: [String: Any]) async -> String? {
         saveToHistory()
         let activeDxfURL = ensureActiveDXFFileExists()
-        let activeLayerName = await MainActor.run { self.activeLayer?.name ?? "DRAWN_SHAPES" }
+        let activeLayerName = await MainActor.run {
+            if self.activeLayer?.isReferenceImageLayer == true {
+                return "0"
+            }
+            return self.activeLayer?.name ?? "DRAWN_SHAPES"
+        }
         await MainActor.run {
             self.isProcessing = true
         }
@@ -3918,36 +4002,342 @@ class AppState {
     
 
 
-    func loadReferenceImage(from url: URL) {
+    func getDecodedImage(for layer: DXFLayer) -> NSImage? {
+        if let cached = decodedImageCache[layer.id] {
+            return cached
+        }
+        guard let base64 = layer.refImageBase64,
+              let data = Data(base64Encoded: base64),
+              let image = NSImage(data: data) else {
+            return nil
+        }
+        decodedImageCache[layer.id] = image
+        return image
+    }
+    
+    func clearDecodedImageCache() {
+        decodedImageCache.removeAll()
+    }
+
+    func backupActiveLayerTransform() {
+        guard let activeL = activeLayer, activeL.isReferenceImageLayer else { return }
+        backupOffsetX = activeL.refImageOffsetX
+        backupOffsetY = activeL.refImageOffsetY
+        backupScaleX = activeL.refImageScaleX
+        backupScaleY = activeL.refImageScaleY
+        backupRotation = activeL.refImageRotation
+    }
+    
+    func restoreActiveLayerTransform() {
+        guard var activeL = activeLayer, activeL.isReferenceImageLayer else { return }
+        activeL.refImageOffsetX = backupOffsetX
+        activeL.refImageOffsetY = backupOffsetY
+        activeL.refImageScaleX = backupScaleX
+        activeL.refImageScaleY = backupScaleY
+        activeL.refImageRotation = backupRotation
+        
+        if let idx = layers.firstIndex(where: { $0.id == activeL.id }) {
+            layers[idx] = activeL
+        }
+    }
+    
+    func updateActiveLayerTransform(
+        offsetX: Double? = nil,
+        offsetY: Double? = nil,
+        scaleX: Double? = nil,
+        scaleY: Double? = nil,
+        rotation: Double? = nil,
+        opacity: Double? = nil,
+        depth: String? = nil,
+        locked: Bool? = nil
+    ) {
+        guard var activeL = activeLayer, activeL.isReferenceImageLayer else { return }
+        if let ox = offsetX { activeL.refImageOffsetX = ox }
+        if let oy = offsetY { activeL.refImageOffsetY = oy }
+        if let sx = scaleX { activeL.refImageScaleX = sx }
+        if let sy = scaleY { activeL.refImageScaleY = sy }
+        if let rot = rotation { activeL.refImageRotation = rot }
+        if let op = opacity { activeL.refImageOpacity = op }
+        if let dp = depth { activeL.refImageDepth = dp }
+        if let lk = locked { activeL.locked = lk }
+        
+        if let idx = layers.firstIndex(where: { $0.id == activeL.id }) {
+            layers[idx] = activeL
+        }
+        hasUnsavedChanges = true
+    }
+
+    func loadReferenceImage(from url: URL, dropAt: CGPoint? = nil) {
         let isSecurityScoped = url.startAccessingSecurityScopedResource()
         defer {
             if isSecurityScoped {
                 url.stopAccessingSecurityScopedResource()
             }
         }
-        if let image = NSImage(contentsOf: url) {
-            self.refImage = image
-            if let data = try? Data(contentsOf: url) {
-                self.refImageBase64 = data.base64EncodedString()
-            }
-            logEntries.append(LogEntry(action: "Load Reference Image", details: "Loaded reference image: \(url.lastPathComponent)"))
-        } else {
+        guard let image = NSImage(contentsOf: url) else {
             errorMessage = "Failed to load reference image."
+            return
         }
+        
+        guard let data = try? Data(contentsOf: url) else {
+            errorMessage = "Failed to read reference image data."
+            return
+        }
+        
+        let base64 = data.base64EncodedString()
+        let w = Double(image.size.width)
+        let h = Double(image.size.height)
+        
+        // Compute fitting scale in model space
+        let viewW = Double(currentViewportSize.width)
+        let viewH = Double(currentViewportSize.height)
+        let scale: Double
+        if canvasScale > 0.001 {
+            let modelViewW = viewW / Double(canvasScale)
+            let modelViewH = viewH / Double(canvasScale)
+            scale = min((modelViewW * 0.8) / w, (modelViewH * 0.8) / h)
+        } else {
+            scale = 1.0
+        }
+        
+        // Determine placement (model space coordinates)
+        let modelCenter: CGPoint
+        if let dropPos = dropAt {
+            let dx = (dropPos.x - currentViewportSize.width / 2 - canvasOffset.width) / canvasScale
+            let dy = -(dropPos.y - currentViewportSize.height / 2 - canvasOffset.height) / canvasScale
+            modelCenter = CGPoint(x: dx, y: dy)
+        } else {
+            let dx = -Double(canvasOffset.width) / Double(canvasScale)
+            let dy = Double(canvasOffset.height) / Double(canvasScale)
+            modelCenter = CGPoint(x: dx, y: dy)
+        }
+        
+        // Create a new reference image layer
+        let layerName = sanitizeLayerName("Ref_" + url.deletingPathExtension().lastPathComponent)
+        var newLayer = DXFLayer(
+            id: UUID().uuidString,
+            name: layerName,
+            color: .blue,
+            visible: true,
+            parentFolderId: nil
+        )
+        newLayer.isReferenceImageLayer = true
+        newLayer.refImageBase64 = base64
+        newLayer.refImageWidth = w
+        newLayer.refImageHeight = h
+        newLayer.refImageOffsetX = Double(modelCenter.x)
+        newLayer.refImageOffsetY = Double(modelCenter.y)
+        newLayer.refImageScaleX = scale
+        newLayer.refImageScaleY = scale
+        newLayer.refImageOpacity = 0.5
+        newLayer.refImageDepth = "back"
+        
+        self.layers.append(newLayer)
+        self.activeLayerId = newLayer.id
+        
+        // Enter transform editing mode immediately
+        self.isEditingRefImageTransform = true
+        self.backupActiveLayerTransform()
+        
+        self.hasUnsavedChanges = true
+        logEntries.append(LogEntry(action: "Load Reference Image", details: "Loaded reference image layer: \(layerName)"))
     }
     
-    func calibrateReferenceImage() {
+    func calibrateActiveLayerReferenceImage() {
+        guard var activeL = activeLayer, activeL.isReferenceImageLayer else { return }
         guard calibrationPoints.count == 2, calibrationDistance > 0 else { return }
         let p1 = calibrationPoints[0]
         let p2 = calibrationPoints[1]
         let modelDistance = Double(hypot(p2.x - p1.x, p2.y - p1.y))
         if modelDistance > 1e-5 {
-            refImageScale = refImageScale * CGFloat(calibrationDistance / modelDistance)
-            logEntries.append(LogEntry(action: "Calibrate Reference Image", details: "Calibrated 2 points. Target: \(calibrationDistance)mm, Measured: \(modelDistance)mm, scale factor: \(calibrationDistance / modelDistance), new scale: \(refImageScale)"))
+            let ratio = calibrationDistance / modelDistance
+            activeL.refImageScaleX = activeL.refImageScaleX * ratio
+            activeL.refImageScaleY = activeL.refImageScaleY * ratio
+            
+            // Update the layer in the layers array
+            if let idx = layers.firstIndex(where: { $0.id == activeL.id }) {
+                layers[idx] = activeL
+            }
+            
+            logEntries.append(LogEntry(action: "Calibrate Reference Image", details: "Calibrated 2 points. Target: \(calibrationDistance)mm, Measured: \(modelDistance)mm, scale factor: \(ratio)"))
         }
         calibrationPoints.removeAll()
         isCalibrationActive = false
         hasUnsavedChanges = true
+    }
+    
+    private var traceTask: Task<Void, Never>? = nil
+    
+    func updateTracePreview() {
+        guard let activeL = activeLayer, activeL.isReferenceImageLayer else { return }
+        
+        traceTask?.cancel()
+        
+        traceTask = Task {
+            // Write base64 image to temp PNG file
+            guard let imgData = Data(base64Encoded: activeL.refImageBase64 ?? "") else { return }
+            let tempDir = sessionTempDirectory
+            let tempImgURL = tempDir.appendingPathComponent("trace_temp_\(activeL.id).png")
+            let tempDxfURL = tempDir.appendingPathComponent("trace_temp_\(activeL.id).dxf")
+            
+            do {
+                try imgData.write(to: tempImgURL)
+                
+                // Run python trace_raster
+                let traceRes = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "trace_raster",
+                    args: [
+                        "input": tempImgURL.path,
+                        "output": tempDxfURL.path,
+                        "threshold": Int(self.traceThreshold),
+                        "tolerance": self.traceTolerance,
+                        "corner_smoothness": self.traceCornerSmoothness,
+                        "path_optimization": self.tracePathOptimization
+                    ]
+                )
+                
+                guard traceRes["status"] as? String == "ok" else {
+                    print("Python trace failed: \(traceRes["message"] ?? "")")
+                    return
+                }
+                
+                // Run python list_entities to parse the generated DXF
+                let listRes = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "list_entities",
+                    args: ["input": tempDxfURL.path]
+                )
+                
+                guard listRes["status"] as? String == "ok" else { return }
+                
+                // Parse entities
+                if let entDicts = listRes["entities"] as? [[String: Any]] {
+                    let decoded = entDicts.compactMap { dict -> DXFEntity? in
+                        guard let data = try? JSONSerialization.data(withJSONObject: dict),
+                              let ent = try? JSONDecoder().decode(DXFEntity.self, from: data) else {
+                            return nil
+                        }
+                        return ent
+                    }
+                    
+                    if !Task.isCancelled {
+                        await MainActor.run {
+                            self.tracePreviewEntities = decoded
+                        }
+                    }
+                }
+                
+                // Cleanup temp files
+                try? FileManager.default.removeItem(at: tempImgURL)
+                try? FileManager.default.removeItem(at: tempDxfURL)
+            } catch {
+                print("Failed to run trace preview: \(error)")
+            }
+        }
+    }
+    
+    func commitTrace() {
+        guard let activeL = activeLayer, activeL.isReferenceImageLayer else { return }
+        
+        let w = activeL.refImageWidth
+        let h = activeL.refImageHeight
+        let scaleX = activeL.refImageScaleX
+        let scaleY = activeL.refImageScaleY
+        let rot = activeL.refImageRotation
+        let offset = CGPoint(x: activeL.refImageOffsetX, y: activeL.refImageOffsetY)
+        
+        // Target layer name is "{RefImageName}_traced"
+        let targetLayerName = sanitizeLayerName("\(activeL.name)_traced")
+        
+        // Transform the entities
+        var transformedDicts: [[String: Any]] = []
+        for ent in tracePreviewEntities {
+            if let vertices = ent.vertices {
+                var transformedVerts: [[Double]] = []
+                for pt in vertices where pt.count >= 2 {
+                    let x1 = pt[0] - w / 2
+                    let y1 = pt[1] - h / 2
+                    let x2 = x1 * scaleX
+                    let y2 = y1 * scaleY
+                    let rad = rot * .pi / 180.0
+                    let cosR = cos(rad)
+                    let sinR = sin(rad)
+                    let x3 = x2 * cosR - y2 * sinR
+                    let y3 = x2 * sinR + y2 * cosR
+                    transformedVerts.append([offset.x + x3, offset.y + y3])
+                }
+                if transformedVerts.count >= 2 {
+                    transformedDicts.append([
+                        "type": "LWPOLYLINE",
+                        "vertices": transformedVerts,
+                        "closed": ent.closed ?? true
+                    ])
+                }
+            }
+        }
+        
+        guard !transformedDicts.isEmpty else { return }
+        
+        saveToHistory()
+        let activeDxfURL = ensureActiveDXFFileExists()
+        isProcessing = true
+        
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                let res = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "commit_trace",
+                    args: [
+                        "input": activeDxfURL.path,
+                        "output": activeDxfURL.path,
+                        "layer": targetLayerName,
+                        "entities": transformedDicts
+                    ]
+                )
+                
+                await MainActor.run {
+                    self.isProcessing = false
+                    if res["status"] as? String == "ok" {
+                        // Create target layer if not exists
+                        if !self.layers.contains(where: { $0.name == targetLayerName }) {
+                            let newL = DXFLayer(
+                                id: UUID().uuidString,
+                                name: targetLayerName,
+                                color: .green,
+                                visible: true,
+                                parentFolderId: nil
+                            )
+                            self.layers.append(newL)
+                            self.activeLayerId = newL.id
+                        } else if let matched = self.layers.first(where: { $0.name == targetLayerName }) {
+                            self.activeLayerId = matched.id
+                        }
+                        
+                        // Hide the reference image layer
+                        if let idx = self.layers.firstIndex(where: { $0.id == activeL.id }) {
+                            self.layers[idx].visible = false
+                        }
+                        
+                        // Turn off trace mode
+                        self.isTracingRefImage = false
+                        self.tracePreviewEntities = []
+                        
+                        // Reload DXF to show the newly committed vectors
+                        self.reloadDXF()
+                        self.hasUnsavedChanges = true
+                    } else {
+                        self.errorMessage = res["message"] as? String ?? "Failed to commit trace."
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isProcessing = false
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+        }
     }
     
     func generatePreviewPNG(size: CGSize = CGSize(width: 1500, height: 1000)) -> Data? {
@@ -5242,7 +5632,7 @@ class AppState {
     func applyAddText(text: String, insert: CGPoint, height: Double) {
         saveToHistory()
         let activeDxfURL = ensureActiveDXFFileExists()
-        let activeLayerName = self.activeLayer?.name ?? "TEXT"
+        let activeLayerName = self.activeLayer?.isReferenceImageLayer == true ? "0" : (self.activeLayer?.name ?? "TEXT")
         isProcessing = true
         
         Task {
@@ -5296,25 +5686,29 @@ class AppState {
     func recomputeLayersFromEntities() {
         let uniqueLayers = Array(Set(entities.map { $0.layer })).sorted()
         
-        self.layers = uniqueLayers.map { layerName in
-            if let existing = self.layers.first(where: { $0.name == layerName }) {
-                return DXFLayer(
-                    id: existing.id,
-                    name: layerName,
-                    color: existing.color,
-                    visible: existing.visible,
-                    parentFolderId: existing.parentFolderId
-                )
-            } else {
-                return DXFLayer(
+        var computedLayers: [DXFLayer] = []
+        // First add existing reference image layers
+        for layer in self.layers {
+            if layer.isReferenceImageLayer {
+                computedLayers.append(layer)
+            } else if uniqueLayers.contains(layer.name) {
+                computedLayers.append(layer)
+            }
+        }
+        // Then add new layers from uniqueLayers that weren't in computedLayers
+        for layerName in uniqueLayers {
+            if !computedLayers.contains(where: { $0.name == layerName }) {
+                let newL = DXFLayer(
                     id: UUID().uuidString,
                     name: layerName,
                     color: self.colorForLayerName(layerName),
                     visible: true,
                     parentFolderId: nil
                 )
+                computedLayers.append(newL)
             }
         }
+        self.layers = computedLayers
         
         // Back-populate layerId on entities
         for i in 0..<entities.count {
@@ -5437,6 +5831,18 @@ class AppState {
         Task { await reconcileBufferIfNeeded() }
     }
 
+    func deleteEntity(handle: String) {
+        saveToHistory()
+        entities.removeAll { $0.handle == handle }
+        previewEntities.removeAll { $0.handle == handle }
+        measurements.removeAll { $0.entityHandle == handle }
+        selectedHandles.remove(handle)
+        recomputeLayersFromEntities()
+        hasUnsavedChanges = true
+        pendingDeletedHandles.insert(handle)
+        Task { await reconcileBufferIfNeeded() }
+    }
+
     private func colorForLayerName(_ name: String) -> Color {
         switch name.uppercased() {
         case "ORIGINAL": return Color(red: 228/255, green: 228/255, blue: 234/255)
@@ -5469,6 +5875,8 @@ class AppState {
         let visible: Bool
         let color: Color?
         var parentFolderId: String?
+        var isReferenceImageLayer: Bool = false
+        var locked: Bool = false
     }
     
     func getFlattenedLayerItems() -> [LayerHierarchicalItem] {
@@ -5486,7 +5894,9 @@ class AppState {
                     depth: depth,
                     visible: true,
                     color: nil,
-                    parentFolderId: folder.parentFolderId
+                    parentFolderId: folder.parentFolderId,
+                    isReferenceImageLayer: false,
+                    locked: false
                 ))
                 
                 if isExpanded {
@@ -5504,7 +5914,9 @@ class AppState {
                     depth: depth,
                     visible: layer.visible,
                     color: layer.color,
-                    parentFolderId: layer.parentFolderId
+                    parentFolderId: layer.parentFolderId,
+                    isReferenceImageLayer: layer.isReferenceImageLayer,
+                    locked: layer.locked
                 ))
             }
         }
@@ -5902,8 +6314,8 @@ class AppState {
             // Create new text in-memory
             saveToHistory()
             let tempHandle = "TEMP_" + UUID().uuidString
-            let activeLayerName = self.activeLayer?.name ?? "TEXT"
-            let activeLayerIdVal = self.activeLayerId
+            let activeLayerName = self.activeLayer?.isReferenceImageLayer == true ? "0" : (self.activeLayer?.name ?? "TEXT")
+            let activeLayerIdVal = self.activeLayer?.isReferenceImageLayer == true ? nil : self.activeLayerId
             let newEntity = DXFEntity(
                 handle: tempHandle,
                 type: "TEXT",

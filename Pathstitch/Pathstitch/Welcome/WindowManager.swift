@@ -428,6 +428,39 @@ class PathstitchDocumentWindow: NSWindow {
         }
         
         if event.type == .keyDown {
+            // Reference image transform and trace handling
+            if appState.isTracingRefImage {
+                if event.keyCode == 53 { // ESC
+                    appState.isTracingRefImage = false
+                    appState.tracePreviewEntities = []
+                    return
+                }
+                if event.keyCode == 36 || event.keyCode == 76 { // ENTER
+                    appState.commitTrace()
+                    return
+                }
+                if event.keyCode == 123 { // Left Arrow
+                    appState.traceTolerance = max(1.0, appState.traceTolerance - 1.0)
+                    appState.updateTracePreview()
+                    return
+                }
+                if event.keyCode == 124 { // Right Arrow
+                    appState.traceTolerance = min(100.0, appState.traceTolerance + 1.0)
+                    appState.updateTracePreview()
+                    return
+                }
+            } else if appState.isEditingRefImageTransform {
+                if event.keyCode == 53 { // ESC
+                    appState.restoreActiveLayerTransform()
+                    appState.isEditingRefImageTransform = false
+                    return
+                }
+                if event.keyCode == 36 || event.keyCode == 76 { // ENTER
+                    appState.isEditingRefImageTransform = false
+                    return
+                }
+            }
+
             // Escape key cancels add plane if active
             if event.keyCode == 53 {
                 if appState.isPlaneSelectionActive {
@@ -458,59 +491,15 @@ class PathstitchDocumentWindow: NSWindow {
                 }
             }
             
-            // Only process shortcuts when no modifier key (Cmd/Opt/Ctrl) is pressed
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if modifiers.isEmpty || modifiers == .capsLock {
-                if let chars = event.charactersIgnoringModifiers?.lowercased(), chars.count == 1 {
-                    switch chars {
-                    case "v":
-                        appState.currentTool = .select
-                        return
-                    case "h":
-                        appState.currentTool = .pan
-                        return
-                    case "o":
-                        appState.currentTool = .offset
-                        return
-                    case "s":
-                        appState.currentTool = .addHoles
-                        return
-                    case "j":
-                        appState.currentTool = .cleanup
-                        return
-                    case "m":
-                        appState.currentTool = .measure
-                        return
-                    case "l":
-                        appState.currentTool = .sketchLine
-                        return
-                    case "c":
-                        appState.currentTool = .sketchCircle
-                        return
-                    case "r":
-                        appState.currentTool = .sketchRectangle
-                        return
-                    case "t":
-                        appState.currentTool = .sketchText
-                        return
-                    case "f":
-                        appState.currentTool = .paperFolding
-                        return
-                    case "p":
-                        appState.currentTool = .patterning
-                        return
-                    case "g":
-                        appState.gridVisible.toggle()
-                        return
-                    case "n":
-                        appState.snapEnabled.toggle()
-                        return
-                    case "a":
-                        appState.chainSelectionEnabled.toggle()
-                        return
-                    default:
-                        break
+            // Match against customizable keybind commands
+            let keybinds = KeybindStore.shared
+            for cmd in AppCommands.all {
+                let combo = keybinds.combo(for: cmd.id)
+                if combo.key != "" && combo.matches(event: event) {
+                    if cmd.isEnabled(appState) {
+                        cmd.action(appState)
                     }
+                    return
                 }
             }
         }

@@ -349,3 +349,43 @@ enum AppTheme: String, CaseIterable, Identifiable {
         }
     }
 }
+
+extension KeyCombo {
+    func matches(event: NSEvent) -> Bool {
+        guard event.type == .keyDown || event.type == .keyUp else { return false }
+        
+        let cmdPressed = event.modifierFlags.contains(.command)
+        let shiftPressed = event.modifierFlags.contains(.shift)
+        let optPressed = event.modifierFlags.contains(.option)
+        let ctrlPressed = event.modifierFlags.contains(.control)
+        
+        guard cmdPressed == command,
+              shiftPressed == shift,
+              optPressed == option,
+              ctrlPressed == control else {
+            return false
+        }
+        
+        let eventKey: String
+        switch event.keyCode {
+        case 53: eventKey = "escape"
+        case 51: eventKey = "delete"
+        case 117: eventKey = "deleteForward"
+        case 36, 76: eventKey = "return"
+        case 48: eventKey = "tab"
+        case 49: eventKey = "space"
+        case 123: eventKey = "left"
+        case 124: eventKey = "right"
+        case 125: eventKey = "up"
+        case 126: eventKey = "down"
+        default:
+            if let chars = event.charactersIgnoringModifiers?.lowercased(), chars.count == 1 {
+                eventKey = chars
+            } else {
+                return false
+            }
+        }
+        
+        return key.lowercased() == eventKey
+    }
+}

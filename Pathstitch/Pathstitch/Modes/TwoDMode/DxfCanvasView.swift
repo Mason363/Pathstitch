@@ -20,6 +20,7 @@ struct DxfCanvasView: View {
     // press is dragging out a smooth handle.
     @State private var penAnchors: [PenAnchor] = []
     @State private var penDraggingHandle = false
+    @State private var penDraggingHandleIdx: Int? = nil
     @State private var penClosePending = false
     // Re-editing an existing pen path (parametric pen lines): the handle being
     // edited, whether it's closed, and which anchor/handle a drag is moving.
@@ -89,6 +90,16 @@ struct DxfCanvasView: View {
     @FocusState private var isTextEditorFocused: Bool
     @FocusState private var isDimensionEditorFocused: Bool
     
+    // Group 9 Layer-based Reference Image Drag States
+    @State private var activeRefImageHandle: String? = nil
+    @State private var refImageDragStartOffsetX: Double = 0.0
+    @State private var refImageDragStartOffsetY: Double = 0.0
+    @State private var refImageDragStartScaleX: Double = 1.0
+    @State private var refImageDragStartScaleY: Double = 1.0
+    @State private var refImageDragStartRotation: Double = 0.0
+    @State private var refImageDragStartLocation: CGPoint? = nil
+    @State private var refImageDragStartAngle: Double? = nil
+    
     var selectionCenterModel: CGPoint? {
         state.selectionCenterModel
     }
@@ -107,11 +118,21 @@ struct DxfCanvasView: View {
             let modelBounds = state.entities.isEmpty ? CGRect(x: 0, y: 0, width: 200, height: 200) : getBounds(state.entities)
             
             ZStack(alignment: .bottomLeading) {
+                Color.bg_base
+                
+                // Underlay Reference Images (Back Depth)
+                ForEach(state.layers) { layer in
+                    if layer.isReferenceImageLayer && layer.visible,
+                       let img = state.getDecodedImage(for: layer),
+                       layer.refImageDepth == "back" {
+                        drawReferenceImage(img, for: layer, size: geo.size, bounds: modelBounds)
+                    }
+                }
+                
                 Canvas { context, size in
                     var ctx = context
                     renderCanvas(&ctx, size: size, modelBounds: modelBounds)
                 }
-                .background(Color.bg_base)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
@@ -366,19 +387,18 @@ struct DxfCanvasView: View {
                 }
                 .cursorStyle(state.currentTool)
                 
-                // Underlay Reference Canvas Image
-                if let img = state.refImage {
-                    let imgWidth = img.size.width * state.refImageScale * state.canvasScale
-                    let imgHeight = img.size.height * state.refImageScale * state.canvasScale
-                    
-                    let screenCenter = toScreen(dx: Double(state.refImageOffset.width), dy: Double(state.refImageOffset.height), size: geo.size, bounds: modelBounds)
-                    
-                    Image(nsImage: img)
-                        .resizable()
-                        .frame(width: imgWidth, height: imgHeight)
-                        .opacity(state.refImageOpacity)
-                        .position(screenCenter)
-                        .allowsHitTesting(false)
+                // Overlay Reference Canvas Images (Front Depth)
+                ForEach(state.layers) { layer in
+                    if layer.isReferenceImageLayer && layer.visible,
+                       let img = state.getDecodedImage(for: layer),
+                       layer.refImageDepth == "front" {
+                        drawReferenceImage(img, for: layer, size: geo.size, bounds: modelBounds)
+                    }
+                }
+                
+                // Bounding box transform gizmo for reference image editing
+                if let activeL = state.activeLayer, activeL.isReferenceImageLayer, state.isEditingRefImageTransform {
+                    referenceImageGizmoOverlay(size: geo.size, modelBounds: modelBounds, layer: activeL)
                 }
                 
                 canvasOverlays(size: geo.size, modelBounds: modelBounds)
@@ -386,6 +406,12 @@ struct DxfCanvasView: View {
                 editingTextFieldsOverlay(size: geo.size, modelBounds: modelBounds)
             }
             .coordinateSpace(name: "canvas")
+            .onChange(of: geo.size) { _, newSize in
+                state.currentViewportSize = newSize
+            }
+            .onAppear {
+                state.currentViewportSize = geo.size
+            }
         }
     }
 
@@ -395,7 +421,7 @@ struct DxfCanvasView: View {
             // Translation Gizmo Layer. Hidden while a corner tool (Fillet/Chamfer)
             // is active so the move/rotate handles don't overlap and steal grabs
             // from the per-corner radius controls (MAS-101).
-            if let centerModel = selectionCenterModel, !state.currentTool.isCornerTool, state.currentTool != .scale {
+            if let centerModel = selectionCenterModel, !state.currentTool.isCornerTool, state.currentTool != .scale, !state.isEditingRefImageTransform {
                 let centerScreen = toScreen(dx: Double(centerModel.x), dy: Double(centerModel.y), size: viewSize, bounds: modelBounds)
 
                     GeometryReader { g in
@@ -561,9 +587,10 @@ struct DxfCanvasView: View {
                 // Handle sits at the bbox's far corner from the pivot — scaled live.
                 let cornerModel = CGPoint(x: bbox.maxX, y: bbox.maxY)
                 let baseScreen = toScreen(dx: Double(cornerModel.x), dy: Double(cornerModel.y), size: viewSize, bounds: modelBounds)
+                let currentScale = isDraggingScale ? gizmoDragScale : CGFloat(state.scaleFactor)
                 let handleScreen = CGPoint(
-                    x: pivotScreen.x + (baseScreen.x - pivotScreen.x) * gizmoDragScale,
-                    y: pivotScreen.y + (baseScreen.y - pivotScreen.y) * gizmoDragScale
+                    x: pivotScreen.x + (baseScreen.x - pivotScreen.x) * currentScale,
+                    y: pivotScreen.y + (baseScreen.y - pivotScreen.y) * currentScale
                 )
 
                 // Pivot marker.
@@ -605,7 +632,7 @@ struct DxfCanvasView: View {
                     )
 
                 // Live factor pill.
-                Text(String(format: "×%.3f", gizmoDragScale))
+                Text(String(format: "×%.3f", currentScale))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(.white)
                     .padding(.horizontal, 6).padding(.vertical, 3)
@@ -1026,17 +1053,20 @@ struct DxfCanvasView: View {
                 continue
             }
             let isHovered = (state.hoveredHandle == ent.handle)
+            let isGuidePath = (state.currentTool == .patterning && state.patternMode == "path" && state.patternPathHandle == ent.handle)
             
             let baseColor: Color = matchedLayer?.color ?? Color.text_primary
             let strokeColor: Color
             if isSelected {
                 strokeColor = Color.accent
+            } else if isGuidePath {
+                strokeColor = Color.orange
             } else if isHovered {
                 strokeColor = Color.accent_hover
             } else {
                 strokeColor = baseColor
             }
-            let strokeWidth = isSelected ? 1.8 : (isHovered ? 1.4 : 0.8)
+            let strokeWidth = isSelected ? 1.8 : (isGuidePath ? 1.8 : (isHovered ? 1.4 : 0.8))
 
             // Perf (MAS-74): only selected entities need an isolated layer (to
             // carry the live gizmo drag/rotation transform). Drawing the bulk of
@@ -1057,10 +1087,11 @@ struct DxfCanvasView: View {
 
                     // Live scale preview around the pivot (MAS-128) — identity when
                     // not scaling, so it never disturbs move/rotate.
-                    if gizmoDragScale != 1.0, let pivot = scalePivotModel {
+                    let currentScale = isDraggingScale ? gizmoDragScale : CGFloat(state.scaleFactor)
+                    if currentScale != 1.0, let pivot = scalePivotModel {
                         let ps = toScreen(dx: Double(pivot.x), dy: Double(pivot.y), size: size, bounds: modelBounds)
                         context.translateBy(x: ps.x, y: ps.y)
-                        context.scaleBy(x: gizmoDragScale, y: gizmoDragScale)
+                        context.scaleBy(x: currentScale, y: currentScale)
                         context.translateBy(x: -ps.x, y: -ps.y)
                     }
 
@@ -1395,6 +1426,11 @@ struct DxfCanvasView: View {
 
         // Draw fillet/chamfer corner pick handles (MAS-62)
         drawFilletCornerHandles(&context, size: size, modelBounds: modelBounds)
+        
+        // Draw neon-cyan live image tracing preview
+        if state.isTracingRefImage, let activeL = state.activeLayer, activeL.isReferenceImageLayer {
+            drawTracePreview(&context, size: size, modelBounds: modelBounds, layer: activeL)
+        }
     }
 
     /// Small square handles at the vertices of selected lines/polylines. Hollow
@@ -2154,6 +2190,11 @@ struct DxfCanvasView: View {
     }
 
     private func handleDragChanged(val: DragGesture.Value, size: CGSize, modelBounds: CGRect) {
+        if let activeL = state.activeLayer, activeL.isReferenceImageLayer, state.isEditingRefImageTransform {
+            handleRefImageDragChanged(val: val, layer: activeL, size: size, modelBounds: modelBounds)
+            return
+        }
+        
         // Trim tool (MAS-98): click — or drag across — to cut whatever edge the
         // cursor passes over at its crossings, removing only the sub-segment under
         // the cursor. Runs on every move so a held drag trims each crossed piece;
@@ -2184,35 +2225,78 @@ struct DxfCanvasView: View {
             // extrudes a symmetric bezier handle (smooth point). Pressing on the
             // first anchor (with ≥2 placed) closes the path on release.
             if state.currentTool == .pen {
-                // Re-editing an existing path: grab the anchor/handle under the
-                // cursor and drag it (parametric pen lines).
-                if let hit = penHitTest(screen: point, size: size, modelBounds: modelBounds) {
-                    switch hit.kind {
-                    case "anchor": penEditDragAnchor = hit.idx
-                    case "handleOut": penEditDragHandle = (hit.idx, true)
-                    case "handleIn": penEditDragHandle = (hit.idx, false)
-                    default: break
+                let option = NSEvent.modifierFlags.contains(.option)
+                
+                // Find if we are near any existing anchor point (within 12px snap tolerance).
+                var nearPointIdx: Int? = nil
+                for (i, a) in penAnchors.enumerated() {
+                    let s = toScreen(dx: a.point.x, dy: a.point.y, size: size, bounds: modelBounds)
+                    if hypot(point.x - s.x, point.y - s.y) <= 12.0 {
+                        nearPointIdx = i
+                        break
+                    }
+                }
+                
+                if option {
+                    if let idx = nearPointIdx {
+                        if idx < penAnchors.count {
+                            penAnchors.remove(at: idx)
+                        }
                     }
                     penDraggingHandle = false
+                    penDraggingHandleIdx = nil
                     return
                 }
-                // A closed path being edited is a finished loop — no extending it.
-                let isClosedEdit = (editingPenHandle != nil && penEditingClosed)
-                if penAnchors.count >= 2 && !isClosedEdit {
-                    let firstScreen = toScreen(dx: penAnchors[0].point.x, dy: penAnchors[0].point.y, size: size, bounds: modelBounds)
-                    if hypot(point.x - firstScreen.x, point.y - firstScreen.y) < 10.0 {
-                        penClosePending = true
-                        penDraggingHandle = false
+                
+                if let idx = nearPointIdx {
+                    // Clicking near an existing anchor
+                    if editingPenHandle != nil {
+                        if let hit = penHitTest(screen: point, size: size, modelBounds: modelBounds) {
+                            switch hit.kind {
+                            case "anchor": penEditDragAnchor = hit.idx
+                            case "handleOut": penEditDragHandle = (hit.idx, true)
+                            case "handleIn": penEditDragHandle = (hit.idx, false)
+                            default: break
+                            }
+                            penDraggingHandle = false
+                            return
+                        }
+                    } else {
+                        // Creation mode: click near the first anchor closes/completes the path.
+                        let isClosedEdit = (editingPenHandle != nil && penEditingClosed)
+                        if penAnchors.count >= 2 && !isClosedEdit && idx == 0 {
+                            penClosePending = true
+                            penDraggingHandle = false
+                            return
+                        }
+                    }
+                    // Clicking other anchors in creation mode does nothing.
+                    return
+                } else {
+                    // Not near any existing anchor. Check if near the line (path).
+                    if let nearest = findNearestPointOnPenPath(screenPt: point, size: size, modelBounds: modelBounds),
+                       nearest.screenDist <= 12.0 {
+                        let insertIdx = nearest.segmentIdx + 1
+                        penAnchors.insert(PenAnchor(point: nearest.modelPt), at: insertIdx)
+                        penDraggingHandle = true
+                        penDraggingHandleIdx = insertIdx
+                        self.mouseLocation = point
+                        self.hoverCoords = nearest.modelPt
                         return
                     }
+                    
+                    // Not near the line or any anchor. Standard behavior: append.
+                    let isClosedEdit = (editingPenHandle != nil && penEditingClosed)
+                    if isClosedEdit { return }
+                    
+                    let modelPt = snappedModelPoint(forScreen: point, ref: penAnchors.last?.point, size: size, bounds: modelBounds)
+                    penAnchors.append(PenAnchor(point: modelPt))
+                    penDraggingHandle = true
+                    penDraggingHandleIdx = penAnchors.count - 1
+                    self.mouseLocation = point
+                    self.hoverCoords = modelPt
+                    return
                 }
-                if isClosedEdit { return }
-                let modelPt = snappedModelPoint(forScreen: point, ref: penAnchors.last?.point, size: size, bounds: modelBounds)
-                penAnchors.append(PenAnchor(point: modelPt))
-                penDraggingHandle = true
-                self.mouseLocation = point
-                self.hoverCoords = modelPt
-                return
             }
 
             // Move tool point-to-point (MAS-80): when armed, the next two clicks
@@ -2393,10 +2477,10 @@ struct DxfCanvasView: View {
             }
             // Dragging after placing an anchor extrudes its outgoing bezier
             // handle (the incoming handle is the mirror — symmetric smooth point).
-            if penDraggingHandle, !penAnchors.isEmpty, !penClosePending {
+            if penDraggingHandle, let dragIdx = penDraggingHandleIdx, dragIdx < penAnchors.count, !penClosePending {
                 let dragDist = hypot(val.translation.width, val.translation.height)
                 if dragDist > 3.0 {
-                    penAnchors[penAnchors.count - 1].handleOut = toModel(point: val.location, size: size, bounds: modelBounds)
+                    penAnchors[dragIdx].handleOut = toModel(point: val.location, size: size, bounds: modelBounds)
                 }
             }
             return
@@ -2497,6 +2581,7 @@ struct DxfCanvasView: View {
     private func resetPenState() {
         penAnchors = []
         penDraggingHandle = false
+        penDraggingHandleIdx = nil
         penClosePending = false
         editingPenHandle = nil
         penEditDragAnchor = nil
@@ -2512,7 +2597,13 @@ struct DxfCanvasView: View {
         let editHandle = editingPenHandle
         resetPenState()
         guard pts.count >= 2 else {
-            if let h = editHandle { state.penPaths[h] = nil }
+            if let h = editHandle {
+                state.penPaths[h] = nil
+                state.deleteEntity(handle: h)
+            }
+            if state.currentTool == .pen {
+                state.currentTool = .select
+            }
             return
         }
         if let h = editHandle {
@@ -2524,6 +2615,9 @@ struct DxfCanvasView: View {
                     await MainActor.run { state.penPaths[h] = model }
                 }
             }
+        }
+        if state.currentTool == .pen {
+            state.currentTool = .select
         }
     }
 
@@ -2554,6 +2648,54 @@ struct DxfCanvasView: View {
         return nil
     }
 
+    /// Finds the closest point on the active pen path, returning the segment index
+    /// (the index of the start anchor of the segment), the model point on the segment,
+    /// and the distance in screen pixels.
+    private func findNearestPointOnPenPath(screenPt: CGPoint, size: CGSize, modelBounds: CGRect) -> (segmentIdx: Int, modelPt: CGPoint, screenDist: CGFloat)? {
+        guard penAnchors.count >= 2 else { return nil }
+        
+        let queryModelPt = toModel(point: screenPt, size: size, bounds: modelBounds)
+        var bestResult: (segmentIdx: Int, modelPt: CGPoint, screenDist: CGFloat)? = nil
+        
+        let isClosed = (editingPenHandle != nil && penEditingClosed)
+        let segs = isClosed ? penAnchors.count : penAnchors.count - 1
+        
+        for i in 0..<segs {
+            let a = penAnchors[i]
+            let b = penAnchors[(i + 1) % penAnchors.count]
+            
+            var segPts: [CGPoint] = [a.point]
+            if a.handleOut == nil && b.handleIn == nil {
+                segPts.append(b.point)
+            } else {
+                let c1 = a.handleOut ?? a.point
+                let c2 = b.handleIn ?? b.point
+                let steps = 18
+                for s in 1...steps {
+                    segPts.append(cubicBezier(a.point, c1, c2, b.point, CGFloat(s) / CGFloat(steps)))
+                }
+            }
+            
+            for j in 0..<(segPts.count - 1) {
+                let p0 = segPts[j]
+                let p1 = segPts[j + 1]
+                let closestModel = closestPointOnSegment(p: queryModelPt, a: p0, b: p1)
+                let closestScreen = toScreen(dx: Double(closestModel.x), dy: Double(closestModel.y), size: size, bounds: modelBounds)
+                let dist = hypot(screenPt.x - closestScreen.x, screenPt.y - closestScreen.y)
+                
+                if let best = bestResult {
+                    if dist < best.screenDist {
+                        bestResult = (segmentIdx: i, modelPt: closestModel, screenDist: dist)
+                    }
+                } else {
+                    bestResult = (segmentIdx: i, modelPt: closestModel, screenDist: dist)
+                }
+            }
+        }
+        
+        return bestResult
+    }
+
     /// Creates a line entity from `start`→`end` and focuses its length dimension.
     /// Used by both the second-click commit and the Return shortcut, which
     /// finishes the line at wherever the cursor currently is.
@@ -2582,12 +2724,18 @@ struct DxfCanvasView: View {
     }
 
     private func handleDragEnded(val: DragGesture.Value, size: CGSize, modelBounds: CGRect) {
+        if let activeL = state.activeLayer, activeL.isReferenceImageLayer, state.isEditingRefImageTransform {
+            handleRefImageDragEnded(val: val, layer: activeL, size: size, modelBounds: modelBounds)
+            return
+        }
+        
         isDragging = false
 
         // Pen tool (MAS-94): a press on the first anchor closes & commits the
         // path; otherwise the anchor just placed stays and the path continues.
         if state.currentTool == .pen {
             penDraggingHandle = false
+            penDraggingHandleIdx = nil
             // Releasing an edit drag keeps the path live (commit on finish).
             if penEditDragAnchor != nil || penEditDragHandle != nil {
                 penEditDragAnchor = nil
@@ -2833,6 +2981,13 @@ struct DxfCanvasView: View {
                 // Set the circular-pattern center (MAS-113) and stop picking.
                 state.patternPivotModel = snappedModelPoint(forScreen: point, ref: nil, size: size, bounds: modelBounds)
                 state.pickingPatternPivot = false
+            } else if state.currentTool == .patterning && state.pickingPatternPath {
+                // Set the guide path and stop picking.
+                let clickedModelPt = toModel(point: point, size: size, bounds: modelBounds)
+                if let nearest = findNearestEntity(modelPt: clickedModelPt, maxDistanceScreen: 16.0, size: size, bounds: modelBounds) {
+                    state.patternPathHandle = nearest.handle
+                    state.pickingPatternPath = false
+                }
             } else if state.currentTool == .select || state.currentTool == .move || state.currentTool == .offset || state.currentTool == .addHoles || state.currentTool == .cleanup || state.currentTool == .paperFolding || state.currentTool == .convertLines || state.currentTool == .scale || state.currentTool == .patterning {
                 let clickedModelPt = toModel(point: point, size: size, bounds: modelBounds)
                 
@@ -2868,7 +3023,7 @@ struct DxfCanvasView: View {
             } else if state.isCalibrationActive {
                 state.calibrationPoints.append(point)
                 if state.calibrationPoints.count == 2 {
-                    state.calibrateReferenceImage()
+                    state.calibrateActiveLayerReferenceImage()
                 }
             } else if state.currentTool == .measure {
                 // Place at the snap point under the cursor (or ortho-constrained),
@@ -4459,7 +4614,7 @@ struct DxfCanvasView: View {
             let corner = toScreen(dx: bbox.maxX, dy: bbox.maxY, size: size, bounds: modelBounds)
             context.draw(Text("\(nx) × \(ny)").font(.system(size: 11, weight: .bold)).foregroundColor(Color.accent),
                          at: CGPoint(x: corner.x + Double(nx) * sx + 12, y: corner.y + Double(ny) * sy - 8), anchor: .leading)
-        } else {
+        } else if state.patternMode == "circular" {
             let count = max(2, state.patternCircCount)
             let pivot = state.patternPivotModel ?? CGPoint(x: bbox.midX, y: bbox.midY)
             let pivotScreen = toScreen(dx: Double(pivot.x), dy: Double(pivot.y), size: size, bounds: modelBounds)
@@ -4479,7 +4634,133 @@ struct DxfCanvasView: View {
             context.stroke(ring, with: .color(Color.accent.opacity(0.3)), style: dashed)
             context.draw(Text("×\(count)").font(.system(size: 11, weight: .bold)).foregroundColor(Color.accent),
                          at: CGPoint(x: pivotScreen.x, y: pivotScreen.y - r - 12), anchor: .center)
+        } else if state.patternMode == "path" {
+            if let pathHandle = state.patternPathHandle,
+               let pathEnt = state.entities.first(where: { $0.handle == pathHandle }) {
+                
+                let pathPts = flattenEntityToPoints(pathEnt)
+                if pathPts.count >= 2 {
+                    var lengths: [Double] = [0.0]
+                    for i in 1..<pathPts.count {
+                        let prev = pathPts[i-1]
+                        let curr = pathPts[i]
+                        let dist = Double(hypot(curr.x - prev.x, curr.y - prev.y))
+                        lengths.append(lengths[i-1] + dist)
+                    }
+                    
+                    if let totalLength = lengths.last, totalLength > 1e-6 {
+                        let spacing = max(1.0, state.patternPathSpacing)
+                        let numInstances = max(1, Int(totalLength / spacing))
+                        
+                        var offsets = (0...numInstances).map { Double($0) * spacing }
+                        if pathEnt.closed == true, !offsets.isEmpty {
+                            offsets.removeLast()
+                        }
+                        
+                        var allPts: [CGPoint] = []
+                        for ent in selected {
+                            allPts.append(contentsOf: flattenEntityToPoints(ent))
+                        }
+                        if !allPts.isEmpty {
+                            let cx = allPts.map { $0.x }.reduce(0, +) / CGFloat(allPts.count)
+                            let cy = allPts.map { $0.y }.reduce(0, +) / CGFloat(allPts.count)
+                            let selectionCenter = CGPoint(x: cx, y: cy)
+                            
+                            func drawGhostInstanceAlongPath(targetPt: CGPoint, targetAngle: Double) {
+                                context.drawLayer { ctx in
+                                    let tScreen = toScreen(dx: Double(targetPt.x), dy: Double(targetPt.y), size: size, bounds: modelBounds)
+                                    let cScreen = toScreen(dx: Double(selectionCenter.x), dy: Double(selectionCenter.y), size: size, bounds: modelBounds)
+                                    
+                                    ctx.translateBy(x: tScreen.x - cScreen.x, y: tScreen.y - cScreen.y)
+                                    
+                                    ctx.translateBy(x: tScreen.x, y: tScreen.y)
+                                    ctx.rotate(by: Angle(radians: targetAngle))
+                                    ctx.translateBy(x: -tScreen.x, y: -tScreen.y)
+                                    
+                                    for ent in selected {
+                                        drawEntity(ent, baseColor: ghost, strokeColor: ghost, strokeWidth: 1.0,
+                                                   size: size, modelBounds: modelBounds, context: &ctx)
+                                    }
+                                }
+                            }
+                            
+                            for offset in offsets {
+                                if let interp = interpolateOnPath(pts: pathPts, lengths: lengths, offset: offset) {
+                                    drawGhostInstanceAlongPath(targetPt: interp.point, targetAngle: interp.angle)
+                                }
+                            }
+                            
+                            // Count pill near guide path start
+                            let startScreen = toScreen(dx: Double(pathPts[0].x), dy: Double(pathPts[0].y), size: size, bounds: modelBounds)
+                            context.draw(Text("×\(offsets.count)").font(.system(size: 11, weight: .bold)).foregroundColor(Color.accent),
+                                         at: CGPoint(x: startScreen.x + 12, y: startScreen.y - 12), anchor: .leading)
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    private func flattenEntityToPoints(_ ent: DXFEntity) -> [CGPoint] {
+        if ent.type == "LINE", let s = ent.start, let e = ent.end {
+            return [CGPoint(x: s[0], y: s[1]), CGPoint(x: e[0], y: e[1])]
+        } else if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
+            let cx = center[0], cy = center[1], r = radius
+            var pts: [CGPoint] = []
+            let steps = 72
+            for i in 0...steps {
+                let a = Double(i) * 2.0 * .pi / Double(steps)
+                pts.append(CGPoint(x: cx + r * cos(a), y: cy + r * sin(a)))
+            }
+            return pts
+        } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius,
+                  let sa = ent.start_angle, let ea = ent.end_angle {
+            let cx = center[0], cy = center[1], r = radius
+            var pts: [CGPoint] = []
+            let steps = 36
+            var diff = ea - sa
+            if diff < 0 { diff += 360 }
+            for i in 0...steps {
+                let deg = sa + diff * Double(i) / Double(steps)
+                let rad = deg * .pi / 180.0
+                pts.append(CGPoint(x: cx + r * cos(rad), y: cy + r * sin(rad)))
+            }
+            return pts
+        } else if let vertices = ent.vertices, vertices.count >= 2 {
+            var pts = vertices.map { CGPoint(x: $0[0], y: $0[1]) }
+            if ent.closed == true {
+                pts.append(pts[0])
+            }
+            return pts
+        }
+        return []
+    }
+
+    private func interpolateOnPath(pts: [CGPoint], lengths: [Double], offset: Double) -> (point: CGPoint, angle: Double)? {
+        guard pts.count >= 2, lengths.count == pts.count, let totalLength = lengths.last, totalLength > 1e-6 else { return nil }
+        
+        let target = max(0.0, min(totalLength, offset))
+        
+        var idx = 0
+        for i in 0..<(lengths.count - 1) {
+            if target >= lengths[i] && target <= lengths[i+1] {
+                idx = i
+                break
+            }
+        }
+        
+        let p0 = pts[idx]
+        let p1 = pts[idx + 1]
+        let segLen = lengths[idx + 1] - lengths[idx]
+        guard segLen > 1e-6 else { return (p0, 0.0) }
+        
+        let t = (target - lengths[idx]) / segLen
+        let x = p0.x + t * (p1.x - p0.x)
+        let y = p0.y + t * (p1.y - p0.y)
+        
+        let angle = Double(atan2(p1.y - p0.y, p1.x - p0.x))
+        
+        return (CGPoint(x: x, y: y), angle)
     }
 
     /// Vertices of a regular polygon (MAS-118): `sides` points on a circle of
@@ -4698,6 +4979,348 @@ struct ScrollWheelModifier: NSViewRepresentable {
         override func otherMouseUp(with event: NSEvent) {
             if event.buttonNumber == 2 {
                 endDrag(with: event)
+            }
+        }
+    }
+}
+
+extension DxfCanvasView {
+    // MARK: - Group 9 Layer-based Reference Image Helpers
+    
+    private func transformImagePoint(_ pt: CGPoint, w: Double, h: Double, offset: CGPoint, scaleX: Double, scaleY: Double, rotation: Double) -> CGPoint {
+        let x1 = pt.x - w / 2
+        let y1 = pt.y - h / 2
+        let x2 = x1 * scaleX
+        let y2 = y1 * scaleY
+        let rad = rotation * .pi / 180.0
+        let cosR = cos(rad)
+        let sinR = sin(rad)
+        let x3 = x2 * cosR - y2 * sinR
+        let y3 = x2 * sinR + y2 * cosR
+        return CGPoint(x: offset.x + x3, y: offset.y + y3)
+    }
+
+    @ViewBuilder
+    private func drawReferenceImage(_ img: NSImage, for layer: DXFLayer, size: CGSize, bounds: CGRect) -> some View {
+        let imgWidth = CGFloat(layer.refImageWidth) * CGFloat(layer.refImageScaleX) * state.canvasScale
+        let imgHeight = CGFloat(layer.refImageHeight) * CGFloat(layer.refImageScaleY) * state.canvasScale
+        
+        let screenCenter = toScreen(dx: layer.refImageOffsetX, dy: layer.refImageOffsetY, size: size, bounds: bounds)
+        
+        Image(nsImage: img)
+            .resizable()
+            .frame(width: imgWidth, height: imgHeight)
+            .rotationEffect(Angle(degrees: -layer.refImageRotation))
+            .opacity(layer.refImageOpacity)
+            .position(screenCenter)
+            .allowsHitTesting(false)
+    }
+
+    private func drawTracePreview(_ context: inout GraphicsContext, size: CGSize, modelBounds: CGRect, layer: DXFLayer) {
+        let w = layer.refImageWidth
+        let h = layer.refImageHeight
+        let scaleX = layer.refImageScaleX
+        let scaleY = layer.refImageScaleY
+        let rot = layer.refImageRotation
+        let offset = CGPoint(x: layer.refImageOffsetX, y: layer.refImageOffsetY)
+        
+        for ent in state.tracePreviewEntities {
+            guard let vertices = ent.vertices, vertices.count >= 2 else { continue }
+            var path = SwiftUI.Path()
+            let firstPt = CGPoint(x: vertices[0][0], y: vertices[0][1])
+            let firstTransformed = transformImagePoint(firstPt, w: w, h: h, offset: offset, scaleX: scaleX, scaleY: scaleY, rotation: rot)
+            path.move(to: toScreen(dx: firstTransformed.x, dy: firstTransformed.y, size: size, bounds: modelBounds))
+            
+            for v in vertices.dropFirst() {
+                guard v.count >= 2 else { continue }
+                let pt = CGPoint(x: v[0], y: v[1])
+                let transformed = transformImagePoint(pt, w: w, h: h, offset: offset, scaleX: scaleX, scaleY: scaleY, rotation: rot)
+                path.addLine(to: toScreen(dx: transformed.x, dy: transformed.y, size: size, bounds: modelBounds))
+            }
+            
+            if ent.closed ?? true {
+                path.closeSubpath()
+            }
+            context.stroke(path, with: .color(Color(red: 0.0, green: 1.0, blue: 1.0)), lineWidth: 1.5)
+        }
+    }
+
+    private func getScreenPoints(for layer: DXFLayer, size: CGSize, bounds: CGRect) -> [String: CGPoint] {
+        let w = layer.refImageWidth
+        let h = layer.refImageHeight
+        let scaleX = layer.refImageScaleX
+        let scaleY = layer.refImageScaleY
+        let rot = layer.refImageRotation
+        let offset = CGPoint(x: layer.refImageOffsetX, y: layer.refImageOffsetY)
+        
+        let localCoords: [String: CGPoint] = [
+            "tl": CGPoint(x: -w/2, y: h/2),
+            "tr": CGPoint(x: w/2, y: h/2),
+            "bl": CGPoint(x: -w/2, y: -h/2),
+            "br": CGPoint(x: w/2, y: -h/2),
+            "t": CGPoint(x: 0, y: h/2),
+            "b": CGPoint(x: 0, y: -h/2),
+            "l": CGPoint(x: -w/2, y: 0),
+            "r": CGPoint(x: w/2, y: 0),
+            "c": CGPoint(x: 0, y: 0)
+        ]
+        
+        var screenCoords: [String: CGPoint] = [:]
+        for (name, pt) in localCoords {
+            let x2 = pt.x * scaleX
+            let y2 = pt.y * scaleY
+            let rad = rot * .pi / 180.0
+            let cosR = cos(rad)
+            let sinR = sin(rad)
+            let x3 = x2 * cosR - y2 * sinR
+            let y3 = x2 * sinR + y2 * cosR
+            let modelPt = CGPoint(x: offset.x + x3, y: offset.y + y3)
+            screenCoords[name] = toScreen(dx: Double(modelPt.x), dy: Double(modelPt.y), size: size, bounds: bounds)
+        }
+        
+        // Calculate rotation handle position: 30 pixels straight up from top center
+        let rad = rot * .pi / 180.0
+        let cosR = cos(rad)
+        let sinR = sin(rad)
+        
+        let tcX2 = 0.0
+        let tcY2 = (h / 2 + 30.0 / scaleY) * scaleY
+        let rotX3 = tcX2 * cosR - tcY2 * sinR
+        let rotY3 = tcX2 * sinR + tcY2 * cosR
+        let rotModelPt = CGPoint(x: offset.x + rotX3, y: offset.y + rotY3)
+        screenCoords["rot"] = toScreen(dx: Double(rotModelPt.x), dy: Double(rotModelPt.y), size: size, bounds: bounds)
+        
+        return screenCoords
+    }
+
+    private func isPointInsideImage(pt: CGPoint, layer: DXFLayer, size: CGSize, bounds: CGRect) -> Bool {
+        let cursorModel = toModel(point: pt, size: size, bounds: bounds)
+        let V = CGPoint(x: cursorModel.x - layer.refImageOffsetX, y: cursorModel.y - layer.refImageOffsetY)
+        let rad = -layer.refImageRotation * .pi / 180.0
+        let V_local = CGPoint(
+            x: V.x * cos(rad) - V.y * sin(rad),
+            y: V.x * sin(rad) + V.y * cos(rad)
+        )
+        let half_w = (layer.refImageWidth / 2) * layer.refImageScaleX
+        let half_h = (layer.refImageHeight / 2) * layer.refImageScaleY
+        return V_local.x >= -half_w && V_local.x <= half_w && V_local.y >= -half_h && V_local.y <= half_h
+    }
+
+    private func handleRefImageDragChanged(val: DragGesture.Value, layer: DXFLayer, size: CGSize, modelBounds: CGRect) {
+        if refImageDragStartLocation == nil {
+            let pts = getScreenPoints(for: layer, size: size, bounds: modelBounds)
+            let startPt = val.startLocation
+            
+            if hypot(startPt.x - pts["rot"]!.x, startPt.y - pts["rot"]!.y) <= 12.0 {
+                activeRefImageHandle = "rot"
+            } else if hypot(startPt.x - pts["tl"]!.x, startPt.y - pts["tl"]!.y) <= 10.0 {
+                activeRefImageHandle = "tl"
+            } else if hypot(startPt.x - pts["tr"]!.x, startPt.y - pts["tr"]!.y) <= 10.0 {
+                activeRefImageHandle = "tr"
+            } else if hypot(startPt.x - pts["bl"]!.x, startPt.y - pts["bl"]!.y) <= 10.0 {
+                activeRefImageHandle = "bl"
+            } else if hypot(startPt.x - pts["br"]!.x, startPt.y - pts["br"]!.y) <= 10.0 {
+                activeRefImageHandle = "br"
+            } else if hypot(startPt.x - pts["t"]!.x, startPt.y - pts["t"]!.y) <= 10.0 {
+                activeRefImageHandle = "t"
+            } else if hypot(startPt.x - pts["b"]!.x, startPt.y - pts["b"]!.y) <= 10.0 {
+                activeRefImageHandle = "b"
+            } else if hypot(startPt.x - pts["l"]!.x, startPt.y - pts["l"]!.y) <= 10.0 {
+                activeRefImageHandle = "l"
+            } else if hypot(startPt.x - pts["r"]!.x, startPt.y - pts["r"]!.y) <= 10.0 {
+                activeRefImageHandle = "r"
+            } else if hypot(startPt.x - pts["c"]!.x, startPt.y - pts["c"]!.y) <= 12.0 {
+                activeRefImageHandle = "c"
+            } else if isPointInsideImage(pt: startPt, layer: layer, size: size, bounds: modelBounds) {
+                activeRefImageHandle = "c"
+            } else {
+                activeRefImageHandle = "outside"
+            }
+            
+            refImageDragStartLocation = startPt
+            refImageDragStartOffsetX = layer.refImageOffsetX
+            refImageDragStartOffsetY = layer.refImageOffsetY
+            refImageDragStartScaleX = layer.refImageScaleX
+            refImageDragStartScaleY = layer.refImageScaleY
+            refImageDragStartRotation = layer.refImageRotation
+            refImageDragStartAngle = nil
+        }
+        
+        guard let handle = activeRefImageHandle, handle != "outside" else { return }
+        
+        let startLoc = refImageDragStartLocation!
+        let scale = Double(state.canvasScale)
+        
+        if handle == "c" {
+            let deltaX = (val.location.x - startLoc.x) / CGFloat(scale)
+            let deltaY = -(val.location.y - startLoc.y) / CGFloat(scale)
+            state.updateActiveLayerTransform(
+                offsetX: refImageDragStartOffsetX + Double(deltaX),
+                offsetY: refImageDragStartOffsetY + Double(deltaY)
+            )
+        } else if handle == "rot" {
+            let pts = getScreenPoints(for: layer, size: size, bounds: modelBounds)
+            let centerScreen = pts["c"]!
+            let cur = atan2(Double(val.location.x - centerScreen.x),
+                            Double(-(val.location.y - centerScreen.y))) * 180.0 / .pi
+            if refImageDragStartAngle == nil {
+                refImageDragStartAngle = cur
+            }
+            let deltaAngle = cur - (refImageDragStartAngle ?? cur)
+            state.updateActiveLayerTransform(
+                rotation: refImageDragStartRotation - deltaAngle
+            )
+        } else if ["tl", "tr", "bl", "br"].contains(handle) {
+            let centerModel = CGPoint(x: layer.refImageOffsetX, y: layer.refImageOffsetY)
+            let cursorModel = toModel(point: val.location, size: size, bounds: modelBounds)
+            let V = CGPoint(x: cursorModel.x - centerModel.x, y: cursorModel.y - centerModel.y)
+            let rad = -refImageDragStartRotation * .pi / 180.0
+            let V_local = CGPoint(
+                x: V.x * cos(rad) - V.y * sin(rad),
+                y: V.x * sin(rad) + V.y * cos(rad)
+            )
+            
+            let original_half_w = (layer.refImageWidth / 2) * refImageDragStartScaleX
+            let original_half_h = (layer.refImageHeight / 2) * refImageDragStartScaleY
+            let original_dist = sqrt(original_half_w * original_half_w + original_half_h * original_half_h)
+            let current_dist = sqrt(V_local.x * V_local.x + V_local.y * V_local.y)
+            
+            let ratio = original_dist > 0.1 ? current_dist / original_dist : 1.0
+            state.updateActiveLayerTransform(
+                scaleX: refImageDragStartScaleX * ratio,
+                scaleY: refImageDragStartScaleY * ratio
+            )
+        } else {
+            let cursorModel = toModel(point: val.location, size: size, bounds: modelBounds)
+            let V = CGPoint(x: cursorModel.x - layer.refImageOffsetX, y: cursorModel.y - layer.refImageOffsetY)
+            let rad = -refImageDragStartRotation * .pi / 180.0
+            let V_local = CGPoint(
+                x: V.x * cos(rad) - V.y * sin(rad),
+                y: V.x * sin(rad) + V.y * cos(rad)
+            )
+            
+            let half_w = layer.refImageWidth / 2
+            let half_h = layer.refImageHeight / 2
+            
+            if handle == "r" && half_w > 0.1 {
+                var newScaleX = V_local.x / half_w
+                if newScaleX < 0.01 { newScaleX = 0.01 }
+                
+                if NSEvent.modifierFlags.contains(.shift) {
+                    let ratio = newScaleX / refImageDragStartScaleX
+                    state.updateActiveLayerTransform(
+                        scaleX: newScaleX,
+                        scaleY: refImageDragStartScaleY * ratio
+                    )
+                } else {
+                    state.updateActiveLayerTransform(scaleX: newScaleX)
+                }
+            } else if handle == "l" && half_w > 0.1 {
+                var newScaleX = -V_local.x / half_w
+                if newScaleX < 0.01 { newScaleX = 0.01 }
+                
+                if NSEvent.modifierFlags.contains(.shift) {
+                    let ratio = newScaleX / refImageDragStartScaleX
+                    state.updateActiveLayerTransform(
+                        scaleX: newScaleX,
+                        scaleY: refImageDragStartScaleY * ratio
+                    )
+                } else {
+                    state.updateActiveLayerTransform(scaleX: newScaleX)
+                }
+            } else if handle == "t" && half_h > 0.1 {
+                var newScaleY = V_local.y / half_h
+                if newScaleY < 0.01 { newScaleY = 0.01 }
+                
+                if NSEvent.modifierFlags.contains(.shift) {
+                    let ratio = newScaleY / refImageDragStartScaleY
+                    state.updateActiveLayerTransform(
+                        scaleX: refImageDragStartScaleX * ratio,
+                        scaleY: newScaleY
+                    )
+                } else {
+                    state.updateActiveLayerTransform(scaleY: newScaleY)
+                }
+            } else if handle == "b" && half_h > 0.1 {
+                var newScaleY = -V_local.y / half_h
+                if newScaleY < 0.01 { newScaleY = 0.01 }
+                
+                if NSEvent.modifierFlags.contains(.shift) {
+                    let ratio = newScaleY / refImageDragStartScaleY
+                    state.updateActiveLayerTransform(
+                        scaleX: refImageDragStartScaleX * ratio,
+                        scaleY: newScaleY
+                    )
+                } else {
+                    state.updateActiveLayerTransform(scaleY: newScaleY)
+                }
+            }
+        }
+    }
+
+    private func handleRefImageDragEnded(val: DragGesture.Value, layer: DXFLayer, size: CGSize, modelBounds: CGRect) {
+        if activeRefImageHandle == "outside" {
+            state.isEditingRefImageTransform = false
+        }
+        activeRefImageHandle = nil
+        refImageDragStartLocation = nil
+        refImageDragStartAngle = nil
+    }
+
+    @ViewBuilder
+    private func referenceImageGizmoOverlay(size viewSize: CGSize, modelBounds: CGRect, layer: DXFLayer) -> some View {
+        let pts = getScreenPoints(for: layer, size: viewSize, bounds: modelBounds)
+        
+        ZStack {
+            Path { p in
+                p.move(to: pts["tl"]!)
+                p.addLine(to: pts["tr"]!)
+                p.addLine(to: pts["br"]!)
+                p.addLine(to: pts["bl"]!)
+                p.closeSubpath()
+            }
+            .stroke(Color.accent, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [4, 4]))
+            
+            Path { p in
+                p.move(to: pts["t"]!)
+                p.addLine(to: pts["rot"]!)
+            }
+            .stroke(Color.accent, lineWidth: 1.5)
+            
+            Circle()
+                .fill(Color.accent)
+                .frame(width: 14, height: 14)
+                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                .shadow(radius: 2)
+                .position(pts["rot"]!)
+            
+            Circle()
+                .fill(Color.yellow)
+                .frame(width: 12, height: 12)
+                .overlay(Circle().stroke(Color.black, lineWidth: 1.5))
+                .shadow(radius: 2)
+                .position(pts["c"]!)
+            
+            ForEach(["tl", "tr", "bl", "br"], id: \.self) { handle in
+                if let pt = pts[handle] {
+                    Rectangle()
+                        .fill(Color.accent)
+                        .frame(width: 10, height: 10)
+                        .overlay(Rectangle().stroke(Color.white, lineWidth: 1.5))
+                        .shadow(radius: 1)
+                        .position(pt)
+                }
+            }
+            
+            ForEach(["t", "b", "l", "r"], id: \.self) { handle in
+                if let pt = pts[handle] {
+                    Circle()
+                        .fill(Color.accent)
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
+                        .shadow(radius: 1)
+                        .position(pt)
+                }
             }
         }
     }

@@ -2514,7 +2514,13 @@ def op_trace_raster(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
     output_path = args.get("output")
     threshold = int(args.get("threshold", 127))
-    turdsize = int(args.get("turdsize", 2))
+    tolerance = float(args.get("tolerance", 50.0))
+    corner_smoothness = float(args.get("corner_smoothness", 50.0))
+    path_optimization = float(args.get("path_optimization", 50.0))
+    
+    turdsize = int(args.get("turdsize", max(0, int((100.0 - tolerance) * 0.25))))
+    alphamax = float(args.get("alphamax", (corner_smoothness / 100.0) * 1.3))
+    opttolerance = float(args.get("opttolerance", (path_optimization / 100.0) * 1.0))
     
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
@@ -2531,7 +2537,7 @@ def op_trace_raster(args: Dict[str, Any]) -> Dict[str, Any]:
         bmp = img_np < threshold
         
         bmp_obj = potrace.Bitmap(bmp)
-        path = bmp_obj.trace(turdsize=turdsize)
+        path = bmp_obj.trace(turdsize=turdsize, alphamax=alphamax, opttolerance=opttolerance)
         
         doc = ezdxf.new(dxfversion="R2010")
         msp = doc.modelspace()
@@ -2566,6 +2572,38 @@ def op_trace_raster(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "message": f"Failed to trace image: {str(e)}"}
+
+def op_commit_trace(args: Dict[str, Any]) -> Dict[str, Any]:
+    input_path = args.get("input")
+    output_path = args.get("output")
+    layer = args.get("layer", "Traced_Vectors")
+    entities_data = args.get("entities", [])
+    
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+        
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        
+        # Ensure layer exists
+        if layer not in doc.layers:
+            doc.layers.new(layer)
+            
+        for ent in entities_data:
+            ent_type = ent.get("type", "LWPOLYLINE")
+            if ent_type == "LWPOLYLINE":
+                vertices = ent.get("vertices", [])
+                closed = ent.get("closed", True)
+                if len(vertices) >= 2:
+                    msp.add_lwpolyline(vertices, dxfattribs={"layer": layer, "closed": closed})
+            
+        doc.saveas(output_path)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to commit trace: {str(e)}"}
 
 def op_translate_entities(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
@@ -4507,6 +4545,7 @@ OPERATIONS = {
     "export_pdf": op_export_pdf,
     "import_pdf": op_import_pdf,
     "trace_raster": op_trace_raster,
+    "commit_trace": op_commit_trace,
     "translate_entities": op_translate_entities,
     "edit_vertices": op_edit_vertices,
     "apply_corners": op_apply_corners,
