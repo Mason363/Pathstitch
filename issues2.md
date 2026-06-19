@@ -359,7 +359,7 @@ boilerplate, e.g. repeated acceptance-criteria checklists that just restate the 
 ## 12. 3D workspace
 *Groups its 3D-only concerns together; unwrapping work specifically should stay In Progress until every phase is complete per the issue's own instruction.*
 
-- [ ] **Group 12 done**
+- [x] **Group 12 done** — implemented 2026-06-19; builds clean; Python tests pass; marked In Progress in Linear. MAS-122 (Home → default view when canvas empty), MAS-126 (plane imports only intersected geometry; full-silhouette only when nothing intersects — Python-verified), MAS-123 (live darker-blue cross-section preview as the plane moves), MAS-125 (drag a model into an open 3D workspace → append + distribute via new `combine_steps` op; body move tool — click-select + 3D TransformControls gizmo + precise X/Y/Z panel + persisted per-body offsets), MAS-112 (Phase-2 LSCM conformal flattening of doubly-curved faces, numpy-only — verified ~0° distortion on developables, finite sphere flatten). **MAS-112 stays In Progress** per its own rule (full Phase-2 modes/heatmap/connected-net integration + Phases 3–4 remain). The 3D viewport gizmo/preview pieces are code-complete but not runtime-verified here (no computer-use testing).
 
 ### MAS-125 — 3D model imports
 > Allow users to drag in a 3D model in an already open 3D workspace that has a model loaded currently. Use best distribution to distribute them.

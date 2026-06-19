@@ -474,6 +474,8 @@ struct DXFLayer: Identifiable, Hashable, Codable {
     var refImageScaleY: Double = 1.0
     var refImageWidth: Double = 0.0
     var refImageHeight: Double = 0.0
+    var refImagePixelWidth: Double = 0.0
+    var refImagePixelHeight: Double = 0.0
     var refImageRotation: Double = 0.0
     var refImageDepth: String = "back" // "front" or "back"
     var refImageOpacity: Double = 0.5
@@ -506,6 +508,7 @@ struct DXFLayer: Identifiable, Hashable, Codable {
         case isReferenceImageLayer, refImageBase64, refImageOffsetX, refImageOffsetY
         case refImageScaleX, refImageScaleY, refImageWidth, refImageHeight, refImageRotation
         case refImageDepth, refImageOpacity, refImageCalibrationDistance, locked
+        case refImagePixelWidth, refImagePixelHeight
     }
     
     init(from decoder: Decoder) throws {
@@ -524,11 +527,16 @@ struct DXFLayer: Identifiable, Hashable, Codable {
         refImageScaleY = try container.decodeIfPresent(Double.self, forKey: .refImageScaleY) ?? 1.0
         refImageWidth = try container.decodeIfPresent(Double.self, forKey: .refImageWidth) ?? 0.0
         refImageHeight = try container.decodeIfPresent(Double.self, forKey: .refImageHeight) ?? 0.0
+        refImagePixelWidth = try container.decodeIfPresent(Double.self, forKey: .refImagePixelWidth) ?? 0.0
+        refImagePixelHeight = try container.decodeIfPresent(Double.self, forKey: .refImagePixelHeight) ?? 0.0
         refImageRotation = try container.decodeIfPresent(Double.self, forKey: .refImageRotation) ?? 0.0
         refImageDepth = try container.decodeIfPresent(String.self, forKey: .refImageDepth) ?? "back"
         refImageOpacity = try container.decodeIfPresent(Double.self, forKey: .refImageOpacity) ?? 0.5
         refImageCalibrationDistance = try container.decodeIfPresent(Double.self, forKey: .refImageCalibrationDistance) ?? 100.0
         locked = try container.decodeIfPresent(Bool.self, forKey: .locked) ?? false
+        
+        if refImagePixelWidth == 0.0 { refImagePixelWidth = refImageWidth }
+        if refImagePixelHeight == 0.0 { refImagePixelHeight = refImageHeight }
     }
 }
 
@@ -615,6 +623,17 @@ struct ProjectSaveContainer: Codable {
     // inside the same .stch as the 2D drawing, so 3D shares saving/unsaved state.
     var savedStepJson: String? = nil
     var savedBodies3D: [Body3D]? = nil
+    /// Per-body manual move offsets in the 3D viewport (MAS-125), keyed by body
+    /// index. Optional so older .stch files still decode.
+    var savedBodyOffsets: [BodyOffsetSave]? = nil
+}
+
+/// One body's manual move offset (MAS-125), persisted in `.stch`.
+struct BodyOffsetSave: Codable, Hashable {
+    let bodyIndex: Int
+    let x: Double
+    let y: Double
+    let z: Double
 }
 
 @MainActor @Observable
@@ -684,11 +703,17 @@ class AppState {
     var isCalibrationActive: Bool = false
     var calibrationPoints: [CGPoint] = []
     var calibrationDistance: Double = 50.0
+    var isCalibratingDistanceInput: Bool = false
+    var calibrationTempDistanceText: String = ""
+    var calibrationInputScreenPos: CGPoint = .zero
 
     // Group 9 Layer-based Reference Image Properties
     var currentViewportSize: CGSize = CGSize(width: 800, height: 600)
     var isEditingRefImageTransform: Bool = false
     var isTracingRefImage: Bool = false
+    var autocropBackgroundlessImage: Bool = false
+    var backgroundlessMode: Bool = false
+    var removeBackgroundMode: Bool = false
     var traceThreshold: Double = 127.0
     var traceTolerance: Double = 50.0
     var traceCornerSmoothness: Double = 50.0
@@ -1404,7 +1429,57 @@ class AppState {
     var stepJsonContent: String?
     var selectedFaces3D: Set<SelectedFace> = []
     var bodies3D: [Body3D] = []
-    
+
+    // Body move tool (MAS-125): select a body in the viewport and translate it
+    // with a 3D gizmo / precise numeric fields. Moves are visual layout offsets
+    // (like the import-time distribution) persisted per body in `.stch`.
+    var bodyMoveToolActive: Bool = false
+    var selectedBodyIndex: Int? = nil
+    var bodyOffsets: [Int: [Double]] = [:]
+    /// Bumped to push offsets / selection to the viewport via updateNSView.
+    var bodyMoveStateToken: Int = 0
+    /// Precise per-step distance for the body-move panel's nudge buttons.
+    var bodyMoveStep: Double = 1.0
+
+    /// JSON string of `bodyOffsets` for the Three.js viewport bridge.
+    var bodyOffsetsJSON: String {
+        let dict = Dictionary(uniqueKeysWithValues: bodyOffsets.map { (String($0.key), $0.value) })
+        guard let data = try? JSONSerialization.data(withJSONObject: dict),
+              let str = String(data: data, encoding: .utf8) else { return "{}" }
+        return str
+    }
+
+    func toggleBodyMoveTool() {
+        bodyMoveToolActive.toggle()
+        if !bodyMoveToolActive { selectedBodyIndex = nil }
+        // The move tool and plane selection both claim viewport clicks — keep them
+        // mutually exclusive.
+        if bodyMoveToolActive && isPlaneSelectionActive {
+            cancelPlaneSelection()
+        }
+        bodyMoveStateToken += 1
+    }
+
+    /// A body was clicked in the viewport while the move tool is active.
+    func selectBody(_ index: Int) {
+        selectedBodyIndex = index
+        bodyMoveStateToken += 1
+    }
+
+    /// The offset of the currently selected body (zero if none/unset).
+    var selectedBodyOffset: [Double] {
+        guard let i = selectedBodyIndex else { return [0, 0, 0] }
+        return bodyOffsets[i] ?? [0, 0, 0]
+    }
+
+    /// Sets an absolute move offset for a body (from the gizmo drag or the panel),
+    /// dirties the doc, and re-syncs the viewport.
+    func setBodyOffset(index: Int, x: Double, y: Double, z: Double, pushToViewport: Bool = true) {
+        bodyOffsets[index] = [x, y, z]
+        hasUnsavedChanges = true
+        if pushToViewport { bodyMoveStateToken += 1 }
+    }
+
     // Plane Projection State Machine
     var isPlaneSelectionActive: Bool = false
     var planeSelectionModeType: String = "origin" // "origin" or "face"
@@ -1424,6 +1499,12 @@ class AppState {
     }
 
     func startPlaneSelection() {
+        // Plane selection and the body-move tool both claim viewport clicks.
+        if bodyMoveToolActive {
+            bodyMoveToolActive = false
+            selectedBodyIndex = nil
+            bodyMoveStateToken += 1
+        }
         if selectedFaces3D.count == 1 {
             let face = selectedFaces3D.first!
             isPlaneSelectionActive = true
@@ -2190,15 +2271,57 @@ class AppState {
 
         let tempDir = sessionTempDirectory
         try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        let targetURL = tempDir.appendingPathComponent("active.step")
+        let activeURL = tempDir.appendingPathComponent("active.step")
+
+        // MAS-125: if this workspace already holds a 3D model, append the dropped
+        // model rather than replacing it — the viewport distributes bodies side by
+        // side. Otherwise load fresh. Appending needs the existing STEP on disk;
+        // if only mesh JSON survived (e.g. from a reopened .stch) we load fresh.
+        let appending = currentStepFilePath != nil
+            && FileManager.default.fileExists(atPath: activeURL.path)
+            && !bodies3D.isEmpty
+
         do {
-            try? FileManager.default.removeItem(at: targetURL)
-            try FileManager.default.copyItem(at: url, to: targetURL)
-            currentStepFilePath = targetURL
-            selectedFaces3D.removeAll()
-            activeMode = .threeD
-            reloadSTEP()   // sets hasUnsavedChanges = true on success
-            logAction("Import STEP", details: "Loaded 3D model into workspace: \(url.lastPathComponent)")
+            let incomingURL = tempDir.appendingPathComponent("incoming_\(UUID().uuidString).step")
+            try? FileManager.default.removeItem(at: incomingURL)
+            try FileManager.default.copyItem(at: url, to: incomingURL)
+
+            if appending {
+                activeMode = .threeD
+                isProcessing = true
+                Task {
+                    do {
+                        _ = try await PythonBridge.shared.run(
+                            module: "step_ops",
+                            op: "combine_steps",
+                            args: ["input": activeURL.path,
+                                   "incoming": incomingURL.path,
+                                   "output": activeURL.path]
+                        )
+                        await MainActor.run {
+                            self.currentStepFilePath = activeURL
+                            self.selectedFaces3D.removeAll()
+                            self.reloadSTEP()   // re-lists all bodies; viewport redistributes
+                            self.logAction("Append STEP", details: "Appended 3D model into workspace: \(url.lastPathComponent)")
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self.errorMessage = "Failed to append STEP file: \(error.localizedDescription)"
+                            self.isProcessing = false
+                        }
+                    }
+                    try? FileManager.default.removeItem(at: incomingURL)
+                }
+            } else {
+                try? FileManager.default.removeItem(at: activeURL)
+                try FileManager.default.copyItem(at: incomingURL, to: activeURL)
+                try? FileManager.default.removeItem(at: incomingURL)
+                currentStepFilePath = activeURL
+                selectedFaces3D.removeAll()
+                activeMode = .threeD
+                reloadSTEP()   // sets hasUnsavedChanges = true on success
+                logAction("Import STEP", details: "Loaded 3D model into workspace: \(url.lastPathComponent)")
+            }
         } catch {
             errorMessage = "Failed to import STEP file: \(error.localizedDescription)"
             logAction("Import STEP Error", details: "Failed to copy STEP into workspace: \(error.localizedDescription)")
@@ -2232,9 +2355,10 @@ class AppState {
             WindowManager.shared.openAnyFile(url: fileURL)
         }
 
-        // Load 3D models into this same window/workspace (MAS-107). A workspace
-        // holds a single active model; if several are dropped at once they load
-        // in order (multi-model distribution is tracked separately in MAS-125).
+        // Load 3D models into this same window/workspace (MAS-107). Dropping a
+        // model onto a workspace that already holds one appends it and the
+        // viewport distributes them side by side (MAS-125 — handled inside
+        // importStepModel).
         for modelURL in stepModels {
             importStepModel(url: modelURL)
         }
@@ -4057,6 +4181,63 @@ class AppState {
     
 
 
+    private func cropImageToContentBounds(image: NSImage) -> NSImage {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        guard let colorSpace = cgImage.colorSpace,
+              let context = CGContext(
+                  data: nil,
+                  width: width,
+                  height: height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: width * 4,
+                  space: colorSpace,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return image
+        }
+        
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let pixelData = context.data else { return image }
+        
+        let buffer = pixelData.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        
+        var minX = width
+        var maxX = 0
+        var minY = height
+        var maxY = 0
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                let alpha = buffer[index + 3]
+                if alpha > 0 {
+                    if x < minX { minX = x }
+                    if x > maxX { maxX = x }
+                    if y < minY { minY = y }
+                    if y > maxY { maxY = y }
+                }
+            }
+        }
+        
+        if maxX < minX || maxY < minY {
+            return image
+        }
+        
+        let cropRect = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        guard let croppedCgImage = cgImage.cropping(to: cropRect) else { return image }
+        
+        return NSImage(cgImage: croppedCgImage, size: NSSize(width: cropRect.width, height: cropRect.height))
+    }
+    
+    private func getPngData(from image: NSImage) -> Data? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        return bitmapRep.representation(using: .png, properties: [:])
+    }
+
     func getDecodedImage(for layer: DXFLayer) -> NSImage? {
         if let cached = decodedImageCache[layer.id] {
             return cached
@@ -4139,9 +4320,27 @@ class AppState {
             return
         }
         
-        let base64 = data.base64EncodedString()
-        let w = Double(image.size.width)
-        let h = Double(image.size.height)
+        var loadedImage = image
+        var loadedData = data
+        
+        if autocropBackgroundlessImage {
+            let cropped = cropImageToContentBounds(image: loadedImage)
+            if let croppedData = getPngData(from: cropped) {
+                loadedImage = cropped
+                loadedData = croppedData
+            }
+        }
+        
+        let base64 = loadedData.base64EncodedString()
+        let w = Double(loadedImage.size.width)
+        let h = Double(loadedImage.size.height)
+        
+        var pixelW = w
+        var pixelH = h
+        if let rep = loadedImage.representations.first, rep.pixelsWide > 0 && rep.pixelsHigh > 0 {
+            pixelW = Double(rep.pixelsWide)
+            pixelH = Double(rep.pixelsHigh)
+        }
         
         // Compute fitting scale in model space
         let viewW = Double(currentViewportSize.width)
@@ -4180,6 +4379,8 @@ class AppState {
         newLayer.refImageBase64 = base64
         newLayer.refImageWidth = w
         newLayer.refImageHeight = h
+        newLayer.refImagePixelWidth = pixelW
+        newLayer.refImagePixelHeight = pixelH
         newLayer.refImageOffsetX = Double(modelCenter.x)
         newLayer.refImageOffsetY = Double(modelCenter.y)
         newLayer.refImageScaleX = scale
@@ -4198,26 +4399,29 @@ class AppState {
         logEntries.append(LogEntry(action: "Load Reference Image", details: "Loaded reference image layer: \(layerName)"))
     }
     
-    func calibrateActiveLayerReferenceImage() {
+    func commitCalibrationDistance() {
         guard var activeL = activeLayer, activeL.isReferenceImageLayer else { return }
-        guard calibrationPoints.count == 2, calibrationDistance > 0 else { return }
-        let p1 = calibrationPoints[0]
-        let p2 = calibrationPoints[1]
-        let modelDistance = Double(hypot(p2.x - p1.x, p2.y - p1.y))
-        if modelDistance > 1e-5 {
-            let ratio = calibrationDistance / modelDistance
-            activeL.refImageScaleX = activeL.refImageScaleX * ratio
-            activeL.refImageScaleY = activeL.refImageScaleY * ratio
-            
-            // Update the layer in the layers array
-            if let idx = layers.firstIndex(where: { $0.id == activeL.id }) {
-                layers[idx] = activeL
+        guard calibrationPoints.count == 2 else { return }
+        if let val = Double(calibrationTempDistanceText), val > 0 {
+            self.calibrationDistance = val
+            let p1 = calibrationPoints[0]
+            let p2 = calibrationPoints[1]
+            let modelDistance = Double(hypot(p2.x - p1.x, p2.y - p1.y))
+            if modelDistance > 1e-5 {
+                let ratio = val / modelDistance
+                activeL.refImageScaleX = activeL.refImageScaleX * ratio
+                activeL.refImageScaleY = activeL.refImageScaleY * ratio
+                
+                // Update the layer in the layers array
+                if let idx = layers.firstIndex(where: { $0.id == activeL.id }) {
+                    layers[idx] = activeL
+                }
+                
+                logEntries.append(LogEntry(action: "Calibrate Reference Image", details: "Calibrated 2 points. Target: \(val)mm, Measured: \(modelDistance)mm, scale factor: \(ratio)"))
             }
-            
-            logEntries.append(LogEntry(action: "Calibrate Reference Image", details: "Calibrated 2 points. Target: \(calibrationDistance)mm, Measured: \(modelDistance)mm, scale factor: \(ratio)"))
         }
         calibrationPoints.removeAll()
-        isCalibrationActive = false
+        isCalibratingDistanceInput = false
         hasUnsavedChanges = true
     }
     
@@ -4248,7 +4452,9 @@ class AppState {
                         "threshold": Int(self.traceThreshold),
                         "tolerance": self.traceTolerance,
                         "corner_smoothness": self.traceCornerSmoothness,
-                        "path_optimization": self.tracePathOptimization
+                        "path_optimization": self.tracePathOptimization,
+                        "backgroundless": self.backgroundlessMode,
+                        "remove_background": self.removeBackgroundMode
                     ]
                 )
                 
@@ -4303,6 +4509,9 @@ class AppState {
         let rot = activeL.refImageRotation
         let offset = CGPoint(x: activeL.refImageOffsetX, y: activeL.refImageOffsetY)
         
+        let pixelW = activeL.refImagePixelWidth > 0 ? activeL.refImagePixelWidth : w
+        let pixelH = activeL.refImagePixelHeight > 0 ? activeL.refImagePixelHeight : h
+        
         // Target layer name is "{RefImageName}_traced"
         let targetLayerName = sanitizeLayerName("\(activeL.name)_traced")
         
@@ -4312,8 +4521,10 @@ class AppState {
             if let vertices = ent.vertices {
                 var transformedVerts: [[Double]] = []
                 for pt in vertices where pt.count >= 2 {
-                    let x1 = pt[0] - w / 2
-                    let y1 = pt[1] - h / 2
+                    let ptScaledX = pt[0] * (w / pixelW)
+                    let ptScaledY = pt[1] * (h / pixelH)
+                    let x1 = ptScaledX - w / 2
+                    let y1 = ptScaledY - h / 2
                     let x2 = x1 * scaleX
                     let y2 = y1 * scaleY
                     let rad = rot * .pi / 180.0
@@ -4642,7 +4853,10 @@ class AppState {
                 savedLayerFolders: layerFolders,
                 savedActiveLayerId: activeLayerId,
                 savedStepJson: stepJsonContent,
-                savedBodies3D: bodies3D.isEmpty ? nil : bodies3D
+                savedBodies3D: bodies3D.isEmpty ? nil : bodies3D,
+                savedBodyOffsets: bodyOffsets.isEmpty ? nil : bodyOffsets.map {
+                    BodyOffsetSave(bodyIndex: $0.key, x: $0.value[0], y: $0.value[1], z: $0.value[2])
+                }
             )
 
             let encoder = JSONEncoder()
@@ -4733,6 +4947,8 @@ class AppState {
             // Restore the 3D workspace that travels inside the .stch (MAS-75).
             self.stepJsonContent = validContainer.savedStepJson
             self.bodies3D = validContainer.savedBodies3D ?? []
+            self.bodyOffsets = Dictionary(uniqueKeysWithValues:
+                (validContainer.savedBodyOffsets ?? []).map { ($0.bodyIndex, [$0.x, $0.y, $0.z]) })
             self.logEntries = validContainer.logEntries
             self.canvasScale = CGFloat(validContainer.canvasScale)
             self.canvasOffset = CGSize(width: CGFloat(validContainer.canvasOffsetX), height: CGFloat(validContainer.canvasOffsetY))

@@ -2620,11 +2620,52 @@ def op_trace_raster(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": "Output path must be specified."}
         
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         import potrace
         import numpy as np
         
-        img = Image.open(input_path).convert("L")
+        img = Image.open(input_path)
+        
+        # 1. AI Background removal using rembg if requested
+        remove_bg = args.get("remove_background", False)
+        if remove_bg:
+            try:
+                import rembg
+                # rembg.remove takes PIL Image and returns RGBA PIL Image
+                img = rembg.remove(img)
+            except Exception as e:
+                import sys
+                sys.stderr.write(f"Warning: rembg background removal failed: {str(e)}\n")
+        
+        # 2. Check if we need to trace in backgroundless/silhouette mode
+        is_bgless = args.get("backgroundless", False) or remove_bg
+        
+        # 3. Process transparency / alpha channel
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            rgba = img.convert("RGBA")
+            alpha = rgba.split()[-1]
+            
+            if is_bgless:
+                # Backgroundless mode: non-transparent pixels (alpha > 10) become perfect black (0),
+                # transparent pixels become white (255)
+                alpha_np = np.array(alpha)
+                mask = alpha_np > 10
+                img_np = np.where(mask, 0, 255).astype(np.uint8)
+                img = Image.fromarray(img_np)
+            else:
+                # Standard mode: composite onto a white background
+                bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                bg.paste(rgba, mask=alpha)
+                img = bg.convert("L")
+        else:
+            img = img.convert("L")
+            
+        # 4. Add padding (4 pixels) so that pixels touching the border are fully traced by potrace
+        padding = 4
+        W_orig = img.width
+        H_orig = img.height
+        img = ImageOps.expand(img, border=padding, fill=255)
+            
         img_np = np.array(img)
         bmp = img_np < threshold
         
@@ -2636,28 +2677,39 @@ def op_trace_raster(args: Dict[str, Any]) -> Dict[str, Any]:
         if "ORIGINAL" not in doc.layers:
             doc.layers.new("ORIGINAL")
             
-        h = img.height
+        h = H_orig
         for curve in path:
             start_point = curve.start_point
-            pts = [(float(start_point.x), h - float(start_point.y))]
+            pts = [(float(start_point.x) - padding, h + padding - float(start_point.y))]
             
             for segment in curve:
                 if segment.is_corner:
                     c = segment.c
                     p = segment.end_point
-                    pts.append((float(c.x), h - float(c.y)))
-                    pts.append((float(p.x), h - float(p.y)))
+                    pts.append((float(c.x) - padding, h + padding - float(c.y)))
+                    pts.append((float(p.x) - padding, h + padding - float(p.y)))
                 else:
                     p0 = pts[-1]
-                    p1 = (float(segment.c1.x), h - float(segment.c1.y))
-                    p2 = (float(segment.c2.x), h - float(segment.c2.y))
-                    p3 = (float(segment.end_point.x), h - float(segment.end_point.y))
+                    p1 = (float(segment.c1.x) - padding, h + padding - float(segment.c1.y))
+                    p2 = (float(segment.c2.x) - padding, h + padding - float(segment.c2.y))
+                    p3 = (float(segment.end_point.x) - padding, h + padding - float(segment.end_point.y))
                     for t in np.linspace(0.1, 1.0, 10):
                         x = (1-t)**3 * p0[0] + 3*(1-t)**2*t * p1[0] + 3*(1-t)*t**2 * p2[0] + t**3 * p3[0]
                         y = (1-t)**3 * p0[1] + 3*(1-t)**2*t * p1[1] + 3*(1-t)*t**2 * p2[1] + t**3 * p3[1]
                         pts.append((x, y))
             
             if len(pts) >= 2:
+                # Filter out curves that represent the outer rectangular border frame of the image
+                def is_outer_frame(points, width, height, tolerance=5.0):
+                    has_bl = any(abs(x) <= tolerance and abs(y) <= tolerance for x, y in points)
+                    has_tl = any(abs(x) <= tolerance and abs(y - height) <= tolerance for x, y in points)
+                    has_br = any(abs(x - width) <= tolerance and abs(y) <= tolerance for x, y in points)
+                    has_tr = any(abs(x - width) <= tolerance and abs(y - height) <= tolerance for x, y in points)
+                    return has_bl and has_tl and has_br and has_tr
+                
+                if is_outer_frame(pts, W_orig, H_orig):
+                    continue
+                    
                 msp.add_lwpolyline(pts, dxfattribs={"layer": "ORIGINAL", "closed": True})
                 
         doc.saveas(output_path)

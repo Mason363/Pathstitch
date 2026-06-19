@@ -57,6 +57,12 @@ struct ThreeDViewport: NSViewRepresentable {
     let triggerCameraAnimationToken: Int
     let triggerHomeFrameToken: Int
 
+    // Body move tool (MAS-125)
+    let bodyMoveToolActive: Bool
+    let selectedBodyIndex: Int?
+    let bodyOffsetsJSON: String
+    let bodyMoveStateToken: Int
+
     var state: AppState
     
     func makeCoordinator() -> Coordinator {
@@ -93,6 +99,7 @@ struct ThreeDViewport: NSViewRepresentable {
         context.coordinator.updatePlaneSelectionState()
         context.coordinator.updateOrthographicMode()
         context.coordinator.updateHomeFrame()
+        context.coordinator.updateBodyMoveState()
     }
 }
 
@@ -115,6 +122,7 @@ class Coordinator: NSObject, WKScriptMessageHandler {
     private var lastTriggerCameraAnimationToken = 0
     private var lastTriggerHomeFrameToken = 0
     private var lastThreeDOrthographic = false
+    private var lastBodyMoveStateToken = -1
     
     init(state: AppState) {
         self.state = state
@@ -137,7 +145,9 @@ class Coordinator: NSObject, WKScriptMessageHandler {
                 self.updateSelection()
                 self.updateBodyVisibilities()
                 self.updatePlaneSelectionState()
-                
+                self.lastBodyMoveStateToken = -1
+                self.updateBodyMoveState()
+
                 // Force update orthographic mode
                 self.lastThreeDOrthographic = !self.state.threeDOrthographic
                 self.updateOrthographicMode()
@@ -162,6 +172,23 @@ class Coordinator: NSObject, WKScriptMessageHandler {
         } else if op == "clearSelection" {
             DispatchQueue.main.async {
                 self.state.selectedFaces3D.removeAll()
+            }
+        } else if op == "selectBody" {
+            // Body move tool: a body was clicked in the viewport (MAS-125).
+            let bodyIndex = json["bodyIndex"] as? Int ?? 0
+            DispatchQueue.main.async {
+                self.state.selectBody(bodyIndex)
+            }
+        } else if op == "bodyMoved" {
+            // The 3D translate gizmo dragged a body; persist its new offset.
+            let bodyIndex = json["bodyIndex"] as? Int ?? 0
+            let x = json["x"] as? Double ?? 0.0
+            let y = json["y"] as? Double ?? 0.0
+            let z = json["z"] as? Double ?? 0.0
+            DispatchQueue.main.async {
+                // Don't echo back to the viewport — it already reflects the drag.
+                self.state.setBodyOffset(index: bodyIndex, x: x, y: y, z: z, pushToViewport: false)
+                self.lastBodyMoveStateToken = self.state.bodyMoveStateToken
             }
         } else if op == "selectProjectionPlane" {
             let plane = json["plane"] as? String ?? "XY"
@@ -248,12 +275,27 @@ class Coordinator: NSObject, WKScriptMessageHandler {
         }
     }
     
+    /// Pushes the body-move tool state (active flag, selected body, per-body
+    /// offsets) to the viewport whenever it changes (MAS-125).
+    func updateBodyMoveState() {
+        guard isWebViewReady, let webView = webView else { return }
+        guard lastBodyMoveStateToken != state.bodyMoveStateToken else { return }
+        lastBodyMoveStateToken = state.bodyMoveStateToken
+
+        let active = state.bodyMoveToolActive ? "true" : "false"
+        let sel = state.selectedBodyIndex ?? -1
+        let offsetsEscaped = state.bodyOffsetsJSON.replacingOccurrences(of: "\"", with: "\\\"")
+        let js = "setBodyMoveState(\(active), \(sel), \"\(offsetsEscaped)\");"
+        webView.evaluateJavaScript(js, completionHandler: nil)
+    }
+
     func updateModel() {
         guard isWebViewReady, let webView = webView, let jsonStr = state.stepJsonContent else { return }
         let modelPath = state.currentStepFilePath?.path ?? ""
-        
+
         if lastLoadedModelPath != modelPath {
             lastLoadedModelPath = modelPath
+            lastBodyMoveStateToken = -1  // re-push body-move state for the new model
             lastSelectedFaces.removeAll() // Force selection update for the new model
             
             // Re-initialize body visibilities tracking

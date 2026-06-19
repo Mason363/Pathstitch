@@ -594,7 +594,12 @@ def op_project_edges(args: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception:
                     pass
                     
-        if not polylines:
+        # MAS-126: the plane imports ONLY the geometry it actually intersects. The
+        # full-silhouette projection of all visible bodies is a fallback used
+        # exclusively when the plane intersects nothing at all — never when a
+        # section was found (even if those section curves degenerated away).
+        any_intersection = len(section_edges) > 0
+        if not polylines and not any_intersection:
             # Silhouette/HLR Mode: Project visible outlines/boundaries
             from OCC.Core.HLRAlgo import HLRAlgo_Projector
             from OCC.Core.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
@@ -691,6 +696,46 @@ def op_project_edges(args: Dict[str, Any]) -> Dict[str, Any]:
         import traceback
         return {"status": "error", "message": f"Projection failed: {str(e)}\n{traceback.format_exc()}"}
 
+def op_combine_steps(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Merges two STEP files into one (MAS-125): every solid/shell from `input`
+    and `incoming` is packed into a single compound and written to `output`, so a
+    model dragged into an already-loaded 3D workspace is appended rather than
+    replacing it. The viewport's loader handles the side-by-side distribution."""
+    input_path = args.get("input")
+    incoming_path = args.get("incoming")
+    output_path = args.get("output")
+    if not input_path or not incoming_path or not output_path:
+        return {"status": "error", "message": "Missing input, incoming, or output path."}
+    if not os.path.exists(input_path):
+        return {"status": "error", "message": f"Existing STEP not found: {input_path}"}
+    if not os.path.exists(incoming_path):
+        return {"status": "error", "message": f"Incoming STEP not found: {incoming_path}"}
+
+    try:
+        from OCC.Core.TopoDS import TopoDS_Compound
+        from OCC.Core.BRep import BRep_Builder
+        from OCC.Core.STEPControl import STEPControl_Writer, STEPControl_AsIs
+
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+
+        total = 0
+        for path in (input_path, incoming_path):
+            shape = load_step_shape(path)
+            for body in get_solid_bodies(shape):
+                builder.Add(compound, body)
+                total += 1
+
+        writer = STEPControl_Writer()
+        writer.Transfer(compound, STEPControl_AsIs)
+        writer.Write(output_path)
+        return {"status": "ok", "data": {"output": output_path, "body_count": total}}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": f"Failed to combine STEP files: {str(e)}\n{traceback.format_exc()}"}
+
+
 # Imported at the bottom: net_unfold imports step_ops helpers lazily inside its
 # op, so this ordering avoids a circular import.
 from pathstitch_core.net_unfold import op_unfold_connected
@@ -703,6 +748,7 @@ OPERATIONS = {
     "unfold_faces": op_unfold_faces,
     "unfold_connected": op_unfold_connected,
     "project_edges": op_project_edges,
+    "combine_steps": op_combine_steps,
 }
 
 

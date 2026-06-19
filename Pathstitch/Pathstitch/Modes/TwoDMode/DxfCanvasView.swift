@@ -89,6 +89,7 @@ struct DxfCanvasView: View {
     @State private var dimensionFirstPoint: CGPoint? = nil
     @FocusState private var isTextEditorFocused: Bool
     @FocusState private var isDimensionEditorFocused: Bool
+    @FocusState private var isCalibrationInputFocused: Bool
     
     // Group 9 Layer-based Reference Image Drag States
     @State private var activeRefImageHandle: String? = nil
@@ -874,18 +875,29 @@ struct DxfCanvasView: View {
             }
             
             // Calibration Points visual markers
-            if state.isCalibrationActive {
+            if state.isCalibrationActive || state.isCalibratingDistanceInput {
+                if state.calibrationPoints.count == 2 {
+                    let p1 = toScreen(dx: state.calibrationPoints[0].x, dy: state.calibrationPoints[0].y, size: viewSize, bounds: modelBounds)
+                    let p2 = toScreen(dx: state.calibrationPoints[1].x, dy: state.calibrationPoints[1].y, size: viewSize, bounds: modelBounds)
+                    Path { path in
+                        path.move(to: p1)
+                        path.addLine(to: p2)
+                    }
+                    .stroke(Color.red, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                }
+                
                 ForEach(Array(state.calibrationPoints.enumerated()), id: \.offset) { idx, pt in
+                    let screenPt = toScreen(dx: pt.x, dy: pt.y, size: viewSize, bounds: modelBounds)
                     Circle()
                         .fill(Color.red)
                         .frame(width: 8, height: 8)
-                        .position(pt)
+                        .position(screenPt)
                         .overlay(
                             Text("Point \(idx + 1)")
                                 .font(.caption)
                                 .foregroundColor(.red)
                                 .offset(y: -12)
-                                .position(pt)
+                                .position(screenPt)
                         )
                 }
             }
@@ -962,6 +974,32 @@ struct DxfCanvasView: View {
                 .position(editingDimensionScreenPos)
                 .shadow(radius: 4)
                 .help(isParam ? "Type a value or formula — e.g. 50, d1*2+10, sqrt(d2^2+d3^2), 1 inch" : "")
+            }
+            
+            if state.isCalibratingDistanceInput {
+                TextField("", text: $state.calibrationTempDistanceText, onCommit: {
+                    state.commitCalibrationDistance()
+                })
+                .onSubmit {
+                    state.commitCalibrationDistance()
+                }
+                .focused($isCalibrationInputFocused)
+                .onKeyPress(.escape) {
+                    state.calibrationPoints.removeAll()
+                    state.isCalibratingDistanceInput = false
+                    return .handled
+                }
+                .textFieldStyle(PlainTextFieldStyle())
+                .font(.system(size: 11, weight: .bold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.bg_panel)
+                .foregroundColor(Color.text_primary)
+                .cornerRadius(4)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.accent, lineWidth: 1.5))
+                .frame(width: 80)
+                .position(state.calibrationInputScreenPos)
+                .shadow(radius: 4)
             }
             
             if state.isEditingText {
@@ -3039,9 +3077,22 @@ struct DxfCanvasView: View {
                     }
                 }
             } else if state.isCalibrationActive {
-                state.calibrationPoints.append(point)
+                let modelPt = snappedModelPoint(forScreen: point, ref: nil, size: size, bounds: modelBounds)
+                state.calibrationPoints.append(modelPt)
                 if state.calibrationPoints.count == 2 {
-                    state.calibrateActiveLayerReferenceImage()
+                    state.isCalibrationActive = false
+                    
+                    let p1 = state.calibrationPoints[0]
+                    let p2 = state.calibrationPoints[1]
+                    let measured = Double(hypot(p2.x - p1.x, p2.y - p1.y))
+                    
+                    let midModel = CGPoint(x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2)
+                    let screenPos = toScreen(dx: midModel.x, dy: midModel.y, size: size, bounds: modelBounds)
+                    
+                    state.calibrationInputScreenPos = screenPos
+                    state.calibrationTempDistanceText = String(format: "%.2f", measured)
+                    state.isCalibratingDistanceInput = true
+                    isCalibrationInputFocused = true
                 }
             } else if state.currentTool == .measure {
                 // Place at the snap point under the cursor (or ortho-constrained),
@@ -3402,7 +3453,15 @@ struct DxfCanvasView: View {
     /// a margin (used after a multi-file distribute import so every file is
     /// visible at once — "all viewable"). Inverts `toScreen`'s transform.
     private func fitToContent(viewSize: CGSize) {
-        guard !state.entities.isEmpty, viewSize.width > 1, viewSize.height > 1 else { return }
+        guard viewSize.width > 1, viewSize.height > 1 else { return }
+        // MAS-122: with nothing on the canvas, Home returns to the default opening
+        // view — 1:1 scale at the origin, exactly how a fresh window opens — rather
+        // than leaving the user wherever they happened to pan/zoom.
+        guard !state.entities.isEmpty else {
+            state.canvasScale = 1.0
+            state.canvasOffset = .zero
+            return
+        }
         let b = robustContentBounds() ?? getBounds(state.entities)
         let bw = max(b.width, 0.001)
         let bh = max(b.height, 0.001)
@@ -5093,16 +5152,25 @@ extension DxfCanvasView {
         let rot = layer.refImageRotation
         let offset = CGPoint(x: layer.refImageOffsetX, y: layer.refImageOffsetY)
         
+        let pixelW = layer.refImagePixelWidth > 0 ? layer.refImagePixelWidth : w
+        let pixelH = layer.refImagePixelHeight > 0 ? layer.refImagePixelHeight : h
+        
         for ent in state.tracePreviewEntities {
             guard let vertices = ent.vertices, vertices.count >= 2 else { continue }
             var path = SwiftUI.Path()
-            let firstPt = CGPoint(x: vertices[0][0], y: vertices[0][1])
+            let firstPt = CGPoint(
+                x: vertices[0][0] * (w / pixelW),
+                y: vertices[0][1] * (h / pixelH)
+            )
             let firstTransformed = transformImagePoint(firstPt, w: w, h: h, offset: offset, scaleX: scaleX, scaleY: scaleY, rotation: rot)
             path.move(to: toScreen(dx: firstTransformed.x, dy: firstTransformed.y, size: size, bounds: modelBounds))
             
             for v in vertices.dropFirst() {
                 guard v.count >= 2 else { continue }
-                let pt = CGPoint(x: v[0], y: v[1])
+                let pt = CGPoint(
+                    x: v[0] * (w / pixelW),
+                    y: v[1] * (h / pixelH)
+                )
                 let transformed = transformImagePoint(pt, w: w, h: h, offset: offset, scaleX: scaleX, scaleY: scaleY, rotation: rot)
                 path.addLine(to: toScreen(dx: transformed.x, dy: transformed.y, size: size, bounds: modelBounds))
             }

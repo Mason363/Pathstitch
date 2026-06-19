@@ -2654,6 +2654,27 @@ extension ContentView {
                 .padding(.bottom, 4)
             
             VStack(alignment: .leading, spacing: 10) {
+                Toggle("Silhouette Tracing (Backgroundless)", isOn: Binding(
+                    get: { state.backgroundlessMode },
+                    set: { state.backgroundlessMode = $0; state.updateTracePreview() }
+                ))
+                .toggleStyle(.checkbox)
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_primary)
+                .help("Trace the silhouette of non-transparent areas only")
+
+                Toggle("Remove Background (rembg)", isOn: Binding(
+                    get: { state.removeBackgroundMode },
+                    set: { state.removeBackgroundMode = $0; state.updateTracePreview() }
+                ))
+                .toggleStyle(.checkbox)
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_primary)
+                .help("Use AI background removal (rembg) prior to tracing")
+
+                Divider()
+                    .padding(.vertical, 4)
+
                 // Threshold Slider
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {

@@ -33,6 +33,7 @@
     <!-- Load Three.js and OrbitControls -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
 </head>
 <body>
     <div id="canvas-container"></div>
@@ -152,7 +153,14 @@
         let dragStartOffset = 0;
         let dragStartMouse = new THREE.Vector2();
         let hasDragged = false;
-        
+
+        // Body move tool state (MAS-125)
+        let bodyMoveActive = false;
+        let selectedBodyIndex = -1;
+        window.bodyOffsets = {};                  // { bodyIndex: [x,y,z] }
+        window.bodyGroupsByIndex = {};            // { bodyIndex: THREE.Group }
+        let transformControls = null;
+
         // Colors
         const COLOR_DEFAULT = 0xffffff; // Flat white
         const COLOR_HOVER = 0xe2e8f0;   // Light gray/blue
@@ -368,6 +376,7 @@
             const bodies = model.bodies || [];
             
             const bodyGroups = [];
+            window.bodyGroupsByIndex = {};
 
             bodies.forEach(body => {
                 const faces = body.faces || [];
@@ -379,6 +388,7 @@
                 };
                 window.modelGroup.add(bodyGroup);
                 bodyGroups.push(bodyGroup);
+                window.bodyGroupsByIndex[body.body_index] = bodyGroup;
 
                 faces.forEach(face => {
                     if (!face.vertices || face.vertices.length === 0) return;
@@ -445,14 +455,21 @@
                     child.position.z -= center.z;
                 });
 
-                // Position bodyGroup along X axis
+                // Position bodyGroup along X axis (the import-time distribution)
                 const halfWidth = (size.x || 1.0) / 2.0;
                 bodyGroup.position.x = currentX + halfWidth;
                 bodyGroup.position.y = 0;
                 bodyGroup.position.z = 0;
 
+                // Remember the distributed home so manual move offsets (MAS-125)
+                // are applied relative to it and can be read back as a delta.
+                bodyGroup.userData.basePosition = bodyGroup.position.clone();
+
                 currentX += (size.x || 1.0) + gap;
             });
+
+            // Apply any persisted manual move offsets on top of the distribution.
+            applyAllBodyOffsets();
 
             const totalArrangedWidth = currentX > gap ? currentX - gap : 0.0;
 
@@ -485,6 +502,73 @@
             controls.target.set(0, finalSize.y / 2, 0);
             camera.position.set(maxDim * 1.5, finalSize.y / 2 + maxDim * 1.5, maxDim * 1.5);
             controls.update();
+        };
+
+        // --- Body move tool (MAS-125) -------------------------------------
+        // A selected body is translated with a 3D gizmo (or precise numeric
+        // fields). Moves are stored as an offset from each body's distributed
+        // home position, applied on top of the import-time layout.
+        let gizmoWasDragging = false;
+
+        function applyAllBodyOffsets() {
+            Object.keys(window.bodyGroupsByIndex).forEach(idxStr => {
+                const grp = window.bodyGroupsByIndex[idxStr];
+                if (!grp || !grp.userData.basePosition) return;
+                const off = window.bodyOffsets[idxStr] || [0, 0, 0];
+                grp.position.copy(grp.userData.basePosition)
+                   .add(new THREE.Vector3(off[0], off[1], off[2]));
+            });
+            updateSectionPreview();
+        }
+
+        function ensureTransformControls() {
+            if (transformControls) return;
+            transformControls = new THREE.TransformControls(camera, renderer.domElement);
+            transformControls.setMode('translate');
+            transformControls.setSize(0.9);
+            transformControls.addEventListener('dragging-changed', function(e) {
+                controls.enabled = !e.value;     // freeze orbit while dragging the gizmo
+                if (e.value) {
+                    gizmoWasDragging = true;
+                } else {
+                    setTimeout(function() { gizmoWasDragging = false; }, 0);
+                }
+            });
+            transformControls.addEventListener('objectChange', function() {
+                const grp = transformControls.object;
+                if (!grp || selectedBodyIndex < 0 || !grp.userData.basePosition) return;
+                const d = new THREE.Vector3().subVectors(grp.position, grp.userData.basePosition);
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pathstitch) {
+                    window.webkit.messageHandlers.pathstitch.postMessage(JSON.stringify({
+                        op: "bodyMoved", bodyIndex: selectedBodyIndex, x: d.x, y: d.y, z: d.z
+                    }));
+                }
+                updateSectionPreview();
+            });
+            scene.add(transformControls);
+        }
+
+        window.setBodyMoveState = function(active, selIndex, offsetsJson) {
+            bodyMoveActive = !!active;
+            selectedBodyIndex = (typeof selIndex === 'number') ? selIndex : parseInt(selIndex);
+            try { window.bodyOffsets = JSON.parse(offsetsJson) || {}; }
+            catch (e) { window.bodyOffsets = {}; }
+
+            applyAllBodyOffsets();
+            ensureTransformControls();
+
+            const grp = (selectedBodyIndex >= 0) ? window.bodyGroupsByIndex[selectedBodyIndex] : null;
+            if (bodyMoveActive && grp) {
+                transformControls.camera = camera;
+                transformControls.attach(grp);
+                transformControls.visible = true;
+                transformControls.enabled = true;
+            } else if (transformControls) {
+                transformControls.detach();
+                transformControls.visible = false;
+                transformControls.enabled = false;
+            }
+            updateVisuals();
         };
 
         // Highlight selection from SwiftUI
@@ -535,6 +619,7 @@
             
             // Re-assign camera to orbit controls
             controls.object = camera;
+            if (transformControls) transformControls.camera = camera;  // keep gizmo in sync
             controls.update();
         };
         
@@ -685,23 +770,103 @@
             if (!isPlaneSelectionActive || !selectedProjectionPlane) {
                 helperPlaneMesh.visible = false;
                 helperAxisLine.visible = false;
+                updateSectionPreview();   // clears the cross-section overlay too
                 return;
             }
-            
+
             const basis = getPlaneBasis(selectedProjectionPlane);
-            
+
             // Move helper plane to origin + normal * offset
             const pos = basis.origin.clone().add(basis.normal.clone().multiplyScalar(planeOffset));
             helperPlaneMesh.position.copy(pos);
-            
+
             // Align helper plane rotation to normal (default geometry faces Z axis)
             helperPlaneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), basis.normal);
             helperPlaneMesh.visible = true;
-            
+
             // Draw axis line passing through plane base origin
             helperAxisLine.position.copy(basis.origin);
             helperAxisLine.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), basis.normal);
             helperAxisLine.visible = true;
+
+            // MAS-123: preview the cross-section the plane carves through the bodies.
+            updateSectionPreview();
+        }
+
+        // MAS-123 — Plane Projection Sketch v2: live preview of the cross-section
+        // (the curves where the projection plane actually cuts the visible bodies),
+        // drawn in a darker blue than the translucent plane so it reads as "what
+        // will be projected". Recomputed whenever the plane moves.
+        let sectionPreview = null;        // THREE.LineSegments overlay
+        const SECTION_COLOR = 0x1d4ed8;   // blue-700, darker than the plane's 0x3b82f6
+
+        function clearSectionPreview() {
+            if (sectionPreview) {
+                scene.remove(sectionPreview);
+                sectionPreview.geometry.dispose();
+                sectionPreview.material.dispose();
+                sectionPreview = null;
+            }
+        }
+
+        // Intersect one world-space triangle with a THREE.Plane; returns the two
+        // crossing points (a segment) or null when the triangle doesn't straddle it.
+        function trianglePlaneSegment(a, b, c, plane) {
+            const da = plane.distanceToPoint(a);
+            const db = plane.distanceToPoint(b);
+            const dc = plane.distanceToPoint(c);
+            const pts = [];
+            const addEdge = (p, q, dp, dq) => {
+                if ((dp > 0 && dq < 0) || (dp < 0 && dq > 0)) {
+                    pts.push(new THREE.Vector3().lerpVectors(p, q, dp / (dp - dq)));
+                }
+            };
+            addEdge(a, b, da, db);
+            addEdge(b, c, db, dc);
+            addEdge(c, a, dc, da);
+            return pts.length >= 2 ? [pts[0], pts[1]] : null;
+        }
+
+        function updateSectionPreview() {
+            clearSectionPreview();
+            if (!isPlaneSelectionActive || !selectedProjectionPlane || !window.modelGroup) return;
+
+            const basis = getPlaneBasis(selectedProjectionPlane);
+            const planePoint = basis.origin.clone().add(basis.normal.clone().multiplyScalar(planeOffset));
+            const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+                basis.normal.clone().normalize(), planePoint);
+
+            const positions = [];
+            const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+            faceMeshes.forEach(mesh => {
+                if (!mesh.visible) return;
+                const geom = mesh.geometry;
+                const pos = geom.getAttribute('position');
+                if (!pos) return;
+                const idx = geom.index;
+                const mw = mesh.matrixWorld;
+                const triCount = idx ? idx.count / 3 : pos.count / 3;
+                for (let t = 0; t < triCount; t++) {
+                    let iA, iB, iC;
+                    if (idx) { iA = idx.getX(t*3); iB = idx.getX(t*3+1); iC = idx.getX(t*3+2); }
+                    else { iA = t*3; iB = t*3+1; iC = t*3+2; }
+                    a.fromBufferAttribute(pos, iA).applyMatrix4(mw);
+                    b.fromBufferAttribute(pos, iB).applyMatrix4(mw);
+                    c.fromBufferAttribute(pos, iC).applyMatrix4(mw);
+                    const seg = trianglePlaneSegment(a, b, c, plane);
+                    if (seg) positions.push(seg[0].x, seg[0].y, seg[0].z, seg[1].x, seg[1].y, seg[1].z);
+                }
+            });
+            if (positions.length === 0) return;
+
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const m = new THREE.LineBasicMaterial({
+                color: SECTION_COLOR, transparent: true, opacity: 0.95, depthTest: false
+            });
+            sectionPreview = new THREE.LineSegments(g, m);
+            sectionPreview.renderOrder = 999;   // draw on top of the plane + model
+            scene.add(sectionPreview);
         }
 
         function updateArrowGizmo() {
@@ -913,6 +1078,22 @@
         function onClick(event) {
             raycaster.setFromCamera(mouse, camera);
 
+            // Body move tool: a click selects a body; the gizmo handles dragging
+            // (MAS-125). Ignore the click that ends a gizmo drag.
+            if (bodyMoveActive) {
+                if (gizmoWasDragging) return;
+                const bodyHits = raycaster.intersectObjects(faceMeshes);
+                if (bodyHits.length > 0) {
+                    const bi = bodyHits[0].object.userData.bodyIndex;
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pathstitch) {
+                        window.webkit.messageHandlers.pathstitch.postMessage(JSON.stringify({
+                            op: "selectBody", bodyIndex: bi
+                        }));
+                    }
+                }
+                return;
+            }
+
             // Handle Arrow clicks (we already handle this in onMouseUp, so ignore here)
             if (isPlaneSelectionActive && selectedProjectionPlane && hitboxMesh) {
                 const intersects = raycaster.intersectObject(hitboxMesh);
@@ -1062,8 +1243,13 @@
                     mesh.material.opacity = 1.0;
                     mesh.userData.wireframe.material.transparent = false;
                     mesh.userData.wireframe.material.opacity = 1.0;
-                    
-                    if (isSelected) {
+
+                    const isMoveBody = bodyMoveActive && mesh.userData.bodyIndex === selectedBodyIndex;
+                    if (isMoveBody) {
+                        // Highlight the whole body being moved (MAS-125).
+                        mesh.material.color.setHex(COLOR_SELECTED);
+                        mesh.userData.wireframe.material.color.setHex(COLOR_HIGHLIGHT_EDGE);
+                    } else if (isSelected) {
                         mesh.material.color.setHex(COLOR_SELECTED);
                         mesh.userData.wireframe.material.color.setHex(COLOR_HIGHLIGHT_EDGE);
                     } else if (isHovered) {

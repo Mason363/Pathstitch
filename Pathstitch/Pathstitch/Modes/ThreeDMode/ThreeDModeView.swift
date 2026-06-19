@@ -190,6 +190,10 @@ struct ThreeDModeView: View {
                 threeDOrthographic: state.threeDOrthographic,
                 triggerCameraAnimationToken: state.triggerCameraAnimationToken,
                 triggerHomeFrameToken: state.triggerHomeFrameToken,
+                bodyMoveToolActive: state.bodyMoveToolActive,
+                selectedBodyIndex: state.selectedBodyIndex,
+                bodyOffsetsJSON: state.bodyOffsetsJSON,
+                bodyMoveStateToken: state.bodyMoveStateToken,
                 state: state
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -241,7 +245,10 @@ struct ThreeDModeView: View {
                             
                             Divider().background(Color.border_subtle)
                         }
-                        
+
+                        // Section 1.5: Move Bodies (MAS-125)
+                        moveBodiesSection
+
                         // Section 2: Unfolding (one section, one mental model:
                         // pick how pieces come out, then unfold)
                         VStack(alignment: .leading, spacing: 10) {
@@ -413,5 +420,99 @@ struct ThreeDModeView: View {
             .border(Color.border_subtle, width: 1)
         }
         .background(Color.bg_base)
+    }
+
+    // MARK: - Move Bodies (MAS-125)
+
+    /// Binding to one axis of the selected body's move offset; writes through
+    /// `setBodyOffset` so the viewport gizmo and the doc dirty-flag stay in sync.
+    private func bodyOffsetBinding(_ axis: Int) -> Binding<Double> {
+        Binding(
+            get: { state.selectedBodyOffset[axis] },
+            set: { newVal in
+                guard let i = state.selectedBodyIndex else { return }
+                var o = state.selectedBodyOffset
+                o[axis] = newVal
+                state.setBodyOffset(index: i, x: o[0], y: o[1], z: o[2])
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var moveBodiesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("MOVE BODIES")
+                .font(PlasticityFont.header)
+                .foregroundColor(Color.text_secondary)
+                .tracking(0.5)
+
+            Toggle("Move Tool", isOn: Binding(
+                get: { state.bodyMoveToolActive },
+                set: { on in if on != state.bodyMoveToolActive { state.toggleBodyMoveTool() } }
+            ))
+            .toggleStyle(.switch)
+            .font(PlasticityFont.body)
+            .foregroundColor(Color.text_primary)
+            .help("Select a body in the viewport, then drag the 3D gizmo or type exact offsets.")
+
+            if state.bodyMoveToolActive {
+                if let bi = state.selectedBodyIndex,
+                   let body = state.bodies3D.first(where: { $0.body_index == bi }) {
+                    Text("Selected: \(body.name)")
+                        .font(PlasticityFont.body)
+                        .foregroundColor(Color.accent)
+
+                    SettingRow(label: "X (mm)") {
+                        TextField("", value: bodyOffsetBinding(0), format: .number)
+                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    }
+                    SettingRow(label: "Y (mm)") {
+                        TextField("", value: bodyOffsetBinding(1), format: .number)
+                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    }
+                    SettingRow(label: "Z (mm)") {
+                        TextField("", value: bodyOffsetBinding(2), format: .number)
+                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    }
+
+                    SettingRow(label: "Step") {
+                        TextField("", value: $state.bodyMoveStep, format: .number)
+                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    }
+                    .help("Distance for the precise nudge buttons.")
+
+                    HStack(spacing: 4) {
+                        ForEach(Array(["X", "Y", "Z"].enumerated()), id: \.offset) { idx, axis in
+                            Button("-\(axis)") { nudgeBody(bi, axis: idx, dir: -1) }
+                                .buttonStyle(BorderedButtonStyle()).controlSize(.small)
+                            Button("+\(axis)") { nudgeBody(bi, axis: idx, dir: 1) }
+                                .buttonStyle(BorderedButtonStyle()).controlSize(.small)
+                        }
+                    }
+
+                    Button("Reset Position") {
+                        state.setBodyOffset(index: bi, x: 0, y: 0, z: 0)
+                    }
+                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                    .help("Return this body to its distributed home position.")
+                } else {
+                    Text("Click a body in the viewport to select it.")
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.text_muted)
+                }
+            } else {
+                Text("Enable to select bodies and move them with a 3D gizmo.")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_muted)
+            }
+
+            Divider().background(Color.border_subtle)
+        }
+    }
+
+    private func nudgeBody(_ index: Int, axis: Int, dir: Double) {
+        var o = state.selectedBodyOffset
+        o[axis] += dir * state.bodyMoveStep
+        state.setBodyOffset(index: index, x: o[0], y: o[1], z: o[2])
     }
 }
