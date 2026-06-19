@@ -231,6 +231,7 @@ class Coordinator: NSObject, WKScriptMessageHandler {
             let edgeIndex = json["edgeIndex"] as? Int ?? 0
             DispatchQueue.main.async {
                 let edgeSel = SelectedEdge(bodyIndex: bodyIndex, edgeIndex: edgeIndex)
+                self.state.selectedEdge3D = edgeSel
                 if self.state.seamControlMode == "manual" {
                     if self.state.forcedSeams3D.contains(edgeSel) {
                         self.state.forcedSeams3D.remove(edgeSel)

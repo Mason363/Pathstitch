@@ -89,9 +89,6 @@ struct SettingRow<Content: View>: View {
 struct ThreeDModeView: View {
     @Bindable var state: AppState
     @State private var selectedPlane: String = "XY"
-    @State private var netLayout: String = "connected"
-    @State private var netMode: String = "radial"
-    @State private var netDecoration: String = "none"
     
     var body: some View {
         HStack(spacing: 0) {
@@ -262,7 +259,7 @@ struct ThreeDModeView: View {
                                 .tracking(0.5)
 
                             SettingRow(label: "Layout") {
-                                Picker("Layout", selection: $netLayout) {
+                                Picker("Layout", selection: $state.netLayout) {
                                     Text("Connected Net").tag("connected")
                                     Text("Separate Pieces").tag("separate")
                                 }
@@ -283,9 +280,9 @@ struct ThreeDModeView: View {
                                 .help("The parameterization energy mode used to flatten curved surfaces.")
                             }
 
-                            if netLayout == "connected" {
+                            if state.netLayout == "connected" {
                                 SettingRow(label: "Unroll") {
-                                    Picker("Unroll Mode", selection: $netMode) {
+                                    Picker("Unroll Mode", selection: $state.netMode) {
                                         Text("Radial").tag("radial")
                                         Text("Strip").tag("strip")
                                         Text("Spanning Tree").tag("spanning")
@@ -296,7 +293,7 @@ struct ThreeDModeView: View {
                                 }
 
                                 SettingRow(label: "Seams") {
-                                    Picker("Seam Decoration", selection: $netDecoration) {
+                                    Picker("Seam Decoration", selection: $state.netDecoration) {
                                         Text("Plain").tag("none")
                                         Text("Glue Tabs").tag("tabs")
                                         Text("Sew Holes").tag("holes")
@@ -315,6 +312,68 @@ struct ThreeDModeView: View {
                                     .pickerStyle(DefaultPickerStyle())
                                     .labelsHidden()
                                     .help("Auto uses curvature-weighted spanning tree. Manual lets you pick cuts. Hybrid lets you force creases.")
+                                }
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if let anchor = state.anchorFace3D {
+                                        HStack {
+                                            Text("Anchor: B\(anchor.bodyIndex + 1) : F\(anchor.faceIndex)")
+                                                .font(PlasticityFont.label)
+                                                .foregroundColor(Color.accent)
+                                            Spacer()
+                                            Button("Reset") {
+                                                state.anchorFace3D = nil
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                            .font(PlasticityFont.label)
+                                            .foregroundColor(Color.text_muted)
+                                        }
+                                    } else {
+                                        HStack {
+                                            Text("Anchor: Default (Largest)")
+                                                .font(PlasticityFont.label)
+                                                .foregroundColor(Color.text_muted)
+                                            Spacer()
+                                            if let firstSel = state.selectedFaces3D.first, state.selectedFaces3D.count == 1 {
+                                                Button("Set Selected") {
+                                                    state.anchorFace3D = firstSel
+                                                }
+                                                .buttonStyle(PlainButtonStyle())
+                                                .font(PlasticityFont.label)
+                                                .foregroundColor(Color.accent)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 2)
+
+                                if let selectedEdge = state.selectedEdge3D {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Edge Override (B\(selectedEdge.bodyIndex + 1) : E\(selectedEdge.edgeIndex))")
+                                            .font(PlasticityFont.label)
+                                            .foregroundColor(Color.text_secondary)
+                                            .fontWeight(.bold)
+                                        
+                                        Picker("Seam Override", selection: Binding(
+                                            get: { state.seamDecorations3D[selectedEdge] ?? "default" },
+                                            set: { newVal in
+                                                if newVal == "default" {
+                                                    state.seamDecorations3D.removeValue(forKey: selectedEdge)
+                                                } else {
+                                                    state.seamDecorations3D[selectedEdge] = newVal
+                                                }
+                                            }
+                                        )) {
+                                            Text("Default (Use Global)").tag("default")
+                                            Text("Plain (Cut)").tag("none")
+                                            Text("Glue Tab").tag("tabs")
+                                            Text("Sew Holes").tag("holes")
+                                        }
+                                        .pickerStyle(DefaultPickerStyle())
+                                        .labelsHidden()
+                                    }
+                                    .padding(.top, 4)
+                                    .padding(.bottom, 2)
                                 }
 
                                 if state.seamControlMode == "manual" && !state.forcedSeams3D.isEmpty {
@@ -336,22 +395,35 @@ struct ThreeDModeView: View {
                                 }
                             }
 
+                            Toggle("Live Recompute", isOn: $state.liveRecomputeEnabled)
+                                .toggleStyle(.switch)
+                                .font(PlasticityFont.body)
+                                .foregroundColor(Color.text_primary)
+                                .padding(.vertical, 4)
+                                .onChange(of: state.liveRecomputeEnabled) { oldValue, newValue in
+                                    if newValue {
+                                        state.wholeBodyRecompute = false
+                                        state.triggerLiveRecompute()
+                                    }
+                                }
+
                             Button("Unfold Selected") {
-                                if netLayout == "connected" {
-                                    state.unfoldConnected(wholeBody: false, mode: netMode, decoration: netDecoration)
+                                if state.netLayout == "connected" {
+                                    state.unfoldConnected(wholeBody: false, mode: state.netMode, decoration: state.netDecoration)
                                 } else {
                                     state.unfoldAllSelected()
                                 }
                             }
                             .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedFaces3D.isEmpty))
                             .disabled(state.selectedFaces3D.isEmpty)
-                            .help(netLayout == "connected"
+                            .help(state.netLayout == "connected"
                                   ? "Unfolds the selected faces as one connected net — shared edges become dashed fold lines, cuts become seams."
                                   : "Flattens each selected face and places them side-by-side in the 2D editor.")
 
-                            if netLayout == "connected" {
+                            if state.netLayout == "connected" {
                                 Button("Unfold Entire Body") {
-                                    state.unfoldConnected(wholeBody: true, mode: netMode, decoration: netDecoration)
+                                    state.wholeBodyRecompute = true
+                                    state.unfoldConnected(wholeBody: true, mode: state.netMode, decoration: state.netDecoration)
                                 }
                                 .buttonStyle(PlasticityButtonStyle(isEnabled: !state.bodies3D.isEmpty))
                                 .disabled(state.bodies3D.isEmpty)

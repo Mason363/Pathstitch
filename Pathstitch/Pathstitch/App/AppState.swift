@@ -1430,6 +1430,7 @@ class AppState {
     var selectedFaces3D: Set<SelectedFace> = [] {
         didSet {
             triggerDistortionUpdate()
+            triggerLiveRecompute()
         }
     }
     var bodies3D: [Body3D] = []
@@ -1438,13 +1439,186 @@ class AppState {
     var distortionMode: String = "conformal" {
         didSet {
             triggerDistortionUpdate()
+            triggerLiveRecompute()
         }
     }
-    var seamControlMode: String = "auto" // "auto", "manual", "hybrid"
-    var forcedSeams3D: Set<SelectedEdge> = []
-    var forbiddenSeams3D: Set<SelectedEdge> = []
+    var seamControlMode: String = "auto" {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var forcedSeams3D: Set<SelectedEdge> = [] {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var forbiddenSeams3D: Set<SelectedEdge> = [] {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
     var distortionDataJSON: String = ""
     private var distortionTask: Task<Void, Never>?
+
+    // Phase 4: Globe UX / Interactivity & Overrides
+    var anchorFace3D: SelectedFace? {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var selectedEdge3D: SelectedEdge?
+    var seamDecorations3D: [SelectedEdge: String] = [:] {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var liveRecomputeEnabled: Bool = false {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var netLayout: String = "connected" {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var netMode: String = "radial" {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var netDecoration: String = "none" {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    var wholeBodyRecompute: Bool = false {
+        didSet {
+            triggerLiveRecompute()
+        }
+    }
+    private var liveRecomputeTask: Task<Void, Never>?
+
+    func triggerLiveRecompute() {
+        guard liveRecomputeEnabled else { return }
+        
+        liveRecomputeTask?.cancel()
+        
+        guard let stepUrl = currentStepFilePath else { return }
+        if !wholeBodyRecompute && selectedFaces3D.isEmpty { return }
+        
+        let mode = netMode
+        let decoration = netDecoration
+        let layout = netLayout
+        let isWholeBody = wholeBodyRecompute
+        let faces = Array(selectedFaces3D)
+        let distMode = distortionMode
+        let seamCtrl = seamControlMode
+        let forced = Array(forcedSeams3D)
+        let forbidden = Array(forbiddenSeams3D)
+        let decorations = seamDecorations3D
+        let anchor = anchorFace3D
+        let tabsHeight = glueTabHeight
+        let holesDiam = holeDiameter
+        let holesSpacing = holeSpacing
+        let holesMargin = holeOffsetDistance
+        let existingDxf = currentFilePath?.path
+        
+        liveRecomputeTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            if Task.isCancelled { return }
+            
+            do {
+                let tempDir = sessionTempDirectory
+                try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                let outputDxf = tempDir.appendingPathComponent("unfolded_net_live.dxf")
+                
+                var args: [String: Any] = [
+                    "input": stepUrl.path,
+                    "output": outputDxf.path,
+                    "mode": mode,
+                    "decoration": decoration,
+                    "tab_height": tabsHeight,
+                    "hole_diameter": holesDiam,
+                    "hole_spacing": holesSpacing,
+                    "hole_margin": holesMargin,
+                    "distortion_mode": distMode,
+                    "seam_control_mode": seamCtrl,
+                    "forced_seams": forced.map { ["body_index": $0.bodyIndex, "edge_index": $0.edgeIndex] },
+                    "forbidden_seams": forbidden.map { ["body_index": $0.bodyIndex, "edge_index": $0.edgeIndex] },
+                    "seam_decorations": decorations.map { edge, deco in
+                        [
+                            "body_index": edge.bodyIndex,
+                            "edge_index": edge.edgeIndex,
+                            "decoration": deco
+                        ]
+                    }
+                ]
+                
+                if let anchorVal = anchor {
+                    args["anchor"] = ["body_index": anchorVal.bodyIndex, "face_index": anchorVal.faceIndex]
+                }
+                
+                if layout == "connected" {
+                    if isWholeBody {
+                        args["whole_body"] = true
+                    } else {
+                        args["faces"] = faces.map { [
+                            "body_index": $0.bodyIndex,
+                            "face_index": $0.faceIndex
+                        ] }
+                    }
+                    if let existing = existingDxf {
+                        args["existing_dxf"] = existing
+                    }
+                    
+                    let result = try await PythonBridge.shared.run(
+                        module: "step_ops",
+                        op: "unfold_connected",
+                        args: args
+                    )
+                    
+                    if Task.isCancelled { return }
+                    
+                    await MainActor.run {
+                        self.currentFilePath = outputDxf
+                        self.selectedHandles.removeAll()
+                        self.reloadDXF(fitToContentAfter: false)
+                    }
+                } else {
+                    let facesArray = faces.map { [
+                        "body_index": $0.bodyIndex,
+                        "face_index": $0.faceIndex
+                    ] }
+                    var separateArgs: [String: Any] = [
+                        "input": stepUrl.path,
+                        "output": outputDxf.path,
+                        "faces": facesArray,
+                        "distortion_mode": distMode
+                    ]
+                    if let existing = existingDxf {
+                        separateArgs["existing_dxf"] = existing
+                    }
+                    
+                    _ = try await PythonBridge.shared.run(
+                        module: "step_ops",
+                        op: "unfold_faces",
+                        args: separateArgs
+                    )
+                    
+                    if Task.isCancelled { return }
+                    
+                    await MainActor.run {
+                        self.currentFilePath = outputDxf
+                        self.selectedHandles.removeAll()
+                        self.reloadDXF(fitToContentAfter: false)
+                    }
+                }
+            } catch {
+                print("Live recompute failed: \(error)")
+            }
+        }
+    }
 
     func triggerDistortionUpdate() {
         distortionTask?.cancel()
@@ -2148,6 +2322,14 @@ class AppState {
         seamControlMode = "auto"
         distortionMode = "conformal"
         distortionDataJSON = ""
+        anchorFace3D = nil
+        selectedEdge3D = nil
+        seamDecorations3D.removeAll()
+        liveRecomputeEnabled = false
+        netLayout = "connected"
+        netMode = "radial"
+        netDecoration = "none"
+        wholeBodyRecompute = false
         bodies3D = []
         batchItems = []
         activeEditingBatchItem = nil
@@ -2926,6 +3108,14 @@ class AppState {
         seamControlMode = "auto"
         distortionMode = "conformal"
         distortionDataJSON = ""
+        anchorFace3D = nil
+        selectedEdge3D = nil
+        seamDecorations3D.removeAll()
+        liveRecomputeEnabled = false
+        netLayout = "connected"
+        netMode = "radial"
+        netDecoration = "none"
+        wholeBodyRecompute = false
         
         Task {
             do {
@@ -3092,8 +3282,18 @@ class AppState {
                     "forbidden_seams": Array(forbiddenSeams3D).map { [
                         "body_index": $0.bodyIndex,
                         "edge_index": $0.edgeIndex
-                    ] }
+                    ] },
+                    "seam_decorations": seamDecorations3D.map { edge, deco in
+                        [
+                            "body_index": edge.bodyIndex,
+                            "edge_index": edge.edgeIndex,
+                            "decoration": deco
+                        ]
+                    }
                 ]
+                if let anchor = anchorFace3D {
+                    args["anchor"] = ["body_index": anchor.bodyIndex, "face_index": anchor.faceIndex]
+                }
                 if wholeBody {
                     args["whole_body"] = true
                 } else {

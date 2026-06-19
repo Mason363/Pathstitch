@@ -684,7 +684,8 @@ def unfold_connected(body, wanted: Optional[set], mode: str, anchor: Optional[in
                       decoration: str, deco_params: Dict[str, float],
                       distortion_mode: str = "conformal",
                       forced_seams: Optional[set] = None,
-                      forbidden_seams: Optional[set] = None):
+                      forbidden_seams: Optional[set] = None,
+                      seam_decorations: Optional[Dict[int, str]] = None):
     """Runs the full pipeline for one body. Returns (draw_ops, stats, skipped).
 
     draw_ops: list of ("polyline"|"circle"|"solid", layer, payload) in net coordinates.
@@ -764,7 +765,8 @@ def unfold_connected(body, wanted: Optional[set], mode: str, anchor: Optional[in
             if e["is_seam"]:
                 mated = True
             if mated:
-                if decoration == "tabs":
+                edge_deco = seam_decorations.get(e["eid"], decoration) if seam_decorations else decoration
+                if edge_deco == "tabs":
                     # One tab per mating pair: the earlier-placed face's
                     # instance, or the first-seen instance of a closure seam.
                     first_instance = (e["is_seam"] and
@@ -778,7 +780,7 @@ def unfold_connected(body, wanted: Optional[set], mode: str, anchor: Optional[in
                                         deco_params.get("tab_height", 8.0))
                         if tab:
                             draw_ops.append(("polyline", "GLUE_TABS", tab, patch))
-                elif decoration == "holes":
+                elif edge_deco == "holes":
                     for (c, r) in _sew_holes(placed, face_poly_placed,
                                              deco_params.get("hole_diameter", 2.0),
                                              deco_params.get("hole_spacing", 8.0),
@@ -906,12 +908,21 @@ def op_unfold_connected(args: Dict[str, Any]) -> Dict[str, Any]:
             forced_seams = {item.get("edge_index") for item in forced_seams_list if item.get("body_index") == b_idx}
             forbidden_seams = {item.get("edge_index") for item in forbidden_seams_list if item.get("body_index") == b_idx}
             
+            # Filter seam decorations for this body
+            seam_decorations_list = args.get("seam_decorations") or []
+            seam_decorations = {
+                item.get("edge_index"): item.get("decoration")
+                for item in seam_decorations_list
+                if item.get("body_index") == b_idx
+            }
+            
             ops, stats, skipped = unfold_connected(
                 bodies[b_idx], per_body[b_idx], mode, anchor,
                 decoration, deco_params,
                 distortion_mode=distortion_mode,
                 forced_seams=forced_seams,
-                forbidden_seams=forbidden_seams)
+                forbidden_seams=forbidden_seams,
+                seam_decorations=seam_decorations)
             for s in skipped:
                 s["body_index"] = b_idx
             all_skipped.extend(skipped)
