@@ -657,6 +657,10 @@ class AppState {
     var textToolItalic: Bool = false
     var textToolUnderline: Bool = false
     var textToolCharSpacing: Double = 0.0
+    /// Family currently hovered in a font picker — previews live on the text being
+    /// styled (the one being typed, or the single selected text) without
+    /// committing. nil when nothing is hovered → revert to the real font.
+    var fontHoverPreview: String? = nil
     var escapePressedToken: Int = 0
 
     // Search palette (MAS-53): set true to present the command search overlay.

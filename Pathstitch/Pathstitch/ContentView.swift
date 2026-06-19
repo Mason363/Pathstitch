@@ -237,7 +237,6 @@ struct ContentView: View {
     @State private var isMoreToolsHovered = false
     @State private var showMoreTools = false
     @State private var offsetMode = "curve" // "curve" or "bbox"
-    @State private var activeToolOptionsCollapsed = false   // MAS-114
     @State private var customLayerName: String = ""
     @State private var selectedExistingLayer: String = ""
     @State private var rotationAngle: Double = 90.0
@@ -1871,13 +1870,10 @@ extension ContentView {
         }
     }
 
-    /// Every font family installed on the device (MAS-134), sorted. Resolved
-    /// once — the list is large and static for the session.
-    private static let installedFontFamilies: [String] = NSFontManager.shared.availableFontFamilies.sorted()
-
     /// Reusable font / size / spacing / B-I-U controls (MAS-134/135). Each control
     /// is driven by a caller-supplied binding, so the same UI serves both the Text
     /// tool's defaults (and live in-progress edit) and a selected text entity.
+    /// Labels sit above full-width controls so nothing crowds in a narrow panel.
     @ViewBuilder
     private func textStyleControls(
         font: Binding<String>,
@@ -1887,53 +1883,24 @@ extension ContentView {
         italic: Binding<Bool>,
         underline: Binding<Bool>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Font")
-                    .font(PlasticityFont.label)
-                    .foregroundColor(Color.text_secondary)
-                Spacer()
-                Picker("", selection: font) {
-                    Text("System Default").tag("")
-                    ForEach(Self.installedFontFamilies, id: \.self) { fam in
-                        Text(fam).tag(fam)
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                fieldLabel("Font")
+                FontPickerField(selection: font, onHoverFont: { state.fontHoverPreview = $0 })
+                    .help("Choose from every font installed on this device — hover a font to preview it live")
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    fieldLabel("Size (mm)")
+                    numberField(size, placeholder: "Size")
+                        .help("Text height in millimetres (the box you drew sets the starting size)")
                 }
-                .labelsHidden()
-                .frame(width: 150)
-                .help("Choose from every font installed on this device")
-            }
-
-            HStack {
-                Text("Font Size (mm)")
-                    .font(PlasticityFont.label)
-                    .foregroundColor(Color.text_secondary)
-                Spacer()
-                TextField("Size", value: size, format: .number)
-                    .textFieldStyle(PlainTextFieldStyle())
-                    .padding(4)
-                    .frame(width: 70)
-                    .background(Color.bg_input)
-                    .cornerRadius(4)
-                    .foregroundColor(Color.text_primary)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                    .help("Text height in millimetres (the box you drew sets the starting size)")
-            }
-
-            HStack {
-                Text("Spacing (mm)")
-                    .font(PlasticityFont.label)
-                    .foregroundColor(Color.text_secondary)
-                Spacer()
-                TextField("Spacing", value: spacing, format: .number)
-                    .textFieldStyle(PlainTextFieldStyle())
-                    .padding(4)
-                    .frame(width: 70)
-                    .background(Color.bg_input)
-                    .cornerRadius(4)
-                    .foregroundColor(Color.text_primary)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                    .help("Extra space added between every character (and to spaces)")
+                VStack(alignment: .leading, spacing: 4) {
+                    fieldLabel("Spacing (mm)")
+                    numberField(spacing, placeholder: "Spacing")
+                        .help("Extra space added between every character (and to spaces)")
+                }
             }
 
             HStack(spacing: 6) {
@@ -1944,6 +1911,29 @@ extension ContentView {
                 Spacer()
             }
         }
+    }
+
+    /// A single-line panel label that never wraps character-by-character.
+    @ViewBuilder
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(PlasticityFont.label)
+            .foregroundColor(Color.text_secondary)
+            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A full-width numeric field used across the text style controls.
+    @ViewBuilder
+    private func numberField(_ value: Binding<Double>, placeholder: String) -> some View {
+        TextField(placeholder, value: value, format: .number)
+            .textFieldStyle(PlainTextFieldStyle())
+            .padding(4)
+            .frame(maxWidth: .infinity)
+            .background(Color.bg_input)
+            .cornerRadius(4)
+            .foregroundColor(Color.text_primary)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
     }
 
     /// One bold/italic/underline toggle chip for `textStyleControls`.
@@ -1996,18 +1986,15 @@ extension ContentView {
                     Spacer()
                 }
 
-                HStack {
-                    Text("Content")
-                        .font(PlasticityFont.label)
-                        .foregroundColor(Color.text_secondary)
-                    Spacer()
+                VStack(alignment: .leading, spacing: 4) {
+                    fieldLabel("Content")
                     TextField("Text", text: Binding(
                         get: { textEnt.text ?? "" },
                         set: { state.updateTextEntity(handle: handle, text: $0) }
                     ))
                     .textFieldStyle(PlainTextFieldStyle())
                     .padding(4)
-                    .frame(width: 150)
+                    .frame(maxWidth: .infinity)
                     .background(Color.bg_input)
                     .cornerRadius(4)
                     .foregroundColor(Color.text_primary)
@@ -2495,40 +2482,14 @@ extension ContentView {
         }
     }
 
-    /// Active tool options wrapped in their own collapsible, bordered sub-boundary
-    /// (MAS-114). A header with a chevron toggles visibility; the body is the
-    /// existing per-tool option views.
+    /// Active tool options — full-panel, always open, no collapse chevron and no
+    /// boxed sub-boundary (per user direction, superseding the earlier MAS-114
+    /// collapsible card). The per-tool option views fill the panel directly.
     @ViewBuilder
     var activeToolOptionsPanel: some View {
         if hasActiveToolOptions {
-            VStack(alignment: .leading, spacing: 0) {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) { activeToolOptionsCollapsed.toggle() }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: activeToolOptionsCollapsed ? "chevron.right" : "chevron.down")
-                            .font(.system(size: 10, weight: .bold))
-                        Text("TOOL OPTIONS")
-                            .font(PlasticityFont.header)
-                            .tracking(0.5)
-                        Spacer()
-                    }
-                    .foregroundColor(Color.text_secondary)
-                    .contentShape(Rectangle())
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                }
-                .buttonStyle(PlainButtonStyle())
-
-                if !activeToolOptionsCollapsed {
-                    Divider().background(Color.border_subtle)
-                    activeToolOptions
-                        .padding(10)
-                }
-            }
-            .background(Color.bg_input.opacity(0.2))
-            .cornerRadius(6)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.border_subtle, lineWidth: 1))
+            activeToolOptions
+                .padding(.horizontal, 2)
         }
     }
 
@@ -3942,5 +3903,86 @@ struct LinePatternPreview: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(Color.border_strong, lineWidth: 1)
         )
+    }
+}
+/// Dropdown font picker that lists every installed family and **previews the
+/// hovered font live** on the text being styled (MAS-134). Selecting commits the
+/// choice; moving off a row (or closing the popover) reverts the preview. Used in
+/// place of a plain `Picker` so per-row hover is observable.
+struct FontPickerField: View {
+    @Binding var selection: String           // "" == System Default
+    var onHoverFont: (String?) -> Void
+
+    @State private var show = false
+    @State private var query = ""
+
+    /// Every font family installed on the device, sorted. Resolved once.
+    static let families: [String] = NSFontManager.shared.availableFontFamilies.sorted()
+
+    private var displayName: String { selection.isEmpty ? "System Default" : selection }
+
+    private var filtered: [String] {
+        query.isEmpty ? Self.families
+                      : Self.families.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        Button { show = true } label: {
+            HStack(spacing: 6) {
+                Text(displayName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundColor(Color.text_primary)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9))
+                    .foregroundColor(Color.text_secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(Color.bg_input)
+            .cornerRadius(4)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .popover(isPresented: $show, arrowEdge: .leading) {
+            VStack(spacing: 6) {
+                TextField("Search fonts…", text: $query)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        fontRow("System Default", value: "")
+                        ForEach(filtered, id: \.self) { fam in
+                            fontRow(fam, value: fam)
+                        }
+                    }
+                }
+                .frame(width: 240, height: 320)
+            }
+            .padding(8)
+            .onDisappear { onHoverFont(nil) }
+        }
+    }
+
+    @ViewBuilder
+    private func fontRow(_ label: String, value: String) -> some View {
+        let isSel = selection == value
+        Text(label)
+            .font(DxfCanvasView.resolveTextFont(
+                family: value.isEmpty ? nil : value, size: 13, bold: false, italic: false))
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(isSel ? Color.accent.opacity(0.22) : Color.clear)
+            .foregroundColor(isSel ? Color.accent : Color.text_primary)
+            .contentShape(Rectangle())
+            .onHover { hovering in onHoverFont(hovering ? value : nil) }
+            .onTapGesture {
+                selection = value
+                onHoverFont(nil)
+                show = false
+            }
     }
 }

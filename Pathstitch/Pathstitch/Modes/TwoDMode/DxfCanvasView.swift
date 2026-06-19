@@ -965,37 +965,48 @@ struct DxfCanvasView: View {
             }
             
             if state.isEditingText {
-                // Place the editor exactly inside the drawn box: map the box's
-                // top-left (model insert is bottom-left, +height = top) to screen,
-                // size the field to the box, and fit the font to the box height so
-                // the typing area sits inside the rectangle the user drew. The
-                // editor is multi-line (Shift+Enter inserts a line; Enter commits)
-                // and renders in the chosen font/style live (MAS-134/135).
-                let boxW = max(30.0, CGFloat(state.editingTextWidth) * state.canvasScale)
-                let lineH = max(14.0, CGFloat(state.editingTextHeight) * state.canvasScale)
-                let lineCount = max(1, state.editingTextString.components(separatedBy: "\n").count)
-                let boxH = lineH * CGFloat(lineCount)
-                let topLeft = toScreen(dx: state.editingTextInsert.x,
-                                       dy: state.editingTextInsert.y + state.editingTextHeight,
-                                       size: viewSize, bounds: modelBounds)
-                let fontSize = max(8.0, lineH * 0.78)
+                // The inline editor is rendered to be pixel-for-pixel identical to
+                // the committed text (MAS-135): same font family (incl. live
+                // hover-preview), same point size (height × scale — NOT shrunk),
+                // same per-line baseline, and no wrapping (text extends right; only
+                // Shift+Enter adds a line, Enter commits). The box is content-sized
+                // so it never clips or pushes text "up and above".
+                let scale = state.canvasScale
+                let family = state.fontHoverPreview ?? state.editingTextFont
+                let fontSize = max(8.0, CGFloat(state.editingTextHeight) * scale)
                 let nsFont = DxfCanvasView.resolveNSFont(
-                    family: state.editingTextFont, size: fontSize,
+                    family: family, size: fontSize,
                     bold: state.editingTextBold, italic: state.editingTextItalic)
+                let kerning = CGFloat(state.editingTextCharSpacing) * scale
+                let ascender = nsFont.ascender
+                let lineHeight = ceil(nsFont.ascender - nsFont.descender + nsFont.leading)
+                let lines = state.editingTextString.isEmpty ? [""]
+                    : state.editingTextString.components(separatedBy: "\n")
+                let attrs: [NSAttributedString.Key: Any] = [.font: nsFont, .kern: kerning]
+                let contentW = lines.map { ($0 as NSString).size(withAttributes: attrs).width }.max() ?? 0
+                let boxW = max(40.0, ceil(contentW) + fontSize)   // caret room + slack
+                let boxH = lineHeight * CGFloat(lines.count)
+                // The insert point is the first line's baseline-left; the editor is
+                // top-aligned with no inset, so place its top one ascender above it.
+                let baseline = toScreen(dx: state.editingTextInsert.x,
+                                        dy: state.editingTextInsert.y,
+                                        size: viewSize, bounds: modelBounds)
+                let topLeftX = baseline.x
+                let topLeftY = baseline.y - ascender
 
                 InlineTextEditor(
                     text: $state.editingTextString,
                     font: nsFont,
-                    textColor: NSColor.labelColor,
+                    textColor: NSColor(Color.accent),
                     underline: state.editingTextUnderline,
-                    kerning: CGFloat(state.editingTextCharSpacing) * state.canvasScale,
+                    kerning: kerning,
                     onCommit: { state.commitTextEditing() },
                     onCancel: { state.cancelTextEditing() }
                 )
-                .frame(width: boxW, height: boxH, alignment: .leading)
-                .background(Color.bg_panel.opacity(0.85))
-                .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.accent, lineWidth: 1.0))
-                .position(x: topLeft.x + boxW / 2, y: topLeft.y + boxH / 2)
+                .frame(width: boxW, height: boxH, alignment: .topLeading)
+                .background(Color.bg_panel.opacity(0.6))
+                .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.accent.opacity(0.7), lineWidth: 1.0))
+                .position(x: topLeftX + boxW / 2, y: topLeftY + boxH / 2)
             }
         }
     }
@@ -4365,6 +4376,18 @@ struct DxfCanvasView: View {
         return base
     }
 
+    /// The font family to render a TEXT entity with, substituting the live
+    /// font-hover preview when this entity is the one currently being styled —
+    /// the text being typed, or the single selected text (MAS-134).
+    private func effectiveTextFontFamily(_ ent: DXFEntity) -> String? {
+        if let hp = state.fontHoverPreview {
+            let editingThis = state.isEditingText && state.editingTextHandle == ent.handle
+            let selectedSingle = state.singleSelectedTextEntity?.handle == ent.handle
+            if editingThis || selectedSingle { return hp.isEmpty ? nil : hp }
+        }
+        return ent.fontName
+    }
+
     private func drawEntity(_ ent: DXFEntity, baseColor: Color, strokeColor: Color, strokeWidth: Double, size: CGSize, modelBounds: CGRect, context: inout GraphicsContext) {
         var path = SwiftUI.Path()
         if ent.type == "LINE", let s = ent.start, let e = ent.end {
@@ -4412,8 +4435,10 @@ struct DxfCanvasView: View {
                 let baseHeight: Double = ent.height ?? 5.0
                 let scale: CGFloat = state.canvasScale
                 let h: CGFloat = CGFloat(baseHeight) * scale
-                let textFont: Font = DxfCanvasView.resolveTextFont(
-                    family: ent.fontName, size: h,
+                // Honour a live font-hover preview when this is the text being styled.
+                let family = effectiveTextFontFamily(ent)
+                let nsFont = DxfCanvasView.resolveNSFont(
+                    family: family, size: h,
                     bold: ent.bold ?? false, italic: ent.italic ?? false)
                 // Selected → accent; hovered → darker, signalling the whole text is
                 // grabbable as one unit (one click selects, double click edits).
@@ -4425,19 +4450,24 @@ struct DxfCanvasView: View {
                 } else {
                     textColor = baseColor
                 }
-                var uiText: Text = Text(textStr).font(textFont).foregroundColor(textColor)
+                var uiText: Text = Text(textStr).font(Font(nsFont)).foregroundColor(textColor)
                 if ent.underline ?? false { uiText = uiText.underline() }
                 if let cs = ent.charSpacing, cs != 0 { uiText = uiText.tracking(CGFloat(cs) * scale) }
                 let resolvedText = context.resolve(uiText)
+                // The insert point is the first line's baseline-left (DXF convention),
+                // so anchor by the block's top-left at one ascender above it. This
+                // matches the inline editor exactly and makes multi-line text flow
+                // downward from the insert point.
+                let ascender = nsFont.ascender
                 let rotDeg = ent.rotation ?? 0.0
                 if abs(rotDeg) > 0.001 {
                     context.drawLayer { ctx in
                         ctx.translateBy(x: sc.x, y: sc.y)
                         ctx.rotate(by: Angle(degrees: -rotDeg))  // CCW (DXF) → screen (Y-down)
-                        ctx.draw(resolvedText, at: .zero, anchor: .bottomLeading)
+                        ctx.draw(resolvedText, at: CGPoint(x: 0, y: -ascender), anchor: .topLeading)
                     }
                 } else {
-                    context.draw(resolvedText, at: sc, anchor: .bottomLeading)
+                    context.draw(resolvedText, at: CGPoint(x: sc.x, y: sc.y - ascender), anchor: .topLeading)
                 }
             }
         }
@@ -5413,9 +5443,16 @@ struct InlineTextEditor: NSViewRepresentable {
         tv.allowsUndo = true
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = true
-        tv.textContainerInset = NSSize(width: 1, height: 1)
+        tv.textContainerInset = .zero
         tv.textContainer?.lineFragmentPadding = 0
-        tv.textContainer?.widthTracksTextView = true
+        // No wrapping — text extends rightward like the committed entity; only
+        // Shift+Enter adds a line. This keeps the preview matching the final and
+        // stops a narrow box from pushing text "up and above" (MAS-135).
+        tv.textContainer?.widthTracksTextView = false
+        tv.textContainer?.size = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                        height: CGFloat.greatestFiniteMagnitude)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                            height: CGFloat.greatestFiniteMagnitude)
         tv.font = font
         tv.textColor = textColor
         tv.string = text
