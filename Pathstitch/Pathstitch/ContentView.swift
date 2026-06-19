@@ -1769,6 +1769,25 @@ extension ContentView {
                 
                 if isTextPlacingExpanded {
                     VStack(alignment: .leading, spacing: 8) {
+                        Text("Draw a box on the canvas, then type. Shift+Enter for a new line, Enter to place.")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_muted)
+
+                        // Style for the next text (and live for the one being typed).
+                        textStyleControls(
+                            font: textToolStyleBinding(\.editingTextFont, \.textToolFont),
+                            size: Binding(
+                                get: { state.isEditingText ? state.editingTextHeight : textHeight },
+                                set: { state.isEditingText ? (state.editingTextHeight = $0) : (textHeight = $0) }
+                            ),
+                            spacing: textToolStyleBinding(\.editingTextCharSpacing, \.textToolCharSpacing),
+                            bold: textToolStyleBinding(\.editingTextBold, \.textToolBold),
+                            italic: textToolStyleBinding(\.editingTextItalic, \.textToolItalic),
+                            underline: textToolStyleBinding(\.editingTextUnderline, \.textToolUnderline)
+                        )
+
+                        Divider().background(Color.border_subtle).padding(.vertical, 2)
+
                         HStack {
                             Text("Text String")
                                 .font(PlasticityFont.label)
@@ -1834,7 +1853,9 @@ extension ContentView {
                         }
                         
                         Button("Place Text") {
-                            state.applyAddText(text: textString, insert: CGPoint(x: textInsertX, y: textInsertY), height: textHeight)
+                            state.applyAddText(text: textString, insert: CGPoint(x: textInsertX, y: textInsertY), height: textHeight,
+                                               font: state.textToolFont, bold: state.textToolBold, italic: state.textToolItalic,
+                                               underline: state.textToolUnderline, charSpacing: state.textToolCharSpacing)
                         }
                         .buttonStyle(PlasticityButtonStyle(isEnabled: !textString.isEmpty))
                         .disabled(textString.isEmpty)
@@ -1842,6 +1863,187 @@ extension ContentView {
                     }
                     .padding(.vertical, 4)
                 }
+            }
+            .padding(8)
+            .background(Color.bg_input.opacity(0.4))
+            .cornerRadius(4)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_subtle, lineWidth: 1))
+        }
+    }
+
+    /// Every font family installed on the device (MAS-134), sorted. Resolved
+    /// once — the list is large and static for the session.
+    private static let installedFontFamilies: [String] = NSFontManager.shared.availableFontFamilies.sorted()
+
+    /// Reusable font / size / spacing / B-I-U controls (MAS-134/135). Each control
+    /// is driven by a caller-supplied binding, so the same UI serves both the Text
+    /// tool's defaults (and live in-progress edit) and a selected text entity.
+    @ViewBuilder
+    private func textStyleControls(
+        font: Binding<String>,
+        size: Binding<Double>,
+        spacing: Binding<Double>,
+        bold: Binding<Bool>,
+        italic: Binding<Bool>,
+        underline: Binding<Bool>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Font")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_secondary)
+                Spacer()
+                Picker("", selection: font) {
+                    Text("System Default").tag("")
+                    ForEach(Self.installedFontFamilies, id: \.self) { fam in
+                        Text(fam).tag(fam)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                .help("Choose from every font installed on this device")
+            }
+
+            HStack {
+                Text("Font Size (mm)")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_secondary)
+                Spacer()
+                TextField("Size", value: size, format: .number)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding(4)
+                    .frame(width: 70)
+                    .background(Color.bg_input)
+                    .cornerRadius(4)
+                    .foregroundColor(Color.text_primary)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                    .help("Text height in millimetres (the box you drew sets the starting size)")
+            }
+
+            HStack {
+                Text("Spacing (mm)")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_secondary)
+                Spacer()
+                TextField("Spacing", value: spacing, format: .number)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding(4)
+                    .frame(width: 70)
+                    .background(Color.bg_input)
+                    .cornerRadius(4)
+                    .foregroundColor(Color.text_primary)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                    .help("Extra space added between every character (and to spaces)")
+            }
+
+            HStack(spacing: 6) {
+                textStyleToggle("B", isOn: bold, font: .system(size: 12, weight: .bold))
+                textStyleToggle("I", isOn: italic, font: .system(size: 12).italic())
+                textStyleToggle("U", isOn: underline, font: .system(size: 12, weight: .regular))
+                    .underline(true, color: Color.text_primary)
+                Spacer()
+            }
+        }
+    }
+
+    /// One bold/italic/underline toggle chip for `textStyleControls`.
+    @ViewBuilder
+    private func textStyleToggle(_ label: String, isOn: Binding<Bool>, font: Font) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            Text(label)
+                .font(font)
+                .frame(width: 28, height: 24)
+                .background(isOn.wrappedValue ? Color.accent.opacity(0.25) : Color.bg_input)
+                .foregroundColor(isOn.wrappedValue ? Color.accent : Color.text_primary)
+                .cornerRadius(4)
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .stroke(isOn.wrappedValue ? Color.accent : Color.border_strong, lineWidth: 1))
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    /// Routes a Text-tool style binding to the *live* editing value while a text
+    /// is being typed (so changes preview instantly), otherwise to the tool
+    /// default applied to the next text created (MAS-135).
+    private func textToolStyleBinding<T>(_ editingKP: ReferenceWritableKeyPath<AppState, T>,
+                                         _ toolKP: ReferenceWritableKeyPath<AppState, T>) -> Binding<T> {
+        Binding(
+            get: { state.isEditingText ? state[keyPath: editingKP] : state[keyPath: toolKP] },
+            set: { newVal in
+                if state.isEditingText { state[keyPath: editingKP] = newVal }
+                else { state[keyPath: toolKP] = newVal }
+            }
+        )
+    }
+
+    /// TEXT properties for a single selected text entity (MAS-135): edit its
+    /// content, font, size, spacing and B/I/U live. Shown in the Select tool's
+    /// active options when exactly one TEXT entity is selected.
+    @ViewBuilder
+    private var textPropertiesSection: some View {
+        if state.currentTool == .select, let textEnt = state.singleSelectedTextEntity {
+            let handle = textEnt.handle
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "textformat")
+                        .foregroundColor(Color.accent)
+                    Text("TEXT")
+                        .font(PlasticityFont.header)
+                        .foregroundColor(Color.text_primary)
+                        .tracking(0.5)
+                    Spacer()
+                }
+
+                HStack {
+                    Text("Content")
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.text_secondary)
+                    Spacer()
+                    TextField("Text", text: Binding(
+                        get: { textEnt.text ?? "" },
+                        set: { state.updateTextEntity(handle: handle, text: $0) }
+                    ))
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .padding(4)
+                    .frame(width: 150)
+                    .background(Color.bg_input)
+                    .cornerRadius(4)
+                    .foregroundColor(Color.text_primary)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                }
+
+                textStyleControls(
+                    font: Binding(
+                        get: { textEnt.fontName ?? "" },
+                        set: { state.updateTextEntity(handle: handle, font: $0) }
+                    ),
+                    size: Binding(
+                        get: { textEnt.height ?? 5.0 },
+                        set: { state.updateTextEntity(handle: handle, height: $0) }
+                    ),
+                    spacing: Binding(
+                        get: { textEnt.charSpacing ?? 0.0 },
+                        set: { state.updateTextEntity(handle: handle, charSpacing: $0) }
+                    ),
+                    bold: Binding(
+                        get: { textEnt.bold ?? false },
+                        set: { state.updateTextEntity(handle: handle, bold: $0) }
+                    ),
+                    italic: Binding(
+                        get: { textEnt.italic ?? false },
+                        set: { state.updateTextEntity(handle: handle, italic: $0) }
+                    ),
+                    underline: Binding(
+                        get: { textEnt.underline ?? false },
+                        set: { state.updateTextEntity(handle: handle, underline: $0) }
+                    )
+                )
+
+                Text("Double-click the text on the canvas to retype it.")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_muted)
             }
             .padding(8)
             .background(Color.bg_input.opacity(0.4))
@@ -2641,6 +2843,7 @@ extension ContentView {
                 mirrorSection
             } else if state.currentTool == .select {
                 selectionSection
+                textPropertiesSection
                 dimensionEditorSection
                 // Editing an existing converted-line group inline (MAS-58).
                 if state.selectedConvertedGroupId != nil {

@@ -20,6 +20,82 @@ from ezdxf.path import make_path, Path
 from shapely.geometry import LineString, LinearRing, MultiLineString, Point as ShapelyPoint
 from shapely.ops import linemerge
 
+# --- Text styling persistence (MAS-134 / MAS-135) -------------------------
+# DXF TEXT entities only natively carry a value, height, rotation and a style
+# reference. To round-trip Pathstitch's rich text styling (font family,
+# bold/italic/underline, per-character spacing and true multi-line content)
+# through the .dxf mirror — and therefore through saved .stch projects — we
+# stash it as XDATA under our own app id. Geometry ops that modify entities in
+# place (translate/rotate/etc.) leave XDATA untouched, so styling survives them
+# automatically; only add/update text writes it.
+PATHSTITCH_APPID = "PATHSTITCH"
+# Sentinel for newlines inside XDATA strings (raw newlines break the DXF parser).
+_NL_TOKEN = "\x01NL\x01"
+
+
+def _ensure_pathstitch_appid(doc) -> None:
+    if PATHSTITCH_APPID not in doc.appids:
+        doc.appids.new(PATHSTITCH_APPID)
+
+
+def _set_text_xdata(ent, doc, *, font: str, bold: bool, italic: bool,
+                    underline: bool, char_spacing: float, text: str) -> None:
+    """Writes the full Pathstitch text styling onto a TEXT entity as XDATA.
+
+    Layout (after the implicit 1001 appid marker):
+      1000 font-family (may be "")
+      1070 bold (0/1)  1070 italic (0/1)  1070 underline (0/1)
+      1040 char-spacing (mm)
+      1000* text chunks (joined back together; chunked so the per-tag 255-byte
+            XDATA string limit can't truncate longer / multi-line content)
+    """
+    _ensure_pathstitch_appid(doc)
+    text = text or ""
+    # DXF is a line-based format; a literal newline inside an XDATA string tag
+    # corrupts the file on reload, so encode newlines with a sentinel token and
+    # decode it back in `_get_text_xdata`.
+    encoded = text.replace("\r\n", "\n").replace("\n", _NL_TOKEN)
+    # 250 keeps each chunk safely under the 255-byte XDATA string ceiling.
+    chunks = [encoded[i:i + 250] for i in range(0, len(encoded), 250)] or [""]
+    data = [(1000, font or "")]
+    data += [(1070, 1 if bold else 0),
+             (1070, 1 if italic else 0),
+             (1070, 1 if underline else 0)]
+    data += [(1040, float(char_spacing or 0.0))]
+    data += [(1000, c) for c in chunks]
+    ent.set_xdata(PATHSTITCH_APPID, data)
+
+
+def _get_text_xdata(ent) -> Dict[str, Any]:
+    """Reads back the styling written by `_set_text_xdata`; {} if absent."""
+    try:
+        tags = ent.get_xdata(PATHSTITCH_APPID)
+    except Exception:
+        return {}
+    strs: List[str] = []
+    ints: List[int] = []
+    reals: List[float] = []
+    for code, val in tags:
+        if code == 1000:
+            strs.append(val)
+        elif code == 1070:
+            ints.append(int(val))
+        elif code == 1040:
+            reals.append(float(val))
+    res: Dict[str, Any] = {}
+    if strs:
+        res["font"] = strs[0]
+        if len(strs) > 1:
+            res["text"] = "".join(strs[1:]).replace(_NL_TOKEN, "\n")
+    if len(ints) >= 3:
+        res["bold"] = bool(ints[0])
+        res["italic"] = bool(ints[1])
+        res["underline"] = bool(ints[2])
+    if reals:
+        res["char_spacing"] = reals[0]
+    return res
+
+
 def sanitize_layer_name(name: str) -> str:
     """
     Sanitizes a layer name to ensure compatibility with AutoCAD / ezdxf constraints.
@@ -315,6 +391,22 @@ def op_list_entities(args: Dict[str, Any]) -> Dict[str, Any]:
                 data["start"] = [ent.dxf.insert.x, ent.dxf.insert.y]
                 data["height"] = ent.dxf.height
                 data["rotation"] = float(getattr(ent.dxf, "rotation", 0.0) or 0.0)
+                # Rich styling (font/B/I/U/spacing/multiline) lives in XDATA so it
+                # survives the .dxf round-trip and .stch saves (MAS-134/135).
+                xd = _get_text_xdata(ent)
+                if xd:
+                    if xd.get("text") is not None:
+                        data["text"] = xd["text"]
+                    if xd.get("font"):
+                        data["fontName"] = xd["font"]
+                    if "bold" in xd:
+                        data["bold"] = xd["bold"]
+                    if "italic" in xd:
+                        data["italic"] = xd["italic"]
+                    if "underline" in xd:
+                        data["underline"] = xd["underline"]
+                    if "char_spacing" in xd:
+                        data["charSpacing"] = xd["char_spacing"]
             entities.append(data)
         except Exception as e:
             # Skip invalid entities
@@ -3260,22 +3352,34 @@ def op_add_text(args: Dict[str, Any]) -> Dict[str, Any]:
     height = float(args.get("height", 5.0))
     layer = args.get("layer", "TEXT")
     handle = args.get("handle")
-    
+    font = args.get("font", "") or ""
+    bold = bool(args.get("bold", False))
+    italic = bool(args.get("italic", False))
+    underline = bool(args.get("underline", False))
+    char_spacing = float(args.get("char_spacing", 0.0) or 0.0)
+    has_style = bool(font or bold or italic or underline or char_spacing or ("\n" in text))
+
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
         return {"status": "error", "message": "Output path must be specified."}
-        
+
     try:
         doc = ezdxf.readfile(input_path)
         msp = doc.modelspace()
-        
+
         if layer not in doc.layers:
             doc.layers.new(layer, dxfattribs={"color": 7})
-            
-        txt_ent = msp.add_text(text, dxfattribs={"height": height, "layer": layer})
+
+        # DXF TEXT is single-line; flatten newlines for the native value while the
+        # true multi-line content is preserved in XDATA (read back on load).
+        flat = text.replace("\n", " ")
+        txt_ent = msp.add_text(flat, dxfattribs={"height": height, "layer": layer})
         txt_ent.dxf.insert = (float(insert[0]), float(insert[1]))
-        
+        if has_style:
+            _set_text_xdata(txt_ent, doc, font=font, bold=bold, italic=italic,
+                            underline=underline, char_spacing=char_spacing, text=text)
+
         if handle:
             old_handle = txt_ent.dxf.handle
             if old_handle in doc.entitydb:
@@ -3294,21 +3398,36 @@ def op_update_text(args: Dict[str, Any]) -> Dict[str, Any]:
     handle = args.get("handle")
     text = args.get("text", "")
     height = args.get("height")
-    
+    font = args.get("font", "") or ""
+    bold = bool(args.get("bold", False))
+    italic = bool(args.get("italic", False))
+    underline = bool(args.get("underline", False))
+    char_spacing = float(args.get("char_spacing", 0.0) or 0.0)
+    has_style = bool(font or bold or italic or underline or char_spacing or ("\n" in text))
+
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
         return {"status": "error", "message": "Output path must be specified."}
     if not handle:
         return {"status": "error", "message": "Handle must be specified."}
-        
+
     try:
         doc = ezdxf.readfile(input_path)
         ent = doc.entitydb.get(handle)
         if ent and ent.dxftype() == "TEXT":
-            ent.dxf.text = text
+            ent.dxf.text = text.replace("\n", " ")
             if height is not None:
                 ent.dxf.height = float(height)
+            if has_style:
+                _set_text_xdata(ent, doc, font=font, bold=bold, italic=italic,
+                                underline=underline, char_spacing=char_spacing, text=text)
+            elif _get_text_xdata(ent):
+                # Styling was cleared back to plain — drop the stale XDATA.
+                try:
+                    ent.discard_xdata(PATHSTITCH_APPID)
+                except Exception:
+                    pass
             doc.saveas(output_path)
             return {"status": "ok", "data": {"handle": handle}}
         else:

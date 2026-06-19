@@ -259,6 +259,13 @@ struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
     let height: Double?
     var rotation: Double? = nil   // TEXT rotation, degrees CCW (DXF convention)
     var layerId: String? = nil
+    // TEXT rich styling (MAS-134/135). All optional so older .stch / plain DXF
+    // text decodes fine; persisted via XDATA on the Python side.
+    var fontName: String? = nil   // installed font family name; nil = system default
+    var bold: Bool? = nil
+    var italic: Bool? = nil
+    var underline: Bool? = nil
+    var charSpacing: Double? = nil  // extra per-character tracking, in mm
 
     var geometryDetails: String {
         switch type.uppercased() {
@@ -331,6 +338,7 @@ struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
             rotation: rotation
         )
         ent.layerId = layerId
+        ent.copyTextStyle(from: self)
         return ent
     }
 
@@ -357,7 +365,25 @@ struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
             rotation: rotation
         )
         ent.layerId = layerId
+        ent.copyTextStyle(from: self)
         return ent
+    }
+
+    /// Copies the TEXT rich-styling fields from another entity (MAS-134/135), so
+    /// transforms that rebuild the struct don't silently drop a font/B/I/U.
+    mutating func copyTextStyle(from other: DXFEntity) {
+        fontName = other.fontName
+        bold = other.bold
+        italic = other.italic
+        underline = other.underline
+        charSpacing = other.charSpacing
+    }
+
+    /// Non-mutating variant of `copyTextStyle` for use in `map` expressions.
+    func withTextStyleCopied(from other: DXFEntity) -> DXFEntity {
+        var e = self
+        e.copyTextStyle(from: other)
+        return e
     }
 
     /// Editable vertices in model space ([] if the type has none). Closed
@@ -427,6 +453,7 @@ struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
             rotation: (type == "TEXT") ? ((rotation ?? 0.0) + angleDegrees) : rotation
         )
         ent.layerId = layerId
+        ent.copyTextStyle(from: self)
         return ent
     }
 }
@@ -616,6 +643,20 @@ class AppState {
     var editingTextInsert: CGPoint = .zero
     var editingTextHeight: Double = 5.0
     var editingTextWidth: Double = 0.0  // model-space width of the drawn text box
+    // Live styling for the text currently being typed (MAS-134/135). Seeded from
+    // the tool defaults below on a new text, or from the entity when re-editing.
+    var editingTextFont: String = ""        // "" = system default
+    var editingTextBold: Bool = false
+    var editingTextItalic: Bool = false
+    var editingTextUnderline: Bool = false
+    var editingTextCharSpacing: Double = 0.0
+    // Defaults applied to the *next* text created with the Text tool, settable
+    // from the Text tool's active-options panel before drawing the box.
+    var textToolFont: String = ""
+    var textToolBold: Bool = false
+    var textToolItalic: Bool = false
+    var textToolUnderline: Bool = false
+    var textToolCharSpacing: Double = 0.0
     var escapePressedToken: Int = 0
 
     // Search palette (MAS-53): set true to present the command search overlay.
@@ -724,8 +765,18 @@ class AppState {
                 if !activeLayerIds.contains(lid) {
                     activeLayerIds = [lid]
                 }
+                // When selecting a reference image layer, automatically activate transform editing
+                if let matched = layers.first(where: { $0.id == lid }), matched.isReferenceImageLayer {
+                    if !isEditingRefImageTransform {
+                        isEditingRefImageTransform = true
+                        backupActiveLayerTransform()
+                    }
+                } else {
+                    isEditingRefImageTransform = false
+                }
             } else {
                 activeLayerIds.removeAll()
+                isEditingRefImageTransform = false
             }
         }
     }
@@ -4212,7 +4263,8 @@ class AppState {
                 guard listRes["status"] as? String == "ok" else { return }
                 
                 // Parse entities
-                if let entDicts = listRes["entities"] as? [[String: Any]] {
+                if let data = listRes["data"] as? [String: Any],
+                   let entDicts = data["entities"] as? [[String: Any]] {
                     let decoded = entDicts.compactMap { dict -> DXFEntity? in
                         guard let data = try? JSONSerialization.data(withJSONObject: dict),
                               let ent = try? JSONDecoder().decode(DXFEntity.self, from: data) else {
@@ -5629,12 +5681,14 @@ class AppState {
         }
     }
     
-    func applyAddText(text: String, insert: CGPoint, height: Double) {
+    func applyAddText(text: String, insert: CGPoint, height: Double,
+                      font: String = "", bold: Bool = false, italic: Bool = false,
+                      underline: Bool = false, charSpacing: Double = 0.0) {
         saveToHistory()
         let activeDxfURL = ensureActiveDXFFileExists()
         let activeLayerName = self.activeLayer?.isReferenceImageLayer == true ? "0" : (self.activeLayer?.name ?? "TEXT")
         isProcessing = true
-        
+
         Task {
             do {
                 // Flush deferred deletes so text appends to current geometry (MAS-21).
@@ -5648,7 +5702,12 @@ class AppState {
                         "text": text,
                         "insert": [Double(insert.x), Double(insert.y)],
                         "height": height,
-                        "layer": activeLayerName
+                        "layer": activeLayerName,
+                        "font": font,
+                        "bold": bold,
+                        "italic": italic,
+                        "underline": underline,
+                        "char_spacing": charSpacing
                     ]
                 )
                 await MainActor.run {
@@ -6229,8 +6288,15 @@ class AppState {
         self.editingTextInsert = insert
         self.editingTextHeight = height
         self.editingTextWidth = width
+        // Seed the live styling from the Text tool's current defaults so the new
+        // text inherits the font/B/I/U the user picked in the panel (MAS-134/135).
+        self.editingTextFont = textToolFont
+        self.editingTextBold = textToolBold
+        self.editingTextItalic = textToolItalic
+        self.editingTextUnderline = textToolUnderline
+        self.editingTextCharSpacing = textToolCharSpacing
     }
-    
+
     func startEditingText(entity: DXFEntity) {
         self.isEditingText = true
         self.editingTextHandle = entity.handle
@@ -6239,8 +6305,14 @@ class AppState {
             self.editingTextInsert = CGPoint(x: start[0], y: start[1])
         }
         self.editingTextHeight = entity.height ?? 5.0
-        // Estimate the box width from the string (cf. AGENTS Rule 3).
-        self.editingTextWidth = Double((entity.text ?? "").count) * (entity.height ?? 5.0) * 0.6
+        self.editingTextFont = entity.fontName ?? ""
+        self.editingTextBold = entity.bold ?? false
+        self.editingTextItalic = entity.italic ?? false
+        self.editingTextUnderline = entity.underline ?? false
+        self.editingTextCharSpacing = entity.charSpacing ?? 0.0
+        // Estimate the box width from the longest line (cf. AGENTS Rule 3).
+        let longest = (entity.text ?? "").components(separatedBy: "\n").map { $0.count }.max() ?? 0
+        self.editingTextWidth = Double(longest) * (entity.height ?? 5.0) * 0.6
     }
     
     func cancelTextEditing() {
@@ -6255,17 +6327,41 @@ class AppState {
         let insert = editingTextInsert
         let height = editingTextHeight
         let handle = editingTextHandle
-        
+        // Snapshot the live styling so the entity and Python args stay in sync.
+        let font = editingTextFont
+        let bold = editingTextBold
+        let italic = editingTextItalic
+        let underline = editingTextUnderline
+        let charSpacing = editingTextCharSpacing
+        // Only attach style fields when they differ from plain defaults, so plain
+        // text stays clean (and Python skips writing XDATA for it).
+        func styled(_ ent: DXFEntity) -> DXFEntity {
+            var e = ent
+            e.fontName = font.isEmpty ? nil : font
+            e.bold = bold ? true : nil
+            e.italic = italic ? true : nil
+            e.underline = underline ? true : nil
+            e.charSpacing = charSpacing != 0 ? charSpacing : nil
+            return e
+        }
+        let styleArgs: [String: Any] = [
+            "font": font,
+            "bold": bold,
+            "italic": italic,
+            "underline": underline,
+            "char_spacing": charSpacing
+        ]
+
         self.isEditingText = false
         self.editingTextHandle = nil
         self.editingTextString = ""
-        
+
         if let h = handle {
             // Edit existing text in-memory
             saveToHistory()
             self.entities = self.entities.map { entity in
                 if entity.handle == h {
-                    return DXFEntity(
+                    return styled(DXFEntity(
                         handle: entity.handle,
                         type: entity.type,
                         layer: entity.layer,
@@ -6279,29 +6375,33 @@ class AppState {
                         vertices: nil,
                         closed: nil,
                         text: text,
-                        height: height
-                    )
+                        height: height,
+                        rotation: entity.rotation,
+                        layerId: entity.layerId
+                    ))
                 } else {
                     return entity
                 }
             }
             self.hasUnsavedChanges = true
-            
+
             // Background buffer write (serialized; no self-deadlock).
             let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
             enqueueBufferWrite {
                 let inputPath = (await MainActor.run { self.currentFilePath?.path }) ?? activeDxfURL.path
                 do {
+                    var args: [String: Any] = [
+                        "input": inputPath,
+                        "output": activeDxfURL.path,
+                        "handle": h,
+                        "text": text,
+                        "height": height
+                    ]
+                    args.merge(styleArgs) { _, new in new }
                     _ = try await PythonBridge.shared.run(
                         module: "dxf_ops",
                         op: "update_text",
-                        args: [
-                            "input": inputPath,
-                            "output": activeDxfURL.path,
-                            "handle": h,
-                            "text": text,
-                            "height": height
-                        ]
+                        args: args
                     )
                     await MainActor.run {
                         self.currentFilePath = activeDxfURL
@@ -6316,7 +6416,7 @@ class AppState {
             let tempHandle = "TEMP_" + UUID().uuidString
             let activeLayerName = self.activeLayer?.isReferenceImageLayer == true ? "0" : (self.activeLayer?.name ?? "TEXT")
             let activeLayerIdVal = self.activeLayer?.isReferenceImageLayer == true ? nil : self.activeLayerId
-            let newEntity = DXFEntity(
+            let newEntity = styled(DXFEntity(
                 handle: tempHandle,
                 type: "TEXT",
                 layer: activeLayerName,
@@ -6332,26 +6432,28 @@ class AppState {
                 text: text,
                 height: height,
                 layerId: activeLayerIdVal
-            )
+            ))
             self.entities.append(newEntity)
             self.recomputeLayersFromEntities()
             self.hasUnsavedChanges = true
-            
+
             // Background buffer write (serialized; no self-deadlock).
             let activeDxfURL = ensureActiveDXFFileExists()
             enqueueBufferWrite {
                 do {
+                    var args: [String: Any] = [
+                        "input": activeDxfURL.path,
+                        "output": activeDxfURL.path,
+                        "text": text,
+                        "insert": [Double(insert.x), Double(insert.y)],
+                        "height": height,
+                        "layer": activeLayerName
+                    ]
+                    args.merge(styleArgs) { _, new in new }
                     let res = try await PythonBridge.shared.run(
                         module: "dxf_ops",
                         op: "add_text",
-                        args: [
-                            "input": activeDxfURL.path,
-                            "output": activeDxfURL.path,
-                            "text": text,
-                            "insert": [Double(insert.x), Double(insert.y)],
-                            "height": height,
-                            "layer": activeLayerName
-                        ]
+                        args: args
                     )
                     if let data = res["data"] as? [String: Any],
                        let realHandle = data["handle"] as? String {
@@ -6359,6 +6461,7 @@ class AppState {
                             // Update the temporary handle in-memory
                             self.entities = self.entities.map { entity in
                                 if entity.handle == tempHandle {
+                                    var e = entity
                                     return DXFEntity(
                                         handle: realHandle,
                                         type: entity.type,
@@ -6373,8 +6476,10 @@ class AppState {
                                         vertices: entity.vertices,
                                         closed: entity.closed,
                                         text: entity.text,
-                                        height: entity.height
-                                    )
+                                        height: entity.height,
+                                        rotation: e.rotation,
+                                        layerId: e.layerId
+                                    ).withTextStyleCopied(from: e)
                                 } else {
                                     return entity
                                 }
@@ -6393,6 +6498,74 @@ class AppState {
                 } catch {
                     print("Background text add failed: \(error)")
                 }
+            }
+        }
+    }
+
+    /// The single selected TEXT entity, or nil — drives the Select-tool text
+    /// properties panel (MAS-135).
+    var singleSelectedTextEntity: DXFEntity? {
+        guard selectedHandles.count == 1, let h = selectedHandles.first else { return nil }
+        return entities.first(where: { $0.handle == h && $0.type.uppercased() == "TEXT" })
+    }
+
+    /// Updates one or more style/content attributes of an existing TEXT entity in
+    /// place (MAS-134/135), updating the in-memory model optimistically and
+    /// syncing the on-disk mirror's XDATA via `update_text`. Any nil argument is
+    /// left unchanged. `clearFont` explicitly resets to the system default.
+    func updateTextEntity(handle: String,
+                          text: String? = nil,
+                          height: Double? = nil,
+                          font: String? = nil,
+                          bold: Bool? = nil,
+                          italic: Bool? = nil,
+                          underline: Bool? = nil,
+                          charSpacing: Double? = nil) {
+        guard let idx = entities.firstIndex(where: { $0.handle == handle }),
+              entities[idx].type.uppercased() == "TEXT" else { return }
+        saveToHistory()
+        var ent = entities[idx]
+        let newText = text ?? ent.text
+        let newHeight = height ?? ent.height
+        let newFont = font ?? ent.fontName
+        let newBold = bold ?? ent.bold ?? false
+        let newItalic = italic ?? ent.italic ?? false
+        let newUnderline = underline ?? ent.underline ?? false
+        let newSpacing = charSpacing ?? ent.charSpacing ?? 0.0
+        let rebuilt = DXFEntity(
+            handle: ent.handle, type: ent.type, layer: ent.layer, color: ent.color,
+            start: ent.start, end: nil, center: nil, radius: nil,
+            start_angle: nil, end_angle: nil, vertices: nil, closed: nil,
+            text: newText, height: newHeight, rotation: ent.rotation, layerId: ent.layerId
+        )
+        ent = rebuilt
+        ent.fontName = (newFont?.isEmpty ?? true) ? nil : newFont
+        ent.bold = newBold ? true : nil
+        ent.italic = newItalic ? true : nil
+        ent.underline = newUnderline ? true : nil
+        ent.charSpacing = newSpacing != 0 ? newSpacing : nil
+        entities[idx] = ent
+        hasUnsavedChanges = true
+
+        let styleArgs: [String: Any] = [
+            "text": newText ?? "",
+            "height": newHeight ?? 5.0,
+            "font": newFont ?? "",
+            "bold": newBold,
+            "italic": newItalic,
+            "underline": newUnderline,
+            "char_spacing": newSpacing
+        ]
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        enqueueBufferWrite {
+            let inputPath = (await MainActor.run { self.currentFilePath?.path }) ?? activeDxfURL.path
+            do {
+                var args: [String: Any] = ["input": inputPath, "output": activeDxfURL.path, "handle": handle]
+                args.merge(styleArgs) { _, new in new }
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "update_text", args: args)
+                await MainActor.run { self.currentFilePath = activeDxfURL }
+            } catch {
+                print("Background text style update failed: \(error)")
             }
         }
     }

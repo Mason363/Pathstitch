@@ -308,7 +308,7 @@ boilerplate, e.g. repeated acceptance-criteria checklists that just restate the 
 
 ## 9. Image import & reference content
 
-- [ ] **Group 9 done**
+- [x] **Group 9 done**
 
 ### MAS-108 — Image Addition
 > **1. Import Trigger & Initial State** — Entry points: `File > Import` (autodetect as image, supports all major formats including niche ones like webp, avif, tiff, heic) or drag-and-drop onto the canvas. Drop position centers on the viewport (menu import) or on the cursor (drag-drop). Default Mode: instantly enters **Reference Image Mode** at 50% opacity so underlying sketch geometry stays visible.
@@ -330,7 +330,7 @@ boilerplate, e.g. repeated acceptance-criteria checklists that just restate the 
 
 ## 10. Text system
 
-- [ ] **Group 10 done**
+- [x] **Group 10 done** — implemented 2026-06-19; builds clean; Python tests pass. MAS-134 font picker (every installed device font) on the Text tool panel and the selected-text properties panel; MAS-135 multi-line inline editor (auto-focused + select-all on creation, Shift+Enter newline, Enter commits), live font / font-size (seeded from the drawn box) / character-spacing / bold / italic / underline, and text-specific options in the active-tool panel when a text is selected. Rich styling persists through the DXF mirror (and .stch saves) via XDATA.
 
 ### MAS-134 — Text fonts
 > On selecting the create text with the selection tool OR on creation with the text tool, have there be the option for fonts to be changed, and make the available fonts every font installed on the device

@@ -399,6 +399,7 @@ struct DxfCanvasView: View {
                 // Bounding box transform gizmo for reference image editing
                 if let activeL = state.activeLayer, activeL.isReferenceImageLayer, state.isEditingRefImageTransform {
                     referenceImageGizmoOverlay(size: geo.size, modelBounds: modelBounds, layer: activeL)
+                        .allowsHitTesting(false)
                 }
                 
                 canvasOverlays(size: geo.size, modelBounds: modelBounds)
@@ -967,28 +968,34 @@ struct DxfCanvasView: View {
                 // Place the editor exactly inside the drawn box: map the box's
                 // top-left (model insert is bottom-left, +height = top) to screen,
                 // size the field to the box, and fit the font to the box height so
-                // the typing area sits inside the rectangle the user drew.
+                // the typing area sits inside the rectangle the user drew. The
+                // editor is multi-line (Shift+Enter inserts a line; Enter commits)
+                // and renders in the chosen font/style live (MAS-134/135).
                 let boxW = max(30.0, CGFloat(state.editingTextWidth) * state.canvasScale)
-                let boxH = max(14.0, CGFloat(state.editingTextHeight) * state.canvasScale)
+                let lineH = max(14.0, CGFloat(state.editingTextHeight) * state.canvasScale)
+                let lineCount = max(1, state.editingTextString.components(separatedBy: "\n").count)
+                let boxH = lineH * CGFloat(lineCount)
                 let topLeft = toScreen(dx: state.editingTextInsert.x,
                                        dy: state.editingTextInsert.y + state.editingTextHeight,
                                        size: viewSize, bounds: modelBounds)
-                let fontSize = max(8.0, boxH * 0.78)
+                let fontSize = max(8.0, lineH * 0.78)
+                let nsFont = DxfCanvasView.resolveNSFont(
+                    family: state.editingTextFont, size: fontSize,
+                    bold: state.editingTextBold, italic: state.editingTextItalic)
 
-                TextField("Text…", text: $state.editingTextString, onCommit: {
-                    state.commitTextEditing()
-                })
-                .textFieldStyle(PlainTextFieldStyle())
-                .font(.system(size: fontSize))
-                .foregroundColor(Color.text_primary)
+                InlineTextEditor(
+                    text: $state.editingTextString,
+                    font: nsFont,
+                    textColor: NSColor.labelColor,
+                    underline: state.editingTextUnderline,
+                    kerning: CGFloat(state.editingTextCharSpacing) * state.canvasScale,
+                    onCommit: { state.commitTextEditing() },
+                    onCancel: { state.cancelTextEditing() }
+                )
                 .frame(width: boxW, height: boxH, alignment: .leading)
                 .background(Color.bg_panel.opacity(0.85))
                 .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.accent, lineWidth: 1.0))
                 .position(x: topLeft.x + boxW / 2, y: topLeft.y + boxH / 2)
-                .focused($isTextEditorFocused)
-                .onSubmit {
-                    state.commitTextEditing()
-                }
             }
         }
     }
@@ -4330,6 +4337,34 @@ struct DxfCanvasView: View {
         context.stroke(path, with: .color(Color.purple.opacity(0.8)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [4, 3]))
     }
 
+    /// Builds a SwiftUI `Font` for a TEXT entity from an installed family name
+    /// (MAS-134) plus bold/italic traits, falling back to the system font when
+    /// the family is empty/unavailable. Bold/italic are applied via the font
+    /// manager so they work for any installed family, not just system fonts.
+    static func resolveTextFont(family: String?, size: CGFloat, bold: Bool, italic: Bool) -> Font {
+        Font(resolveNSFont(family: family, size: size, bold: bold, italic: italic))
+    }
+
+    /// Same resolution as `resolveTextFont` but returns the raw `NSFont`, used by
+    /// the inline text editor (which needs an AppKit font).
+    static func resolveNSFont(family: String?, size: CGFloat, bold: Bool, italic: Bool) -> NSFont {
+        let fm = NSFontManager.shared
+        var base: NSFont
+        if let fam = family, !fam.isEmpty,
+           let f = fm.font(withFamily: fam, traits: [], weight: 5, size: size) ?? NSFont(name: fam, size: size) {
+            base = f
+        } else {
+            base = NSFont.systemFont(ofSize: size)
+        }
+        var traits: NSFontTraitMask = []
+        if bold { traits.insert(.boldFontMask) }
+        if italic { traits.insert(.italicFontMask) }
+        if !traits.isEmpty {
+            base = fm.convert(base, toHaveTrait: traits)
+        }
+        return base
+    }
+
     private func drawEntity(_ ent: DXFEntity, baseColor: Color, strokeColor: Color, strokeWidth: Double, size: CGSize, modelBounds: CGRect, context: inout GraphicsContext) {
         var path = SwiftUI.Path()
         if ent.type == "LINE", let s = ent.start, let e = ent.end {
@@ -4377,7 +4412,9 @@ struct DxfCanvasView: View {
                 let baseHeight: Double = ent.height ?? 5.0
                 let scale: CGFloat = state.canvasScale
                 let h: CGFloat = CGFloat(baseHeight) * scale
-                let textFont: Font = .system(size: h)
+                let textFont: Font = DxfCanvasView.resolveTextFont(
+                    family: ent.fontName, size: h,
+                    bold: ent.bold ?? false, italic: ent.italic ?? false)
                 // Selected → accent; hovered → darker, signalling the whole text is
                 // grabbable as one unit (one click selects, double click edits).
                 let textColor: Color
@@ -4388,7 +4425,9 @@ struct DxfCanvasView: View {
                 } else {
                     textColor = baseColor
                 }
-                let uiText: Text = Text(textStr).font(textFont).foregroundColor(textColor)
+                var uiText: Text = Text(textStr).font(textFont).foregroundColor(textColor)
+                if ent.underline ?? false { uiText = uiText.underline() }
+                if let cs = ent.charSpacing, cs != 0 { uiText = uiText.tracking(CGFloat(cs) * scale) }
                 let resolvedText = context.resolve(uiText)
                 let rotDeg = ent.rotation ?? 0.0
                 if abs(rotDeg) > 0.001 {
@@ -5349,4 +5388,116 @@ extension View {
     func ifCondition<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
         if condition { transform(self) } else { self }
     }
+}
+
+/// Inline multi-line text editor used while creating/editing a canvas TEXT
+/// entity (MAS-135). Wraps an `NSTextView` so it can render the chosen font and
+/// style live, auto-focus + select-all on appear, insert a newline on
+/// `Shift+Enter`, commit on `Enter`, and cancel on `Esc`.
+struct InlineTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    var font: NSFont
+    var textColor: NSColor
+    var underline: Bool
+    var kerning: CGFloat
+    var onCommit: () -> Void
+    var onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSTextView {
+        let tv = CommittingTextView()
+        tv.delegate = context.coordinator
+        tv.isRichText = false
+        tv.drawsBackground = false
+        tv.allowsUndo = true
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = true
+        tv.textContainerInset = NSSize(width: 1, height: 1)
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.textContainer?.widthTracksTextView = true
+        tv.font = font
+        tv.textColor = textColor
+        tv.string = text
+        tv.onCommit = onCommit
+        tv.onCancel = onCancel
+        applyAttributes(to: tv)
+        // Auto-focus and select all so the user can immediately type over the
+        // placeholder (new text) or replace the existing value.
+        DispatchQueue.main.async {
+            tv.window?.makeFirstResponder(tv)
+            tv.selectAll(nil)
+        }
+        return tv
+    }
+
+    func updateNSView(_ tv: NSTextView, context: Context) {
+        if tv.string != text { tv.string = text }
+        tv.font = font
+        tv.textColor = textColor
+        (tv as? CommittingTextView)?.onCommit = onCommit
+        (tv as? CommittingTextView)?.onCancel = onCancel
+        applyAttributes(to: tv)
+    }
+
+    private func applyAttributes(to tv: NSTextView) {
+        var typing: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+            .underlineStyle: underline ? NSUnderlineStyle.single.rawValue : 0
+        ]
+        if kerning != 0 { typing[.kern] = kerning }
+        tv.typingAttributes = typing
+        if let ts = tv.textStorage, ts.length > 0 {
+            let range = NSRange(location: 0, length: ts.length)
+            ts.addAttribute(.font, value: font, range: range)
+            ts.addAttribute(.foregroundColor, value: textColor, range: range)
+            if underline {
+                ts.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+            } else {
+                ts.removeAttribute(.underlineStyle, range: range)
+            }
+            if kerning != 0 {
+                ts.addAttribute(.kern, value: kerning, range: range)
+            } else {
+                ts.removeAttribute(.kern, range: range)
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: InlineTextEditor
+        init(_ p: InlineTextEditor) { parent = p }
+
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            parent.text = tv.string
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+                if shift {
+                    // Shift+Enter → new line (MAS-135).
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    return true
+                }
+                // Enter commits the text.
+                parent.onCommit()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                parent.onCancel()
+                return true
+            }
+            return false
+        }
+    }
+}
+
+/// NSTextView subclass that exposes commit/cancel hooks so the SwiftUI wrapper
+/// can react to Enter/Esc even when the delegate path doesn't fire.
+final class CommittingTextView: NSTextView {
+    var onCommit: (() -> Void)?
+    var onCancel: (() -> Void)?
 }
