@@ -423,7 +423,7 @@ struct DxfCanvasView: View {
             // Translation Gizmo Layer. Hidden while a corner tool (Fillet/Chamfer)
             // is active so the move/rotate handles don't overlap and steal grabs
             // from the per-corner radius controls (MAS-101).
-            if let centerModel = selectionCenterModel, !state.currentTool.isCornerTool, state.currentTool != .scale, !state.isEditingRefImageTransform {
+            if let centerModel = selectionCenterModel, !state.currentTool.isCornerTool, state.currentTool != .scale, state.currentTool != .offset, !state.isEditingRefImageTransform {
                 let centerScreen = toScreen(dx: Double(centerModel.x), dy: Double(centerModel.y), size: viewSize, bounds: modelBounds)
 
                     GeometryReader { g in
@@ -712,12 +712,19 @@ struct DxfCanvasView: View {
                     .shadow(radius: 2)
                     .scaleEffect(isHoveringOffsetHandle || isDraggingOffset ? 1.25 : 1.0)
                     .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isHoveringOffsetHandle || isDraggingOffset)
+                    // Generous, clearly-grabbable hit area; a high-priority gesture so
+                    // grabbing the handle never also triggers the canvas marquee drag
+                    // underneath it (which used to clobber the selection on release —
+                    // the "ghost outline drags then vanishes" bug). Mirrors the
+                    // fillet arrow's handling.
+                    .frame(width: 30, height: 30)
+                    .contentShape(Circle())
                     .position(handleScreen)
                     .onHover { hovering in
                         isHoveringOffsetHandle = hovering
                     }
-                    .gesture(
-                        DragGesture(coordinateSpace: .named("canvas"))
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named("canvas"))
                             .onChanged { val in
                                 isDraggingOffset = true
                                 let modelPt = toModel(point: val.location, size: viewSize, bounds: modelBounds)
@@ -730,7 +737,7 @@ struct DxfCanvasView: View {
                             .onEnded { _ in
                                 isDraggingOffset = false
                                 // Dragging only sizes the live preview; the user
-                                // commits with OK / Enter (MAS-109).
+                                // commits with OK / Enter / click-away (MAS-109).
                             }
                     )
 
@@ -2496,7 +2503,10 @@ struct DxfCanvasView: View {
                         }
                         sketchAwaitingSecondClick = true
                     }
-                } else if state.currentTool != .measure {
+                } else if state.currentTool != .measure && state.currentTool != .offset {
+                    // Offset never marquee-selects: you pick the profile by clicking
+                    // (chain-select grabs the whole loop), and a stray canvas drag
+                    // must never wipe the active selection out from under the tool.
                     dragSelectionStart = val.startLocation
                 }
             }
@@ -3116,7 +3126,7 @@ struct DxfCanvasView: View {
             }
         } else {
             // DRAG RELEASE
-            if state.currentTool != .pan && state.currentTool != .measure && !NSEvent.modifierFlags.contains(.option) {
+            if state.currentTool != .pan && state.currentTool != .measure && state.currentTool != .offset && !NSEvent.modifierFlags.contains(.option) {
                 let p1 = toModel(point: val.startLocation, size: size, bounds: modelBounds)
                 let p2 = toModel(point: val.location, size: size, bounds: modelBounds)
                 let modelSelRect = CGRect(

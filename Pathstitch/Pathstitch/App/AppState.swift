@@ -798,9 +798,13 @@ class AppState {
         didSet {
             guard currentTool != oldValue else { return }
             if currentTool == .offset {
-                // Entering Offset: chain-select defaults ON when nothing is loaded,
-                // so a click grabs the whole connected profile; an existing
-                // selection is kept and previewed immediately (MAS-109).
+                // Entering Offset: always start at a predictable 12 mm rather than
+                // inheriting the last session's distance, so the tool behaves the
+                // same every time you pick it up.
+                offsetDistance = 12.0
+                // Chain-select defaults ON when nothing is loaded, so a click grabs
+                // the whole connected profile; an existing selection is kept and
+                // previewed immediately (MAS-109).
                 if selectedHandles.isEmpty {
                     chainSelectionEnabled = true
                 } else {
@@ -903,7 +907,9 @@ class AppState {
     var commitToolToken: Int = 0
 
     // Operations Configs
-    var offsetDistance: Double = 1.0
+    // Offset always starts at 12 mm — reset on entering the tool (see currentTool
+    // didSet) so it never inherits the previous session's distance.
+    var offsetDistance: Double = 12.0
     var offsetSide: String = "left"
     
     var holeOffsetDistance: Double = 2.0

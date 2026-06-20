@@ -474,6 +474,7 @@ class PathstitchDocumentWindow: NSWindow {
             // above, so this never interferes with typing/onSubmit.
             if event.keyCode == 36 || event.keyCode == 76 {
                 if appState.currentTool == .sketchLine || appState.currentTool == .pen
+                    || appState.currentTool == .offset
                     || appState.currentTool.isCornerTool {
                     appState.commitToolToken += 1
                     return
