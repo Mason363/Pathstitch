@@ -669,7 +669,8 @@ def _sew_holes(pts2d, face_poly, diameter, spacing, margin):
 
 # ---------------------------------------------------------------------------
 # DXF assembly
-# -------------------------------------------------def _ensure_layers(doc):
+# ---------------------------------------------------------------------------
+def _ensure_layers(doc):
     specs = [("SEAM_CUT", 1, "CONTINUOUS"), ("CREASE", 5, "DASHED"),
              ("GLUE_TABS", 3, "CONTINUOUS"), ("SEW_HOLES", 3, "CONTINUOUS"),
              ("DISTORTION", 7, "CONTINUOUS")]

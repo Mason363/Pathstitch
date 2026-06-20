@@ -17,8 +17,8 @@ import ezdxf
 import ezdxf.colors
 from ezdxf.math import Matrix44
 from ezdxf.path import make_path, Path
-from shapely.geometry import LineString, LinearRing, MultiLineString, Point as ShapelyPoint
-from shapely.ops import linemerge
+from shapely.geometry import LineString, LinearRing, MultiLineString, Polygon, MultiPolygon, Point as ShapelyPoint
+from shapely.ops import linemerge, unary_union
 
 # --- Text styling persistence (MAS-134 / MAS-135) -------------------------
 # DXF TEXT entities only natively carry a value, height, rotation and a style
@@ -539,6 +539,192 @@ def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
 
     doc.saveas(output_path)
     return {"status": "ok", "data": {"new_entities": new_handles}}
+
+
+# --- Add Thickness ---------------------------------------------------------
+# Converts a zero-width centerline (line / arc / open or closed polyline / spline
+# / circle / ellipse) into a closed, manufacturable outline of a given width, by
+# buffering the curve symmetrically (±thickness/2). Geometry that already encloses
+# area / carries width ("already has thickness") is left untouched.
+
+THICKENED_LAYER = "THICKENED"
+THICKENABLE_TYPES = ("LINE", "ARC", "CIRCLE", "LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE")
+THICKEN_APPID = "PATHSTITCH"
+THICKEN_FLAG = "THICKENED"
+
+
+def _entity_already_has_thickness(ent) -> bool:
+    """True when an entity should be SKIPPED by add-thickness because it already
+    has thickness: a filled/solid region, a polyline carrying a DXF width, or the
+    output of a previous add-thickness pass (so the op is idempotent). The
+    previous-pass check is an XDATA marker, so it survives whatever layer the
+    outline lives on (e.g. SVG outlines keep their source layer)."""
+    dt = ent.dxftype()
+    if dt in ("HATCH", "SOLID", "3DSOLID", "REGION", "3DFACE", "MESH", "BODY"):
+        return True
+    try:
+        if ent.dxf.layer == THICKENED_LAYER:
+            return True
+    except Exception:
+        pass
+    try:
+        for code, val in ent.get_xdata(THICKEN_APPID):
+            if code == 1000 and val == THICKEN_FLAG:
+                return True
+    except Exception:
+        pass
+    if dt == "LWPOLYLINE":
+        # A const width, or any per-vertex start/end width, means it renders thick.
+        try:
+            if float(getattr(ent.dxf, "const_width", 0) or 0) > 1e-9:
+                return True
+        except Exception:
+            pass
+        try:
+            for v in ent.get_points("xyseb"):
+                # format xyseb -> (x, y, start_width, end_width, bulge)
+                if (len(v) >= 4) and (abs(v[2]) > 1e-9 or abs(v[3]) > 1e-9):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def _thicken_entities(msp, doc, entities, thickness: float, layer: Optional[str]):
+    """Buffers each thin centerline entity into closed outline LWPOLYLINEs.
+
+    ``layer``: target layer for every outline, or ``None`` to keep each source
+    entity's own layer (used by SVG import to preserve the file's layering).
+    Returns (new_handles, consumed_entities, skipped_existing). Does NOT delete
+    the originals — the caller decides whether to replace them."""
+    if layer is not None and layer not in doc.layers:
+        doc.layers.new(layer, dxfattribs={"color": 1})
+    if THICKEN_APPID not in doc.appids:
+        doc.appids.new(THICKEN_APPID)
+
+    r = thickness / 2.0
+    new_handles: List[str] = []
+    consumed = []
+    skipped_existing = 0
+
+    for ent in entities:
+        if ent is None or ent.dxftype() not in THICKENABLE_TYPES:
+            continue
+        if _entity_already_has_thickness(ent):
+            skipped_existing += 1
+            continue
+        try:
+            path = make_path(ent)
+            verts = [(p.x, p.y) for p in path.flattening(distance=0.05)]
+        except Exception:
+            continue
+        if len(verts) < 2:
+            continue
+        is_closed = bool(getattr(ent, "closed", False) or getattr(ent, "is_closed", False))
+        base = None
+        if is_closed:
+            try:
+                base = LinearRing(verts)
+            except Exception:
+                base = None
+        if base is None:
+            try:
+                base = LineString(verts)
+            except Exception:
+                continue
+
+        try:
+            buffered = base.buffer(r, cap_style="flat", join_style="round")
+        except Exception:
+            buffered = None
+        if buffered is None or buffered.is_empty:
+            continue
+
+        if isinstance(buffered, MultiPolygon):
+            polys = list(buffered.geoms)
+        elif isinstance(buffered, Polygon):
+            polys = [buffered]
+        else:
+            polys = [g for g in getattr(buffered, "geoms", []) if isinstance(g, Polygon)]
+
+        emitted_any = False
+        for poly in polys:
+            if not isinstance(poly, Polygon) or poly.is_empty:
+                continue
+            for ring in [poly.exterior, *list(poly.interiors)]:
+                coords = list(ring.coords)
+                if len(coords) > 1 and coords[0] == coords[-1]:
+                    coords = coords[:-1]
+                if len(coords) < 3:
+                    continue
+                out_layer = layer if layer is not None else ent.dxf.layer
+                ne = msp.add_lwpolyline(coords, dxfattribs={"layer": out_layer})
+                ne.closed = True
+                # Mark as a thickened outline so a later add-thickness pass skips
+                # it (idempotent regardless of which layer it ended up on).
+                try:
+                    ne.set_xdata(THICKEN_APPID, [(1000, THICKEN_FLAG)])
+                except Exception:
+                    pass
+                new_handles.append(ne.dxf.handle)
+                emitted_any = True
+        if emitted_any:
+            consumed.append(ent)
+
+    return new_handles, consumed, skipped_existing
+
+
+def op_add_thickness(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Adds thickness to selected (or all) zero-width lines, turning each into a
+    closed outline of the given width. Geometry that already has thickness is
+    skipped. The original centerline is replaced by its outline unless
+    ``replace`` is false."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", [])
+    thickness = float(args.get("thickness", 3.0))
+    layer = sanitize_layer_name(args.get("layer", THICKENED_LAYER))
+    replace = bool(args.get("replace", True))
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if thickness <= 0:
+        return {"status": "error", "message": "Thickness must be a positive value."}
+
+    doc = ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+
+    if handles:
+        targets = []
+        for h in handles:
+            try:
+                targets.append(doc.entitydb[h])
+            except KeyError:
+                pass
+    else:
+        targets = [e for e in msp if e.dxftype() in THICKENABLE_TYPES]
+
+    new_handles, consumed, skipped_existing = _thicken_entities(msp, doc, targets, thickness, layer)
+
+    if replace:
+        for ent in consumed:
+            try:
+                msp.delete_entity(ent)
+            except Exception:
+                pass
+
+    doc.saveas(output_path)
+    return {
+        "status": "ok",
+        "data": {
+            "new_entities": new_handles,
+            "thickened_count": len(consumed),
+            "skipped_existing": skipped_existing,
+        },
+    }
+
 
 def make_rounded_rectangle_points(x1: float, y1: float, x2: float, y2: float, r: float) -> List[Tuple[float, float]]:
     """Generates coordinates for a rounded rectangle (filleted corners) CCW direction."""
@@ -1823,9 +2009,28 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
         if "ORIGINAL" not in doc.layers:
             doc.layers.new("ORIGINAL")
         process_element(root, "ORIGINAL")
+
+        # Import SVGs WITH thickness: every imported stroke is a zero-width
+        # centerline, so buffer each into a closed, cuttable outline of the given
+        # width. This runs AFTER consolidation, so the pipeline is coherent — a
+        # ribbon SVG is first collapsed to its centerline, then re-thickened to a
+        # uniform width. Skipped only when thickness is 0/unset (internal callers
+        # like distribute/batch pass nothing). Outlines keep each source layer.
+        thickness = float(args.get("thickness", 0.0) or 0.0)
+        thickened_count = 0
+        if thickness > 0:
+            imported = list(msp)
+            new_handles, consumed, _skipped = _thicken_entities(msp, doc, imported, thickness, None)
+            for ent in consumed:
+                try:
+                    msp.delete_entity(ent)
+                except Exception:
+                    pass
+            thickened_count = len(consumed)
+
         translate_to_positive_quadrant(doc)
         doc.saveas(output_path)
-        return {"status": "ok"}
+        return {"status": "ok", "data": {"thickened_count": thickened_count}}
     except Exception as e:
         return {"status": "error", "message": f"Failed to import SVG: {str(e)}"}
 
@@ -4704,6 +4909,7 @@ def op_trim_segment(args: Dict[str, Any]) -> Dict[str, Any]:
 OPERATIONS = {
     "list_entities": op_list_entities,
     "offset_lines": op_offset_lines,
+    "add_thickness": op_add_thickness,
     "add_holes": op_add_holes,
     "cleanup": op_cleanup,
     "export_svg": op_export_svg,

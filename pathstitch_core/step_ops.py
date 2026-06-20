@@ -592,6 +592,18 @@ def get_face_plane_basis(face):
     
     return origin, normal, u_axis, v_axis_coords
 
+def _translate_shape(shape, dx: float, dy: float, dz: float):
+    """Returns a rigidly translated copy of `shape`. Identity (returns the input)
+    when the offset is zero, to avoid needless OCC transform churn."""
+    if dx == 0.0 and dy == 0.0 and dz == 0.0:
+        return shape
+    from OCC.Core.gp import gp_Trsf, gp_Vec
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+    trsf = gp_Trsf()
+    trsf.SetTranslation(gp_Vec(dx, dy, dz))
+    return BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+
+
 def op_project_edges(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
     output_path = args.get("output")
@@ -602,14 +614,29 @@ def op_project_edges(args: Dict[str, Any]) -> Dict[str, Any]:
     existing_dxf = args.get("existing_dxf")
     offset = float(args.get("offset", 0.0))
     visible_bodies_indices = args.get("visible_bodies")
-    
+    # Per-body manual move offsets from the 3D gizmo (MAS-140), keyed by body
+    # index: {"0": [x, y, z], ...}. Applied so the projection matches exactly how
+    # the model is arranged in the 3D view — moved bodies project where they sit.
+    body_offsets = args.get("body_offsets") or {}
+
+    def _offset_for(idx: int):
+        o = body_offsets.get(str(idx))
+        if o is None:
+            o = body_offsets.get(idx)
+        if not o:
+            return (0.0, 0.0, 0.0)
+        return (float(o[0]), float(o[1]), float(o[2]))
+
     if not input_path or not output_path:
         return {"status": "error", "message": "Missing input or output path."}
-        
+
     try:
         shape = load_step_shape(input_path)
         bodies = get_solid_bodies(shape)
-        
+        # Apply each body's manual move so all downstream geometry (the face plane
+        # basis, the section, and the silhouette fallback) reflects the moved pose.
+        bodies = [_translate_shape(b, *_offset_for(i)) for i, b in enumerate(bodies)]
+
         target_bodies = []
         if visible_bodies_indices is not None:
             for idx in visible_bodies_indices:
@@ -844,17 +871,53 @@ def op_combine_steps(args: Dict[str, Any]) -> Dict[str, Any]:
         from OCC.Core.TopoDS import TopoDS_Compound
         from OCC.Core.BRep import BRep_Builder
         from OCC.Core.STEPControl import STEPControl_Writer, STEPControl_AsIs
+        from OCC.Core.Bnd import Bnd_Box
+        from OCC.Core.BRepBndLib import brepbndlib
+
+        def _bbox(shape):
+            box = Bnd_Box()
+            brepbndlib.Add(shape, box)
+            if box.IsVoid():
+                return None
+            return box.Get()  # (xmin, ymin, zmin, xmax, ymax, zmax)
+
+        existing_bodies = get_solid_bodies(load_step_shape(input_path))
+        incoming_bodies = get_solid_bodies(load_step_shape(incoming_path))
+
+        # Preserve true coordinates everywhere (MAS-140): the viewport no longer
+        # redistributes bodies, so a dragged-in model must be placed beside the
+        # existing geometry here — but ONLY when they would actually overlap.
+        # Non-overlapping models keep their authored positions exactly.
+        GAP = 20.0
+        ex_boxes = [b for b in (_bbox(s) for s in existing_bodies) if b]
+        in_boxes = [b for b in (_bbox(s) for s in incoming_bodies) if b]
+        if ex_boxes and in_boxes:
+            ex_xmax = max(b[3] for b in ex_boxes)
+            ex_xmin = min(b[0] for b in ex_boxes)
+            ex_ymin, ex_ymax = min(b[1] for b in ex_boxes), max(b[4] for b in ex_boxes)
+            ex_zmin, ex_zmax = min(b[2] for b in ex_boxes), max(b[5] for b in ex_boxes)
+            in_xmin = min(b[0] for b in in_boxes)
+            in_xmax = max(b[3] for b in in_boxes)
+            in_ymin, in_ymax = min(b[1] for b in in_boxes), max(b[4] for b in in_boxes)
+            in_zmin, in_zmax = min(b[2] for b in in_boxes), max(b[5] for b in in_boxes)
+            overlaps = (in_xmin <= ex_xmax and in_xmax >= ex_xmin and
+                        in_ymin <= ex_ymax and in_ymax >= ex_ymin and
+                        in_zmin <= ex_zmax and in_zmax >= ex_zmin)
+            if overlaps:
+                dx = (ex_xmax + GAP) - in_xmin
+                incoming_bodies = [_translate_shape(b, dx, 0.0, 0.0) for b in incoming_bodies]
 
         builder = BRep_Builder()
         compound = TopoDS_Compound()
         builder.MakeCompound(compound)
 
         total = 0
-        for path in (input_path, incoming_path):
-            shape = load_step_shape(path)
-            for body in get_solid_bodies(shape):
-                builder.Add(compound, body)
-                total += 1
+        for body in existing_bodies:
+            builder.Add(compound, body)
+            total += 1
+        for body in incoming_bodies:
+            builder.Add(compound, body)
+            total += 1
 
         writer = STEPControl_Writer()
         writer.Transfer(compound, STEPControl_AsIs)
