@@ -199,6 +199,9 @@ struct HistoryState {
     // Pen paths travel with the geometry too, so they stay editable across
     // undo/redo (parametric pen lines).
     let penPaths: [String: PenPathModel]
+    // 3D body move offsets, so the 3D translate gizmo / nudge / reset are
+    // undoable (MAS-143).
+    let bodyOffsets: [Int: [Double]]
 }
 
 /// One parametric corner modifier on a shape (MAS-62).
@@ -1805,6 +1808,20 @@ class AppState {
         if pushToViewport { bodyMoveStateToken += 1 }
     }
 
+    /// Snapshot the offsets before a body-move interaction so the whole move is a
+    /// single undo step (MAS-143). Called once at gizmo drag-start and before each
+    /// discrete panel action (nudge / field commit / reset).
+    func beginBodyMove() {
+        saveToHistory()
+    }
+
+    /// Restore body offsets from a history snapshot and push them to the 3D
+    /// viewport so the gizmo and geometry reflect the undo/redo (MAS-143).
+    func applyRestoredBodyOffsets(_ offsets: [Int: [Double]]) {
+        bodyOffsets = offsets
+        bodyMoveStateToken += 1
+    }
+
     // Plane Projection State Machine
     var isPlaneSelectionActive: Bool = false
     var planeSelectionModeType: String = "origin" // "origin" or "face"
@@ -1975,7 +1992,8 @@ class AppState {
             selectedHandles: selectedHandles,
             parametricShapes: parametricShapes,
             cornerSnapPoints: cornerSnapPoints,
-            penPaths: penPaths
+            penPaths: penPaths,
+            bodyOffsets: bodyOffsets
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -2003,7 +2021,8 @@ class AppState {
             selectedHandles: selectedHandles,
             parametricShapes: parametricShapes,
             cornerSnapPoints: cornerSnapPoints,
-            penPaths: penPaths
+            penPaths: penPaths,
+            bodyOffsets: bodyOffsets
         )
         redoStack.append(currentState)
 
@@ -2015,6 +2034,7 @@ class AppState {
         self.cornerSnapPoints = previousState.cornerSnapPoints
         self.penPaths = previousState.penPaths
         self.selectedMeasurement = nil
+        self.applyRestoredBodyOffsets(previousState.bodyOffsets)
         self.hasUnsavedChanges = true
         
         Task {
@@ -2056,7 +2076,8 @@ class AppState {
             selectedHandles: selectedHandles,
             parametricShapes: parametricShapes,
             cornerSnapPoints: cornerSnapPoints,
-            penPaths: penPaths
+            penPaths: penPaths,
+            bodyOffsets: bodyOffsets
         )
         undoStack.append(currentState)
 
@@ -2068,6 +2089,7 @@ class AppState {
         self.cornerSnapPoints = nextState.cornerSnapPoints
         self.penPaths = nextState.penPaths
         self.selectedMeasurement = nil
+        self.applyRestoredBodyOffsets(nextState.bodyOffsets)
         self.hasUnsavedChanges = true
         
         Task {

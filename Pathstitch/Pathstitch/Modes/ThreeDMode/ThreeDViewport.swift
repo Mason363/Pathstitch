@@ -198,6 +198,11 @@ class Coordinator: NSObject, WKScriptMessageHandler {
             DispatchQueue.main.async {
                 self.state.selectBody(bodyIndex)
             }
+        } else if op == "bodyMoveBegin" {
+            // Gizmo drag started — snapshot offsets so the move is one undo step.
+            DispatchQueue.main.async {
+                self.state.beginBodyMove()
+            }
         } else if op == "bodyMoved" {
             // The 3D translate gizmo dragged a body; persist its new offset.
             let bodyIndex = json["bodyIndex"] as? Int ?? 0

@@ -580,6 +580,11 @@
                 controls.enabled = !e.value;     // freeze orbit while dragging the gizmo
                 if (e.value) {
                     gizmoWasDragging = true;
+                    // Snapshot offsets before the drag so the whole move is one
+                    // undo step (MAS-143).
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pathstitch) {
+                        window.webkit.messageHandlers.pathstitch.postMessage(JSON.stringify({ op: "bodyMoveBegin" }));
+                    }
                 } else {
                     setTimeout(function() { gizmoWasDragging = false; }, 0);
                 }

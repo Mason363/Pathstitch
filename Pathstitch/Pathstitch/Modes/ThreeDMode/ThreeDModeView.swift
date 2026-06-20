@@ -549,7 +549,9 @@ struct ThreeDModeView: View {
             set: { newVal in
                 guard let i = state.selectedBodyIndex else { return }
                 var o = state.selectedBodyOffset
+                guard o[axis] != newVal else { return }
                 o[axis] = newVal
+                state.beginBodyMove()   // one undo step per committed value (MAS-143)
                 state.setBodyOffset(index: i, x: o[0], y: o[1], z: o[2])
             }
         )
@@ -608,6 +610,7 @@ struct ThreeDModeView: View {
                     }
 
                     Button("Reset Position") {
+                        state.beginBodyMove()   // undoable (MAS-143)
                         state.setBodyOffset(index: bi, x: 0, y: 0, z: 0)
                     }
                     .buttonStyle(PlasticityButtonStyle(isEnabled: true))
@@ -630,6 +633,7 @@ struct ThreeDModeView: View {
     private func nudgeBody(_ index: Int, axis: Int, dir: Double) {
         var o = state.selectedBodyOffset
         o[axis] += dir * state.bodyMoveStep
+        state.beginBodyMove()   // each nudge is one undo step (MAS-143)
         state.setBodyOffset(index: index, x: o[0], y: o[1], z: o[2])
     }
 }
