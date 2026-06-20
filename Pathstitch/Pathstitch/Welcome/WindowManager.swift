@@ -124,7 +124,14 @@ class WindowManager: NSObject, NSApplicationDelegate {
         state.startBlankDocument()
         openDocumentWindow(with: state)
         for url in importable { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
-        state.importFiles(importable)
+        // A single file goes through loadFile so it gets per-type routing and the
+        // size-retention / unit-mismatch prompt (MAS-148); several files keep the
+        // side-by-side distribute layout.
+        if importable.count == 1 {
+            state.loadFile(url: importable[0])
+        } else {
+            state.importFiles(importable)
+        }
     }
 
     func openDocument(url: URL) {

@@ -2541,7 +2541,7 @@ class AppState {
                 isProcessing = true
                 Task {
                     do {
-                        _ = try await PythonBridge.shared.run(
+                        let normResult = try await PythonBridge.shared.run(
                             module: "dxf_ops",
                             op: "normalize_dxf",
                             args: ["input": targetURL.path, "output": targetURL.path]
@@ -2551,6 +2551,10 @@ class AppState {
                             self.hasUnsavedChanges = false
                             self.isProcessing = false
                             self.logAction("Load File", details: "Successfully loaded and normalized \(url.lastPathComponent)")
+                            // Size-retention / unit-mismatch check (MAS-148).
+                            if let data = normResult["data"] as? [String: Any] {
+                                self.promptImportUnitsIfNeeded(data: data, targetURL: targetURL, sourceName: url.lastPathComponent)
+                            }
                         }
                     } catch {
                         await MainActor.run {
@@ -2627,6 +2631,114 @@ class AppState {
         } else {
             errorMessage = "Unsupported file extension: .\(url.pathExtension)"
             logAction("Load File Error", details: "Unsupported extension: .\(ext)")
+        }
+    }
+
+    /// Size retention / off-dimension detection (MAS-148). After a DXF import we
+    /// know the declared `$INSUNITS` and the raw size. We never silently rescale
+    /// (CAD exporters routinely mislabel units — e.g. "metres" on a file actually
+    /// drawn in mm), so instead we surface a prompt: when the file declares a
+    /// real non-mm unit, or the imported size is implausible, the user confirms
+    /// the true real-world size with a single click. Each option shows the size
+    /// it would produce.
+    func promptImportUnitsIfNeeded(data: [String: Any], targetURL: URL, sourceName: String) {
+        let bbox = data["bbox_mm"] as? [Double] ?? []
+        let unitCode = data["unit_code"] as? Int ?? 0
+        let declared = data["declared_unit"] as? String ?? "unitless"
+        let unitFactor = data["unit_factor"] as? Double ?? 1.0
+        let w = bbox.count > 0 ? bbox[0] : 0
+        let h = bbox.count > 1 ? bbox[1] : 0
+        let maxDim = max(w, h)
+        guard maxDim > 0 else { return }
+
+        // Inches/feet/cm/yards are units a tool deliberately sets; mm (4) needs no
+        // correction and metres (6) is ezdxf's default so it's not trustworthy.
+        let strong = [1, 2, 5, 10].contains(unitCode)
+        let implausible = maxDim > 2000 || maxDim < 1
+        guard strong || implausible else { return }
+
+        func fmt(_ v: Double) -> String { String(format: "%.1f", v) }
+
+        // Candidate corrections (label, multiplicative factor).
+        var options: [(String, Double)] = [("Keep current size", 1.0)]
+        if strong && abs(unitFactor - 1.0) > 1e-9 {
+            options.append(("Apply file units (\(declared) → mm)", unitFactor))
+        }
+        for (lbl, f) in [("Centimeters → mm", 10.0), ("Inches → mm", 25.4),
+                         ("Meters → mm", 1000.0), ("Shrink ÷10", 0.1),
+                         ("Shrink ÷25.4", 1.0 / 25.4), ("Shrink ÷1000", 0.001)] {
+            if !options.contains(where: { abs($0.1 - f) < 1e-9 }) { options.append((lbl, f)) }
+        }
+
+        // Default selection: prefer the declared unit; otherwise the factor that
+        // lands the size in a sane range.
+        var defaultIdx = 0
+        if strong && abs(unitFactor - 1.0) > 1e-9 {
+            defaultIdx = options.firstIndex(where: { abs($0.1 - unitFactor) < 1e-9 }) ?? 0
+        } else if implausible {
+            let target = 150.0
+            var best = 0; var bestErr = abs(maxDim - target)
+            for (i, opt) in options.enumerated() {
+                let r = maxDim * opt.1
+                guard r >= 1 && r <= 2000 else { continue }
+                let err = abs(r - target)
+                if err < bestErr { bestErr = err; best = i }
+            }
+            defaultIdx = best
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Check imported size"
+        if strong {
+            alert.informativeText = "\"\(sourceName)\" imported at \(fmt(w)) × \(fmt(h)) mm and declares its units as \(declared). Confirm the real-world size:"
+        } else {
+            alert.informativeText = "\"\(sourceName)\" imported at \(fmt(w)) × \(fmt(h)) mm, which looks unusually \(maxDim > 2000 ? "large" : "small"). Pick the real-world size:"
+        }
+        alert.alertStyle = .informational
+
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 340, height: 26))
+        for (lbl, f) in options {
+            if abs(f - 1.0) < 1e-9 {
+                popup.addItem(withTitle: "\(lbl)  (\(fmt(w)) × \(fmt(h)) mm)")
+            } else {
+                popup.addItem(withTitle: "\(lbl)  →  \(fmt(w * f)) × \(fmt(h * f)) mm")
+            }
+        }
+        popup.selectItem(at: defaultIdx)
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Apply")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let factor = options[popup.indexOfSelectedItem].1
+            if abs(factor - 1.0) > 1e-9 {
+                applyImportScale(factor: factor, targetURL: targetURL)
+            }
+        }
+    }
+
+    /// Rescales the freshly-imported active DXF by `factor` and reloads (MAS-148).
+    private func applyImportScale(factor: Double, targetURL: URL) {
+        isProcessing = true
+        Task {
+            do {
+                _ = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "scale_all",
+                    args: ["input": targetURL.path, "output": targetURL.path, "factor": factor]
+                )
+                await MainActor.run {
+                    self.reloadDXF(fitToContentAfter: true)
+                    self.hasUnsavedChanges = true
+                    self.isProcessing = false
+                    self.logAction("Rescale Import", details: "Applied unit correction ×\(factor).")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to rescale import: \(error.localizedDescription)"
+                    self.isProcessing = false
+                }
+            }
         }
     }
 

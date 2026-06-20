@@ -1420,6 +1420,99 @@ def translate_doc(doc, dx: float, dy: float):
             ent.dxf.insert = (ent.dxf.insert.x + dx, ent.dxf.insert.y + dy)
 
 
+# DXF $INSUNITS code -> millimetres-per-unit. Covers the units a real CAD/laser
+# file is likely to carry; anything not listed (or 0 = unitless) is left as-is so
+# we never silently corrupt a file with no declared units (MAS-148).
+INSUNITS_TO_MM = {
+    1: 25.4,        # inches
+    2: 304.8,       # feet
+    4: 1.0,         # millimetres
+    5: 10.0,        # centimetres
+    6: 1000.0,      # metres
+    8: 25.4e-6,     # microinches
+    9: 0.0254,      # mils
+    10: 914.4,      # yards
+    14: 100.0,      # decimetres
+    15: 10000.0,    # dekametres
+    16: 100000.0,   # hectometres
+    17: 1.0e9,      # gigametres? (rare) -- keep mapping coherent
+    21: 0.0254,     # US survey mil approximation
+}
+
+INSUNITS_NAME = {
+    0: "unitless", 1: "inches", 2: "feet", 4: "mm", 5: "cm", 6: "m",
+    8: "microinches", 9: "mils", 10: "yards", 14: "dm",
+}
+
+
+def scale_doc(doc, factor: float):
+    """Uniformly scales every modelspace entity about the origin by `factor`.
+    Mirrors `translate_doc`'s explicit per-type handling so it stays correct for
+    the same entity set (no reliance on entity.transform). Used to convert an
+    imported file's native units to millimetres (MAS-148)."""
+    if abs(factor - 1.0) < 1e-9:
+        return
+    msp = doc.modelspace()
+    for ent in msp:
+        t = ent.dxftype()
+        if t == "LINE":
+            ent.dxf.start = (ent.dxf.start.x * factor, ent.dxf.start.y * factor)
+            ent.dxf.end = (ent.dxf.end.x * factor, ent.dxf.end.y * factor)
+        elif t in ("CIRCLE", "ARC"):
+            ent.dxf.center = (ent.dxf.center.x * factor, ent.dxf.center.y * factor)
+            ent.dxf.radius = ent.dxf.radius * factor
+        elif t in ("LWPOLYLINE", "POLYLINE"):
+            points = []
+            for p in (ent.get_points() if hasattr(ent, 'get_points') else ent.points):
+                pts_list = list(p)
+                pts_list[0] *= factor
+                pts_list[1] *= factor
+                points.append(tuple(pts_list))
+            if hasattr(ent, 'set_points'):
+                ent.set_points(points)
+            else:
+                ent.points = points
+            # Constant-width polylines carry width in dxf attribs.
+            try:
+                if ent.dxf.hasattr("const_width"):
+                    ent.dxf.const_width *= factor
+            except Exception:
+                pass
+        elif t in ("SPLINE", "ELLIPSE"):
+            if hasattr(ent, "control_points") and ent.control_points:
+                ent.control_points = [(p[0]*factor, p[1]*factor, (p[2] if len(p) > 2 else 0.0)*factor) for p in ent.control_points]
+            if hasattr(ent, "fit_points") and ent.fit_points:
+                ent.fit_points = [(p[0]*factor, p[1]*factor, (p[2] if len(p) > 2 else 0.0)*factor) for p in ent.fit_points]
+            if t == "ELLIPSE":
+                try:
+                    ma = ent.dxf.major_axis
+                    ent.dxf.major_axis = (ma[0]*factor, ma[1]*factor, (ma[2] if len(ma) > 2 else 0.0)*factor)
+                    ent.dxf.center = (ent.dxf.center.x * factor, ent.dxf.center.y * factor)
+                except Exception:
+                    pass
+        elif t == "TEXT":
+            ent.dxf.insert = (ent.dxf.insert.x * factor, ent.dxf.insert.y * factor)
+            try:
+                ent.dxf.height = ent.dxf.height * factor
+            except Exception:
+                pass
+
+
+def dxf_units_info(doc):
+    """Reads a doc's declared `$INSUNITS` WITHOUT mutating it. Returns
+    `(code, unit_name, factor_to_mm)`. We never silently rescale on import:
+    ezdxf (and many CAD exporters) default `$INSUNITS` to 6 (metres) even for
+    files actually drawn in millimetres, so trusting it blindly would blow most
+    imports up 1000x. Instead the app surfaces this as a prompt (MAS-148)."""
+    try:
+        code = int(doc.header.get('$INSUNITS', 0))
+    except Exception:
+        code = 0
+    factor = INSUNITS_TO_MM.get(code, 1.0)
+    name = INSUNITS_NAME.get(code, f"code {code}")
+    return code, name, factor
+
+
 def _entity_bbox(ent) -> Optional[Tuple[float, float, float, float]]:
     """Axis-aligned bbox (minx, miny, maxx, maxy) of one entity, or None for an
     invisible/degenerate one. POINT entities are deliberately ignored — they are
@@ -1826,6 +1919,32 @@ def op_import_distribute(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Failed to distribute import: {str(e)}"}
 
 
+def op_scale_all(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Uniformly scales EVERY modelspace entity by `factor` about the origin, then
+    re-normalises to the positive quadrant. Used by the import unit-correction
+    prompt to rescale a freshly-imported drawing to its true size (MAS-148)."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    try:
+        factor = float(args.get("factor", 1.0))
+    except Exception:
+        factor = 1.0
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    try:
+        doc = ezdxf.readfile(input_path)
+        scale_doc(doc, factor)
+        translate_to_positive_quadrant(doc)
+        doc.saveas(output_path)
+        b = robust_shape_bounds(doc.modelspace())
+        bbox_mm = [b[2] - b[0], b[3] - b[1]] if b else [0.0, 0.0]
+        return {"status": "ok", "data": {"factor": factor, "bbox_mm": bbox_mm}}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to scale: {str(e)}"}
+
+
 def op_normalize_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
     output_path = args.get("output")
@@ -1833,11 +1952,21 @@ def op_normalize_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
         return {"status": "error", "message": "Output path must be specified."}
-    
+
     doc = ezdxf.readfile(input_path)
+    # Report the declared units + raw size so the app can offer a unit-correction
+    # prompt (MAS-148). We do NOT silently rescale (see dxf_units_info).
+    unit_code, unit_name, unit_factor = dxf_units_info(doc)
     translate_to_positive_quadrant(doc)
     doc.saveas(output_path)
-    return {"status": "ok"}
+    b = robust_shape_bounds(doc.modelspace())
+    bbox_mm = [b[2] - b[0], b[3] - b[1]] if b else [0.0, 0.0]
+    return {"status": "ok", "data": {
+        "unit_code": unit_code,
+        "declared_unit": unit_name,
+        "unit_factor": unit_factor,
+        "bbox_mm": bbox_mm,
+    }}
 
 def op_append_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
     primary_path = args.get("primary")
@@ -2009,6 +2138,26 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
         if "ORIGINAL" not in doc.layers:
             doc.layers.new("ORIGINAL")
         process_element(root, "ORIGINAL")
+
+        # Preserve the SVG's real-world dimensions (MAS-148). When the root
+        # carries a physical width (mm/cm/in/pt/pc) AND a viewBox, the path
+        # coordinates are in viewBox user-units, so scale everything by
+        # (physical width in mm) / (viewBox width) to land in true millimetres.
+        # Guarded to the well-defined case so unit-less SVGs are unchanged.
+        try:
+            width_attr = root.get('width')
+            vb_attr = root.get('viewBox') or root.get('{http://www.w3.org/2000/svg}viewBox')
+            if width_attr and vb_attr and re.search(r'(mm|cm|in|pt|pc)\s*$', str(width_attr).strip(), re.I):
+                vb_parts = re.split(r'[ ,]+', str(vb_attr).strip())
+                if len(vb_parts) == 4:
+                    vb_w = float(vb_parts[2])
+                    phys_w_mm = parse_svg_val(width_attr)
+                    if vb_w > 1e-6 and phys_w_mm > 1e-6:
+                        gscale = phys_w_mm / vb_w
+                        if abs(gscale - 1.0) > 1e-4:
+                            scale_doc(doc, gscale)
+        except Exception:
+            pass
 
         # Import SVGs WITH thickness: every imported stroke is a zero-width
         # centerline, so buffer each into a closed, cuttable outline of the given
@@ -5179,6 +5328,7 @@ OPERATIONS = {
     "append_dxf": op_append_dxf,
     "import_distribute": op_import_distribute,
     "normalize_dxf": op_normalize_dxf,
+    "scale_all": op_scale_all,
     "export_dxf": op_export_dxf,
     "add_dashed_creases": op_add_dashed_creases,
     "add_glue_tabs": op_add_glue_tabs,
