@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		3959E8A19BCE2EBB3435721B /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 340761E66F24C26A57C2A6F6 /* ZIPFoundation */; };
+		5A0000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 5A0000000000000000000002 /* Sparkle */; };
 		74B6C80F2FD0B0DF0025AB94 /* DxfPreviewer.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 74B6C8012FD0B0DF0025AB94 /* DxfPreviewer.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		74B7C80F2FD0B0DF0025AB94 /* PathstitchThumbnail.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 74B7C8012FD0B0DF0025AB94 /* PathstitchThumbnail.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		74FEA97D2FD2EDA10066B988 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
@@ -94,6 +95,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3959E8A19BCE2EBB3435721B /* ZIPFoundation in Frameworks */,
+				5A0000000000000000000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -171,6 +173,7 @@
 			name = Pathstitch;
 			packageProductDependencies = (
 				340761E66F24C26A57C2A6F6 /* ZIPFoundation */,
+				5A0000000000000000000002 /* Sparkle */,
 			);
 			productName = Pathstitch;
 			productReference = 74B6C7DC2FD0B0DF0025AB94 /* Pathstitch.app */;
@@ -282,6 +285,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				B95E5C74840F45C3649B2D61 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				5A0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 74B6C7DD2FD0B0DF0025AB94 /* Products */;
@@ -752,6 +756,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		5A0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
 		B95E5C74840F45C3649B2D61 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
@@ -767,6 +779,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B95E5C74840F45C3649B2D61 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		5A0000000000000000000002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -266,6 +266,27 @@ Because Pathstitch isn't Apple‑notarized, Gatekeeper warns on first launch. Do
 
 **Checking your macOS version:**  ▸ About This Mac, or `sw_vers -productVersion` (needs `14.0`+).
 
+### Automatic updates
+
+Pathstitch updates itself with [Sparkle](https://sparkle-project.org). On the second launch it asks whether
+to check for updates automatically; you can change that any time in **Pathstitch ▸ About Pathstitch** (the
+**Check for Updates…** button and the **Automatically check for updates** toggle), or via
+**Pathstitch ▸ Check for Updates…**. Your settings persist across updates.
+
+**Cutting a release (maintainer):**
+
+1. Bump `MARKETING_VERSION` *and* `CURRENT_PROJECT_VERSION` (Sparkle compares the build number) in the
+   Xcode target.
+2. `bash scripts/package_app.sh` → `dist/Pathstitch-<version>.dmg`.
+3. `bash scripts/make_appcast.sh <version>` → signs the dmg (EdDSA key in your login Keychain) and writes
+   `dist/appcast.xml`.
+4. `gh release create v<version> dist/Pathstitch-<version>.dmg dist/appcast.xml --title "…" --notes "…"`.
+
+The app's feed (`SUFeedURL`) points at `releases/latest/download/appcast.xml`, so uploading the appcast as a
+release asset is all it takes for existing installs to see the update. The EdDSA **public** key lives in
+`Info.plist` (`SUPublicEDKey`); keep the **private** key (in your Keychain) backed up — losing it means no
+future signed updates.
+
 ---
 
 ## Project layout
@@ -279,6 +300,7 @@ pathstitch/
 │   └── PathstitchThumbnail/        # Finder thumbnail extension
 ├── pathstitch_core/                # Python geometry engine (worker.py, dxf_ops.py, *unfold*.py)
 ├── scripts/package_app.sh          # build a self-contained .dmg
+├── scripts/make_appcast.sh         # sign the dmg + emit the Sparkle appcast.xml
 └── README.md
 ```
 

@@ -5,6 +5,8 @@ import SwiftUI
 /// AppKit about panel so we can surface the support link and — once Sparkle is
 /// wired in — the version / check-for-updates controls in one place.
 struct AboutView: View {
+    @ObservedObject private var updater = UpdaterManager.shared
+
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
@@ -33,6 +35,28 @@ struct AboutView: View {
                 .font(.system(size: 11))
                 .multilineTextAlignment(.center)
                 .foregroundColor(.text_secondary)
+
+            Divider().padding(.horizontal, 40)
+
+            // Software update (MAS-142). The button and toggle both drive the
+            // same Sparkle updater, so they always stay in sync.
+            VStack(spacing: 8) {
+                Button {
+                    updater.checkForUpdates()
+                } label: {
+                    Text("Check for Updates…")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .disabled(!updater.canCheckForUpdates)
+
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { updater.automaticallyChecksForUpdates },
+                    set: { updater.setAutomaticallyChecks($0) }
+                ))
+                .toggleStyle(.checkbox)
+                .font(.system(size: 11))
+                .foregroundColor(.text_secondary)
+            }
 
             Divider().padding(.horizontal, 40)
 
@@ -74,7 +98,7 @@ class AboutWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.backgroundColor = .pathstitchWindowBackground
-        window.setContentSize(NSSize(width: 320, height: 360))
+        window.setContentSize(NSSize(width: 320, height: 460))
         self.init(window: window)
         window.center()
     }

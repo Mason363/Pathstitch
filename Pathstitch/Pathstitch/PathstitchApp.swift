@@ -28,6 +28,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         WindowManager.shared.applicationDidFinishLaunching(notification)
 
+        // Start Sparkle so scheduled update checks run and the second-launch
+        // "check automatically?" prompt appears (MAS-142).
+        _ = UpdaterManager.shared
+
         // Monitor system appearance to update dock icon dynamically
         appearanceCancellable = NSApp.publisher(for: \.effectiveAppearance)
             .sink { [weak self] _ in
@@ -158,6 +162,9 @@ struct PathstitchApp: App {
             }
 
             CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    UpdaterManager.shared.checkForUpdates()
+                }
                 Button("Start Screen") {
                     WindowManager.shared.showWelcomeWindow()
                 }

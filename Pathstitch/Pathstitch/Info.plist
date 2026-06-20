@@ -18,6 +18,15 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- Sparkle auto-update (MAS-142). Appcast is published as a release asset on
+	     the GitHub repo; SUPublicEDKey is the EdDSA public key whose private half
+	     lives in the developer's login Keychain and signs each release. We leave
+	     SUEnableAutomaticChecks unset so Sparkle asks the user on the second
+	     launch (with a "don't check automatically" option). -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/Mason363/pathstitch/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>v7hdSqV92lab8k/rrg9bWJr7L1vdqLNZ28b3b3hn+5g=</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIconName</key>
