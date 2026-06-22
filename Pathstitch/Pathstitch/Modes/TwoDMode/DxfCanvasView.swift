@@ -2093,6 +2093,21 @@ struct DxfCanvasView: View {
                         }
                     }
 
+                    // Stroke ↔ Fill conversion (MAS-146).
+                    if state.selectionHasFillableStroke || state.selectionHasFilledRegion {
+                        contextMenuDivider()
+                        if state.selectionHasFillableStroke {
+                            contextMenuButton("Convert to Fill", systemImage: "square.fill") {
+                                state.convertSelectionToFill(); contextMenuScreenPos = nil
+                            }
+                        }
+                        if state.selectionHasFilledRegion {
+                            contextMenuButton("Convert to Stroke", systemImage: "square") {
+                                state.convertSelectionToStroke(); contextMenuScreenPos = nil
+                            }
+                        }
+                    }
+
                     if hasMirrorLink {
                         contextMenuDivider()
                         contextMenuButton("Break Mirror Link", systemImage: "link.badge.plus") {
@@ -4477,6 +4492,21 @@ struct DxfCanvasView: View {
                 }
                 if ent.closed == true {
                     path.closeSubpath()
+                }
+                // Filled region (MAS-146): paint a translucent interior in the
+                // layer colour beneath the outline, even-odd so holes show through.
+                if ent.filled == true {
+                    var fillPath = SwiftUI.Path()
+                    let loops = ent.fillLoops ?? [vertices]
+                    for loop in loops where loop.count >= 3 {
+                        let f0 = toScreen(dx: loop[0][0], dy: loop[0][1], size: size, bounds: modelBounds)
+                        fillPath.move(to: f0)
+                        for i in 1..<loop.count {
+                            fillPath.addLine(to: toScreen(dx: loop[i][0], dy: loop[i][1], size: size, bounds: modelBounds))
+                        }
+                        fillPath.closeSubpath()
+                    }
+                    context.fill(fillPath, with: .color(baseColor.opacity(0.28)), style: FillStyle(eoFill: true))
                 }
                 context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
             }

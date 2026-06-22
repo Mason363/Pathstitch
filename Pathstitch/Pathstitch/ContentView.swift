@@ -2694,6 +2694,36 @@ extension ContentView {
                         .font(PlasticityFont.label)
                         .foregroundColor(Color.text_primary)
                         .toggleStyle(.checkbox)
+
+                    // SVG import thickness (MAS-146 quick win) — previously had no
+                    // control though the value was already sent to the importer.
+                    HStack {
+                        Text("Import Thickness (mm)")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Spacer()
+                        TextField("Thickness", value: $state.svgImportThickness, format: .number)
+                            .textFieldStyle(PlainTextFieldStyle())
+                            .padding(4)
+                            .frame(width: 70)
+                            .background(Color.bg_input)
+                            .cornerRadius(4)
+                            .foregroundColor(Color.text_primary)
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                    }
+
+                    // SVG Fill Mode (MAS-146): preserve filled regions as HATCH.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("SVG Fill Mode")
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_secondary)
+                        Picker("", selection: $state.svgFillMode) {
+                            Text("Strokes only").tag("strokes")
+                            Text("Preserve fills").tag("preserve")
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
+                        .help("Strokes only converts every shape to an outline. Preserve fills imports filled SVG shapes as filled regions.")
+                    }
                 }
             }
             .padding(8)

@@ -360,7 +360,7 @@ def op_list_entities(args: Dict[str, Any]) -> Dict[str, Any]:
     entities = []
 
     for ent in msp:
-        if ent.dxftype() not in ("LINE", "ARC", "CIRCLE", "LWPOLYLINE", "SPLINE", "ELLIPSE", "TEXT"):
+        if ent.dxftype() not in ("LINE", "ARC", "CIRCLE", "LWPOLYLINE", "SPLINE", "ELLIPSE", "TEXT", "HATCH"):
             continue
             
         data = {
@@ -408,6 +408,25 @@ def op_list_entities(args: Dict[str, Any]) -> Dict[str, Any]:
                         data["underline"] = xd["underline"]
                     if "char_spacing" in xd:
                         data["charSpacing"] = xd["char_spacing"]
+            elif ent.dxftype() == "HATCH":
+                # Filled region (MAS-146). Surface the largest boundary loop as
+                # the entity's outline (for selection/bounds), all loops for
+                # hole-aware fill rendering, and a `filled` flag so the canvas
+                # paints a solid interior.
+                loops = _hatch_boundary_loops(ent)
+                if not loops:
+                    continue
+                def _loop_area(L):
+                    a = 0.0
+                    for i in range(len(L)):
+                        x1, y1 = L[i]; x2, y2 = L[(i + 1) % len(L)]
+                        a += x1 * y2 - x2 * y1
+                    return abs(a) * 0.5
+                outer = max(loops, key=_loop_area)
+                data["vertices"] = [[x, y] for (x, y) in outer]
+                data["closed"] = True
+                data["filled"] = True
+                data["fillLoops"] = [[[x, y] for (x, y) in L] for L in loops]
             entities.append(data)
         except Exception as e:
             # Skip invalid entities
@@ -2041,6 +2060,10 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
     output_path = args.get("output")
     consolidate = args.get("consolidate", False)
+    # SVG fill mode (MAS-146): "strokes" (default, legacy behaviour — everything
+    # becomes a stroke) or "preserve" (a shape whose resolved SVG `fill` is a real
+    # colour becomes a solid HATCH; stroke-only shapes stay LWPOLYLINEs).
+    svg_fill_mode = str(args.get("svg_fill_mode", "strokes")).lower()
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
@@ -2050,6 +2073,22 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
         root = tree.getroot()
         doc = ezdxf.new(dxfversion="R2010")
         msp = doc.modelspace()
+
+        def element_is_filled(attrib) -> bool:
+            """True when this SVG element should import as a fill — only in
+            "preserve" mode, and only when `fill` is explicitly a real colour
+            (attribute or inline style). Absent fill is treated as stroke so the
+            common CAD/outline SVG isn't silently flooded with fills."""
+            if svg_fill_mode != "preserve":
+                return False
+            val = attrib.get('fill')
+            if val is None:
+                style = attrib.get('style', '') or ''
+                m = re.search(r'fill\s*:\s*([^;]+)', style)
+                val = m.group(1).strip() if m else None
+            if val is None:
+                return False
+            return val.strip().lower() not in ('none', 'transparent', '')
         def get_local_tag(element):
             tag = element.tag
             if '}' in tag:
@@ -2075,9 +2114,23 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
                     process_element(child, layer_name)
                 return
             attrib = elem.attrib
-            def add_poly(coords: List[Tuple[float, float]], is_closed: bool, layer: str):
+            elem_filled = element_is_filled(attrib)
+            def add_poly(coords: List[Tuple[float, float]], is_closed: bool, layer: str, filled: bool = False):
                 if len(coords) < 2:
                     return
+                # A filled closed shape becomes a solid HATCH (MAS-146); a real
+                # fill is never collapsed to a centerline ribbon.
+                if filled and is_closed and len(coords) >= 3:
+                    try:
+                        poly = Polygon(coords)
+                        if not poly.is_valid:
+                            poly = poly.buffer(0)
+                        for p in (poly.geoms if isinstance(poly, MultiPolygon) else [poly]):
+                            if not p.is_empty:
+                                _add_hatch_from_polygon(msp, p, layer, 7)
+                        return
+                    except Exception:
+                        pass  # fall through to a stroke if the fill can't be built
                 if consolidate and is_closed:
                     coords = collapse_ribbon_to_centerline(coords)
                     is_closed = False
@@ -2088,12 +2141,17 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
                 w = parse_svg_val(attrib.get('width', 0))
                 h = parse_svg_val(attrib.get('height', 0))
                 pts = [(x, -y), (x + w, -y), (x + w, -(y + h)), (x, -(y + h))]
-                add_poly(pts, True, current_layer)
+                add_poly(pts, True, current_layer, elem_filled)
             elif tag == 'circle':
                 cx = parse_svg_val(attrib.get('cx', 0))
                 cy = parse_svg_val(attrib.get('cy', 0))
                 r = parse_svg_val(attrib.get('r', 0))
-                msp.add_circle(center=(cx, -cy), radius=r, dxfattribs={"layer": current_layer})
+                if elem_filled and r > 0:
+                    pts = [(cx + r * math.cos(t), -(cy + r * math.sin(t)))
+                           for t in [i * 2 * math.pi / 48 for i in range(48)]]
+                    add_poly(pts, True, current_layer, True)
+                else:
+                    msp.add_circle(center=(cx, -cy), radius=r, dxfattribs={"layer": current_layer})
             elif tag == 'ellipse':
                 cx = parse_svg_val(attrib.get('cx', 0))
                 cy = parse_svg_val(attrib.get('cy', 0))
@@ -2103,7 +2161,7 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
                 for i in range(36):
                     theta = i * (2 * math.pi / 36)
                     pts.append((cx + rx * math.cos(theta), -(cy + ry * math.sin(theta))))
-                add_poly(pts, True, current_layer)
+                add_poly(pts, True, current_layer, elem_filled)
             elif tag == 'line':
                 x1 = parse_svg_val(attrib.get('x1', 0))
                 y1 = parse_svg_val(attrib.get('y1', 0))
@@ -2125,7 +2183,7 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
                 for i in range(0, len(pts_vals) - 1, 2):
                     if pts_vals[i] and pts_vals[i+1]:
                         pts.append((parse_svg_val(pts_vals[i]), -parse_svg_val(pts_vals[i+1])))
-                add_poly(pts, True, current_layer)
+                add_poly(pts, True, current_layer, elem_filled)
             elif tag == 'path':
                 d_str = attrib.get('d', '')
                 paths_data = parse_svg_d(d_str)
@@ -2135,7 +2193,7 @@ def op_import_svg(args: Dict[str, Any]) -> Dict[str, Any]:
                         is_cl = math.hypot(inverted_path[0][0] - inverted_path[-1][0], inverted_path[0][1] - inverted_path[-1][1]) < 1e-4
                         if is_cl:
                             inverted_path = inverted_path[:-1]
-                        add_poly(inverted_path, is_cl, current_layer)
+                        add_poly(inverted_path, is_cl, current_layer, elem_filled and is_cl)
         if "ORIGINAL" not in doc.layers:
             doc.layers.new("ORIGINAL")
         process_element(root, "ORIGINAL")
@@ -5592,6 +5650,143 @@ def op_explode_compound(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Explode failed: {str(e)}"}
 
 
+# --- Fill primitive: HATCH support (MAS-146) ---------------------------------
+
+def _hatch_boundary_loops(hatch) -> List[List[Tuple[float, float]]]:
+    """Every boundary loop of a HATCH as a list of (x, y) vertices (exterior(s)
+    plus holes). Uses ezdxf's path conversion so both polyline and edge boundary
+    paths (arcs, splines) flatten consistently."""
+    loops: List[List[Tuple[float, float]]] = []
+    try:
+        from ezdxf.path import from_hatch
+        for path_obj in from_hatch(hatch):
+            pts = [(p.x, p.y) for p in path_obj.flattening(0.1)]
+            if len(pts) >= 3:
+                loops.append(pts)
+    except Exception:
+        for p in getattr(hatch, "paths", []):
+            verts = getattr(p, "vertices", None)
+            if verts:
+                pts = [(v[0], v[1]) for v in verts]
+                if len(pts) >= 3:
+                    loops.append(pts)
+    return loops
+
+
+def _add_hatch_from_polygon(msp, poly: "Polygon", layer: str, color: int):
+    """Create a solid-filled HATCH for a shapely Polygon (exterior + any holes)."""
+    attribs = {"layer": layer}
+    if color and color not in (0, 256):
+        attribs["color"] = color
+    hatch = msp.add_hatch(dxfattribs=attribs)
+    ext = [(c[0], c[1]) for c in poly.exterior.coords]
+    hatch.paths.add_polyline_path(ext, is_closed=True, flags=1)  # 1 = external
+    for interior in poly.interiors:
+        ic = [(c[0], c[1]) for c in interior.coords]
+        hatch.paths.add_polyline_path(ic, is_closed=True, flags=0)
+    hatch.set_solid_fill(color=color if (color and color not in (0, 256)) else 7)
+    return hatch
+
+
+def op_convert_to_fill(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Stroke → Fill (MAS-146 Phase 2). Each selected watertight closed path
+    becomes a solid HATCH. Self-intersections collapse under the non-zero winding
+    rule (shapely buffer(0)) — an inward jut that encloses no area is swallowed,
+    not turned into a hole. Open paths are skipped with a clear message."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", []) or []
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handles:
+        return {"status": "error", "message": "Select a closed path to fill."}
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        new_handles: List[str] = []
+        converted = 0
+        skipped_open = 0
+        for h in handles:
+            try:
+                ent = doc.entitydb[h]
+            except KeyError:
+                continue
+            if ent.dxftype() == "HATCH":
+                continue  # already a fill
+            poly = _entity_to_region(ent)
+            if poly is None:
+                skipped_open += 1
+                continue
+            layer = ent.dxf.layer
+            color = ent.dxf.color
+            for p in (poly.geoms if isinstance(poly, MultiPolygon) else [poly]):
+                if p.is_empty:
+                    continue
+                hatch = _add_hatch_from_polygon(msp, p, layer, color)
+                new_handles.append(hatch.dxf.handle)
+            try:
+                msp.delete_entity(ent)
+            except Exception:
+                pass
+            converted += 1
+        if converted == 0:
+            msg = "Convert to Fill needs a closed path — the selection is open." if skipped_open else "Nothing to fill."
+            return {"status": "error", "message": msg}
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_handles": new_handles, "converted": converted}}
+    except Exception as e:
+        return {"status": "error", "message": f"Convert to fill failed: {str(e)}"}
+
+
+def op_convert_to_stroke(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill → Stroke (MAS-146 Phase 3). Each selected HATCH becomes its boundary
+    loops as closed LWPOLYLINEs — the outer boundary plus one loop per hole."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", []) or []
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handles:
+        return {"status": "error", "message": "Select a filled region to outline."}
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        new_handles: List[str] = []
+        converted = 0
+        for h in handles:
+            try:
+                ent = doc.entitydb[h]
+            except KeyError:
+                continue
+            if ent.dxftype() != "HATCH":
+                continue
+            layer = ent.dxf.layer
+            color = ent.dxf.color
+            for loop in _hatch_boundary_loops(ent):
+                pts = loop[:-1] if (len(loop) > 3 and abs(loop[0][0] - loop[-1][0]) < 1e-6 and abs(loop[0][1] - loop[-1][1]) < 1e-6) else loop
+                if len(pts) >= 3:
+                    attribs = {"layer": layer, "closed": True}
+                    if color and color not in (0, 256):
+                        attribs["color"] = color
+                    ne = msp.add_lwpolyline(pts, dxfattribs=attribs)
+                    new_handles.append(ne.dxf.handle)
+            try:
+                msp.delete_entity(ent)
+            except Exception:
+                pass
+            converted += 1
+        if converted == 0:
+            return {"status": "error", "message": "Select a filled region (HATCH) to convert to a stroke."}
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_handles": new_handles, "converted": converted}}
+    except Exception as e:
+        return {"status": "error", "message": f"Convert to stroke failed: {str(e)}"}
+
+
 OPERATIONS = {
     "list_entities": op_list_entities,
     "offset_lines": op_offset_lines,
@@ -5639,6 +5834,8 @@ OPERATIONS = {
     "trim_segment": op_trim_segment,
     "boolean": op_boolean,
     "explode_compound": op_explode_compound,
+    "convert_to_fill": op_convert_to_fill,
+    "convert_to_stroke": op_convert_to_stroke,
 }
 
 

@@ -272,6 +272,11 @@ struct DXFEntity: Identifiable, Codable, Equatable, Hashable {
     var italic: Bool? = nil
     var underline: Bool? = nil
     var charSpacing: Double? = nil  // extra per-character tracking, in mm
+    // Fill primitive (MAS-146). A HATCH surfaces with `filled == true`; `vertices`
+    // holds its outer boundary, `fillLoops` every boundary loop (outer + holes)
+    // for hole-aware fill rendering. Absent on plain strokes (decodes to nil).
+    var filled: Bool? = nil
+    var fillLoops: [[[Double]]]? = nil
 
     var geometryDetails: String {
         switch type.uppercased() {
@@ -948,6 +953,9 @@ class AppState {
     var consolidateSvgStrokes: Bool = true
     // SVGs import as cuttable outlines of this width (mm). 0 = raw centerlines.
     var svgImportThickness: Double = 3.0
+    // SVG fill handling on import (MAS-146): "strokes" (everything → outline) or
+    // "preserve" (shapes with a real SVG fill → filled HATCH region).
+    var svgFillMode: String = "strokes"
     // "Add Thickness" tool — width (mm) applied to selected zero-width lines.
     var addThicknessWidth: Double = 3.0
     var cleanupTolerance: Double = 0.1
@@ -1344,6 +1352,23 @@ class AppState {
             selectedHandles.contains($0.handle) &&
             ["LWPOLYLINE", "POLYLINE"].contains($0.type.uppercased()) &&
             $0.closed == true
+        }
+    }
+
+    // MARK: - Stroke ↔ Fill (MAS-146)
+
+    /// A closed stroke that can be turned into a filled region (not already filled).
+    var selectionHasFillableStroke: Bool {
+        entities.contains {
+            selectedHandles.contains($0.handle) && $0.filled != true && isWatertightClosed($0)
+        }
+    }
+
+    /// A filled region (HATCH) that can be turned back into a stroke outline.
+    var selectionHasFilledRegion: Bool {
+        entities.contains {
+            selectedHandles.contains($0.handle) &&
+            ($0.filled == true || $0.type.uppercased() == "HATCH")
         }
     }
 
@@ -2644,7 +2669,8 @@ class AppState {
                                 "input": tempSVGURL.path,
                                 "output": targetURL.path,
                                 "consolidate": consolidateSvgStrokes,
-                                "thickness": svgImportThickness
+                                "thickness": svgImportThickness,
+                                "svg_fill_mode": svgFillMode
                             ]
                         )
                         await MainActor.run {
@@ -3027,7 +3053,7 @@ class AppState {
             _ = try await PythonBridge.shared.run(
                 module: "dxf_ops",
                 op: "import_svg",
-                args: ["input": tmpSvg.path, "output": outURL.path, "consolidate": consolidateSvgStrokes, "thickness": svgImportThickness]
+                args: ["input": tmpSvg.path, "output": outURL.path, "consolidate": consolidateSvgStrokes, "thickness": svgImportThickness, "svg_fill_mode": svgFillMode]
             )
             try? FileManager.default.removeItem(at: tmpSvg)
             return outURL
@@ -6697,6 +6723,58 @@ class AppState {
                     self.reloadDXF()
                     self.selectedHandles = Set(newHandles)
                     self.logAction("Combine", details: "\(operation.capitalized) of \(handlesSnapshot.count) paths")
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isProcessing = false
+                }
+            }
+        }
+    }
+
+    /// Stroke → Fill (MAS-146): convert the selected closed paths to filled
+    /// regions (HATCH). Open paths are skipped by the backend with a message.
+    func convertSelectionToFill() {
+        runFillConversion(op: "convert_to_fill",
+                          eligible: { self.selectedHandles.contains($0.handle) && $0.filled != true && self.isWatertightClosed($0) },
+                          failMessage: "Select a closed path to fill.",
+                          logLabel: "Convert to Fill")
+    }
+
+    /// Fill → Stroke (MAS-146): convert the selected filled regions back to
+    /// closed stroke outlines (outer boundary plus one loop per hole).
+    func convertSelectionToStroke() {
+        runFillConversion(op: "convert_to_stroke",
+                          eligible: { self.selectedHandles.contains($0.handle) && ($0.filled == true || $0.type.uppercased() == "HATCH") },
+                          failMessage: "Select a filled region to outline.",
+                          logLabel: "Convert to Stroke")
+    }
+
+    private func runFillConversion(op: String, eligible: (DXFEntity) -> Bool, failMessage: String, logLabel: String) {
+        guard let url = currentFilePath else { return }
+        let handles = entities.filter(eligible).map { $0.handle }
+        guard !handles.isEmpty else { errorMessage = failMessage; return }
+        saveToHistory()
+        isProcessing = true
+        Task {
+            do {
+                let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+                let res = try await PythonBridge.shared.run(
+                    module: "dxf_ops", op: op,
+                    args: ["input": url.path, "output": activeDxfURL.path, "handles": handles]
+                )
+                await MainActor.run {
+                    if let status = res["status"] as? String, status != "ok" {
+                        self.errorMessage = (res["message"] as? String) ?? "\(logLabel) failed."
+                        self.isProcessing = false
+                        return
+                    }
+                    let newHandles = (res["data"] as? [String: Any])?["new_handles"] as? [String] ?? []
+                    self.currentFilePath = activeDxfURL
+                    self.reloadDXF()
+                    self.selectedHandles = Set(newHandles)
+                    self.logAction(logLabel, details: "\(logLabel) on \(handles.count) shape\(handles.count == 1 ? "" : "s")")
                 }
             } catch {
                 await MainActor.run {
