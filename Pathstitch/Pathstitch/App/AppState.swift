@@ -923,7 +923,11 @@ class AppState {
     var holeDistribution: String = "spacing"
     var holeCount: Int = 12
     var holePattern: String = "single" // "single" or "saddle"
-    var holeCornerBehavior: String = "skip" // "skip" or "wrap"
+    // Must match one of the Corner Behavior picker tags ("keep"/"step"); the old
+    // "skip" default matched neither, so the segmented control rendered with no
+    // selection (MAS-152). "keep" — preserve spacing through corners — is the
+    // least-surprising default.
+    var holeCornerBehavior: String = "keep"
     var holeSide: String = "left"
     var holeRowSpacing: Double = 3.0
     var holeEnableVariableSpacing: Bool = true
@@ -5991,7 +5995,11 @@ class AppState {
             if let hDistr = validContainer.holeDistribution { self.holeDistribution = hDistr }
             if let hCnt = validContainer.holeCount { self.holeCount = hCnt }
             if let hPat = validContainer.holePattern { self.holePattern = hPat }
-            if let hCorn = validContainer.holeCornerBehavior { self.holeCornerBehavior = hCorn }
+            // Coerce legacy/unknown values (e.g. the old "skip") to a valid picker
+            // tag so the segmented control always shows a selection (MAS-152).
+            if let hCorn = validContainer.holeCornerBehavior {
+                self.holeCornerBehavior = ["keep", "step"].contains(hCorn) ? hCorn : "keep"
+            }
             if let hSide = validContainer.holeSide { self.holeSide = hSide }
             if let hRow = validContainer.holeRowSpacing { self.holeRowSpacing = hRow }
             if let gtHeight = validContainer.glueTabHeight { self.glueTabHeight = gtHeight }

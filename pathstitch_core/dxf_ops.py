@@ -19,6 +19,7 @@ from ezdxf.math import Matrix44
 from ezdxf.path import make_path, Path
 from shapely.geometry import LineString, LinearRing, MultiLineString, Polygon, MultiPolygon, Point as ShapelyPoint
 from shapely.ops import linemerge, unary_union, polygonize
+from shapely.prepared import prep
 
 # --- Text styling persistence (MAS-134 / MAS-135) -------------------------
 # DXF TEXT entities only natively carry a value, height, rotation and a style
@@ -2281,7 +2282,12 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     for ent in targets:
         try:
             path = make_path(ent)
-            vertices = [(p.x, p.y) for p in path.flattening(distance=0.01)]
+            # 0.05 mm chord error is well below stitch resolution; the previous
+            # 0.01 mm produced tens of thousands of near-collinear vertices for
+            # imported curves, and every one of them made the per-step
+            # interpolate/distance/project calls below O(N) slower — the root of
+            # the multi-minute hang and worker timeout on dense curves (MAS-152).
+            vertices = [(p.x, p.y) for p in path.flattening(distance=0.05)]
             if len(vertices) < 2:
                 continue
             is_cl = ent.dxftype() == "CIRCLE" or getattr(ent, "closed", False) or getattr(ent, "is_closed", False)
@@ -2301,6 +2307,39 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     elif isinstance(merged, LineString):
         paths.append(merged)
 
+    # Drop redundant near-collinear vertices before the hot loop. Arc length is
+    # preserved within 0.03 mm, so hole placement is unchanged, but interpolate /
+    # project / distance on the path become far cheaper for dense imported curves.
+    simplified_paths: List[LineString] = []
+    for p in paths:
+        try:
+            sp = p.simplify(0.03, preserve_topology=False)
+            simplified_paths.append(sp if (sp is not None and not sp.is_empty and len(sp.coords) >= 2) else p)
+        except Exception:
+            simplified_paths.append(p)
+    paths = simplified_paths
+
+    # Hard cap on samples per contour so a pathologically large contour can never
+    # wedge the worker (the 60 s bridge timeout would otherwise fire and surface
+    # as "Python worker was restarted"). For any realistic contour this leaves the
+    # 0.1 mm sampling untouched; only multi-metre contours stretch the pitch.
+    MAX_STEPS = 12000
+
+    # Prepared polygons for the obstacle ("other") rings, built once. The old code
+    # reconstructed Polygon(og) inside the per-candidate collision check — an
+    # O(candidates × rings) cost that dominated on busy drawings.
+    og_prepared: Dict[int, Any] = {}
+    for og in other_geoms:
+        if isinstance(og, LinearRing):
+            try:
+                poly = Polygon(og)
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+                if not poly.is_empty:
+                    og_prepared[id(og)] = prep(poly)
+            except Exception:
+                pass
+
     hole_centers: List[Tuple[float, float]] = []
     hole_radius = hole_diameter / 2.0
 
@@ -2317,12 +2356,11 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
             if og.distance(p_pt) < radius:
                 return True
             if isinstance(og, LinearRing):
-                from shapely.geometry import Polygon
                 try:
                     if og_contains_path.get(id(og), False):
                         continue
-                    poly = Polygon(og)
-                    if poly.contains(p_pt):
+                    pprep = og_prepared.get(id(og))
+                    if pprep is not None and pprep.contains(p_pt):
                         return True
                 except Exception:
                     pass
@@ -2361,12 +2399,23 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
 
         is_closed = path.is_closed or math.hypot(path.coords[0][0] - path.coords[-1][0], path.coords[0][1] - path.coords[-1][1]) < 0.05
         polygon = None
+        prepared_polygon = None
         if is_closed:
-            from shapely.geometry import Polygon
             try:
                 polygon = Polygon(path)
+                # A self-touching imported curve yields an invalid polygon, whose
+                # `.contains` is unreliable — that is what scattered holes onto the
+                # wrong side / "all over the place" (MAS-152). buffer(0) repairs it
+                # into a valid (possibly multi-part) region.
+                if not polygon.is_valid:
+                    polygon = polygon.buffer(0)
+                if polygon.is_empty:
+                    polygon = None
+                else:
+                    prepared_polygon = prep(polygon)
             except Exception:
-                pass
+                polygon = None
+                prepared_polygon = None
         offsets = []
         if pattern == "saddle":
             offsets.append((offset_distance - row_spacing / 2.0, 0.0))
@@ -2378,7 +2427,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         L = path.length
         if L < 0.1:
             continue
-        steps = int(math.ceil(L / step_size))
+        steps = min(int(math.ceil(L / step_size)), MAX_STEPS)
         
         for dist, shift in offsets:
             contour_internal_candidates = []
@@ -2409,7 +2458,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                                 p2 = (prev_pt[0] - interp_normal[0] * dist, prev_pt[1] - interp_normal[1] * dist)
                                 for p in [p1, p2]:
                                     p_pt = ShapelyPoint(p)
-                                    is_internal = polygon.contains(p_pt) if (is_closed and polygon) else (p == p1)
+                                    is_internal = prepared_polygon.contains(p_pt) if (is_closed and prepared_polygon) else (p == p1)
                                     parent_dist = path.distance(p_pt)
                                     
                                     # Line proximity filter check for self-overlap
@@ -2441,7 +2490,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 p2 = (pt[0] - normal[0] * dist, pt[1] - normal[1] * dist)
                 for p in [p1, p2]:
                     p_pt = ShapelyPoint(p)
-                    is_internal = polygon.contains(p_pt) if (is_closed and polygon) else (p == p1)
+                    is_internal = prepared_polygon.contains(p_pt) if (is_closed and prepared_polygon) else (p == p1)
                     parent_dist = path.distance(p_pt)
                     
                     # Line proximity filter check for self-overlap
