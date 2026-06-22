@@ -2,6 +2,40 @@ import Foundation
 import CoreGraphics
 import ZIPFoundation
 
+// MARK: - Per-format Finder preview settings (MAS-155)
+
+/// Whether Finder previews/thumbnails are enabled for each supported format.
+/// The flags live in an app-group `UserDefaults` suite so the main app's
+/// Settings screen and the sandboxed QuickLook extensions share one source of
+/// truth. Every flag defaults to **on**: an unset value, or an unreachable app
+/// group, must never silently lose a preview — so the worst case is the current
+/// (always-on) behaviour, never a regression. When a flag is off the providers
+/// bail and Finder falls back to its generic preview/icon, "getting out of the
+/// way" for that format.
+public enum QuickLookPreviewSettings {
+    /// Must match the App Groups capability on the app + both appex targets.
+    public static let appGroup = "group.com.chen.Pathstitch"
+
+    /// Settings key for a file extension, or nil for unsupported types.
+    public static func key(forExtension ext: String) -> String? {
+        switch ext.lowercased() {
+        case "dxf":          return "quicklook.preview.enabled.dxf"
+        case "step", "stp":  return "quicklook.preview.enabled.step"
+        case "stch":         return "quicklook.preview.enabled.stch"
+        default:             return nil
+        }
+    }
+
+    /// True when Finder previews should be produced for this file's extension.
+    public static func isEnabled(forExtension ext: String) -> Bool {
+        guard let key = key(forExtension: ext),
+              let defaults = UserDefaults(suiteName: appGroup) else { return true }
+        // Unset → on by default.
+        if defaults.object(forKey: key) == nil { return true }
+        return defaults.bool(forKey: key)
+    }
+}
+
 // MARK: - Parsed geometry
 
 public enum PreviewEntity {
@@ -160,25 +194,29 @@ public struct DXFParser {
     public static func parse(content: String) -> [PreviewEntity] {
         var entities: [PreviewEntity] = []
 
+        // Keep EVERY physical line, including empty value lines. DXF group codes
+        // pair strictly (code line, value line); dropping a blank value — e.g. an
+        // empty XDATA string (code 1000 "") which this app emits — used to shift
+        // every following pair by one and corrupt the rest of the file, silently
+        // omitting geometry from the preview (MAS-155).
         var lines: [Substring] = []
         content.enumerateLines { line, _ in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                lines.append(Substring(trimmed))
-            }
+            lines.append(Substring(line.trimmingCharacters(in: .whitespacesAndNewlines)))
         }
 
         var pairs: [(code: Int, value: Substring)] = []
         pairs.reserveCapacity(lines.count / 2)
 
+        // Pair (code, value), self-resyncing: a code line must parse as an Int, so
+        // a stray/garbage line is skipped rather than desyncing the whole stream.
         var i = 0
-        while i < lines.count - 1 {
-            let line1 = lines[i]
-            let line2 = lines[i+1]
-            if let code = Int(line1) {
-                pairs.append((code: code, value: line2))
+        while i + 1 < lines.count {
+            if let code = Int(lines[i]) {
+                pairs.append((code: code, value: lines[i + 1]))
+                i += 2
+            } else {
+                i += 1
             }
-            i += 2
         }
 
         var index = 0

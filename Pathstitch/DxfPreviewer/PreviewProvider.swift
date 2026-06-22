@@ -25,9 +25,17 @@ class PreviewViewController: NSViewController, QLPreviewingController {
     }
 
     func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
-        let isAccessing = url.startAccessingSecurityScopedResource()
-
         let ext = url.pathExtension.lowercased()
+
+        // Finder previews can be turned off per-format in Settings (MAS-155).
+        // When off, decline so QuickLook falls back to its generic preview.
+        guard QuickLookPreviewSettings.isEnabled(forExtension: ext) else {
+            handler(NSError(domain: "com.chen.Pathstitch.QuickLook", code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "Preview disabled for .\(ext) in Pathstitch settings."]))
+            return
+        }
+
+        let isAccessing = url.startAccessingSecurityScopedResource()
         if ext == "step" || ext == "stp" {
             let points = parseStepPointCloud(url: url)
             if isAccessing { url.stopAccessingSecurityScopedResource() }

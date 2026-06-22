@@ -82,10 +82,12 @@ private func parseStepCartesianPoints(_ text: String) -> [(x: Double, y: Double,
         let parts = nums.split(separator: ",").map {
             Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.0
         }
+        // Only keep true 3D model points. 2-coordinate CARTESIAN_POINTs are
+        // surface parameter-space (pcurve) points living in an unrelated
+        // coordinate range; including them as (x, y, 0) dumped a sheet of noise at
+        // z = 0 over the part and made the STEP preview unreadable (MAS-155).
         if parts.count >= 3 {
             result.append((parts[0], parts[1], parts[2]))
-        } else if parts.count == 2 {
-            result.append((parts[0], parts[1], 0.0))
         }
     }
     return result

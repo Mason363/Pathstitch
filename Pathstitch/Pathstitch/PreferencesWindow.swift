@@ -90,6 +90,13 @@ private struct GeneralPrefsTab: View {
     @AppStorage(SettingsKeys.theme) private var themeRaw = AppTheme.dark.rawValue
     @AppStorage(SettingsKeys.icon) private var iconChoice = "auto"
 
+    // Per-format Finder preview toggles (MAS-155). Stored in the shared app-group
+    // suite so the QuickLook extensions read the same flags; default on.
+    private static let qlStore = UserDefaults(suiteName: "group.com.chen.Pathstitch")
+    @AppStorage("quicklook.preview.enabled.dxf",  store: qlStore) private var previewDXF = true
+    @AppStorage("quicklook.preview.enabled.step", store: qlStore) private var previewSTEP = true
+    @AppStorage("quicklook.preview.enabled.stch", store: qlStore) private var previewSTCH = true
+
     var body: some View {
         Form {
             Section {
@@ -115,6 +122,15 @@ private struct GeneralPrefsTab: View {
                     get: { NSApp.activeAppState?.consolidateSvgStrokes ?? false },
                     set: { NSApp.activeAppState?.consolidateSvgStrokes = $0 }
                 ))
+            }
+
+            Section("Finder Previews") {
+                Toggle("DXF files (.dxf)", isOn: $previewDXF)
+                Toggle("STEP files (.step, .stp)", isOn: $previewSTEP)
+                Toggle("Pathstitch files (.stch)", isOn: $previewSTCH)
+                Text("Show Quick Look previews and thumbnails in Finder for each format. Turn one off to let Finder use its default — Pathstitch stays out of the way for that file type.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
             }
 
             Section("Toolbar") {

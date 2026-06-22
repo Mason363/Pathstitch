@@ -6,6 +6,14 @@ class ThumbnailProvider: QLThumbnailProvider {
 
     override func provideThumbnail(for request: QLFileThumbnailRequest, _ handler: @escaping (QLThumbnailReply?, Error?) -> Void) {
         let fileURL = request.fileURL
+
+        // Per-format Finder thumbnail toggle (MAS-155). When off, decline so
+        // Finder shows the generic file icon instead.
+        guard QuickLookPreviewSettings.isEnabled(forExtension: fileURL.pathExtension) else {
+            handler(nil, nil)
+            return
+        }
+
         let isAccessing = fileURL.startAccessingSecurityScopedResource()
         defer {
             if isAccessing {
