@@ -2032,16 +2032,24 @@ def op_append_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return {"status": "error", "message": f"Failed to merge DXF files: {str(e)}"}
 
+# DXF release name → ezdxf acad version code (MAS-156 export options).
+_DXF_VERSION_CODES = {
+    "R2018": "AC1032", "R2013": "AC1027", "R2010": "AC1024",
+    "R2007": "AC1021", "R2004": "AC1018", "R2000": "AC1015",
+}
+
+
 def op_export_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
     output_path = args.get("output")
     handles = args.get("handles")
-    
+    version = args.get("version")  # e.g. "R2018"; None keeps the source version.
+
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
         return {"status": "error", "message": "Output path must be specified."}
-        
+
     try:
         doc = ezdxf.readfile(input_path)
         if handles is not None:
@@ -2049,7 +2057,26 @@ def op_export_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
             for ent in list(msp):
                 if ent.dxf.handle not in handles:
                     msp.delete_entity(ent)
-        doc.saveas(output_path)
+        # Optional target DXF release. Downgrading can fail on some content, so
+        # fall back to the source version rather than erroring the whole export.
+        code = _DXF_VERSION_CODES.get(str(version).upper()) if version else None
+        if code:
+            try:
+                doc.dxfversion = code
+            except Exception:
+                pass
+        try:
+            doc.saveas(output_path)
+        except Exception:
+            # Retry at the document's original version if the requested one
+            # couldn't be written.
+            doc2 = ezdxf.readfile(input_path)
+            if handles is not None:
+                m2 = doc2.modelspace()
+                for ent in list(m2):
+                    if ent.dxf.handle not in handles:
+                        m2.delete_entity(ent)
+            doc2.saveas(output_path)
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "message": f"Failed to export DXF: {str(e)}"}
@@ -2790,6 +2817,16 @@ def op_export_svg(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path = args.get("input")
     output_path = args.get("output")
     handles = args.get("handles")
+    # Export options (MAS-156): coordinate decimal precision and stroke width.
+    precision = args.get("precision")
+    try:
+        precision = int(precision) if precision is not None else None
+    except Exception:
+        precision = None
+    stroke_width = float(args.get("stroke_width", 0.5) or 0.5)
+
+    def _r(v):
+        return round(v, precision) if precision is not None else v
 
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
@@ -2863,7 +2900,8 @@ def op_export_svg(args: Dict[str, Any]) -> Dict[str, Any]:
     svg_min_y = -maxy
 
     import svgwrite
-    dwg = svgwrite.Drawing(output_path, size=(width, height), viewBox=f"{svg_min_x} {svg_min_y} {width} {height}")
+    dwg = svgwrite.Drawing(output_path, size=(_r(width), _r(height)),
+                           viewBox=f"{_r(svg_min_x)} {_r(svg_min_y)} {_r(width)} {_r(height)}")
 
     used_ids = set()
     for layer_name, entities in layers_data.items():
@@ -2886,16 +2924,16 @@ def op_export_svg(args: Dict[str, Any]) -> Dict[str, Any]:
             counter += 1
         used_ids.add(safe_id)
 
-        g = dwg.g(id=safe_id, stroke=color_hex, fill="none", stroke_width=0.5)
+        g = dwg.g(id=safe_id, stroke=color_hex, fill="none", stroke_width=stroke_width)
 
         for ent in entities:
             if ent["type"] == "CIRCLE":
                 cx, cy = ent["center"]
                 r = ent["radius"]
-                g.add(dwg.circle(center=(cx, -cy), r=r, stroke=color_hex))
+                g.add(dwg.circle(center=(_r(cx), _r(-cy)), r=_r(r), stroke=color_hex))
             else:
                 pts = ent["vertices"]
-                svg_pts = [(p[0], -p[1]) for p in pts]
+                svg_pts = [(_r(p[0]), _r(-p[1])) for p in pts]
                 if ent["is_closed"]:
                     g.add(dwg.polygon(points=svg_pts, stroke=color_hex))
                 else:

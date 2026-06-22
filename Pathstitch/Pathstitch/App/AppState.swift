@@ -693,8 +693,40 @@ struct BodyOffsetSave: Codable, Hashable {
     let z: Double
 }
 
+/// One-off settings for a single export (MAS-156). Not persisted: built fresh
+/// with defaults for a Quick Export, or from the Export Options panel for a
+/// one-time custom export.
+struct ExportOptions {
+    var format: String = "dxf"          // dxf | svg | pdf | png
+    var selectedOnly: Bool = false
+    var measurementLines: Bool = false
+    // SVG
+    var svgPrecision: Int = 3
+    var svgStrokeWidth: Double = 0.5
+    // DXF
+    var dxfVersion: String = "R2010"
+    // PNG (rasterised from SVG)
+    var pngLongestEdge: Int = 2048
+    var pngTransparent: Bool = true
+
+    static let dxfVersions = ["R2018", "R2013", "R2010", "R2007", "R2000"]
+    static let formats = ["dxf", "svg", "pdf", "png"]
+    static func ext(_ f: String) -> String { f }
+    static func label(_ f: String) -> String {
+        switch f {
+        case "dxf": return "AutoCAD DXF (.dxf)"
+        case "svg": return "Scalable Vector Graphics (.svg)"
+        case "pdf": return "Document PDF (.pdf)"
+        case "png": return "Raster Image (.png)"
+        default: return f.uppercased()
+        }
+    }
+}
+
 @MainActor @Observable
 class AppState {
+    /// Presents the one-off Export Options panel (MAS-156).
+    var showExportOptions = false
     var activeMode: AppMode = .twoD
     var currentFilePath: URL?
     var currentStepFilePath: URL?
@@ -4471,8 +4503,10 @@ class AppState {
         }
     }
     
-    func exportFile(to url: URL, format: String, selectedOnly: Bool = false) {
+    func exportFile(to url: URL, options: ExportOptions) {
         guard let currentUrl = currentFilePath else { return }
+        let format = options.format
+        let selectedOnly = options.selectedOnly
         isProcessing = true
 
         Task {
@@ -4485,7 +4519,7 @@ class AppState {
                 // §6: optionally bake measurement/ruler lines into the export as
                 // dashed construction lines (CONSTRUCTION layer, no dimension text).
                 var exportInputPath = currentUrl.path
-                let wantConstruction = await MainActor.run { self.exportMeasurementLines }
+                let wantConstruction = options.measurementLines
                 if wantConstruction {
                     let segments: [[Double]] = await MainActor.run {
                         self.measurements.map { [Double($0.start.x), Double($0.start.y), Double($0.end.x), Double($0.end.y)] }
@@ -4515,11 +4549,15 @@ class AppState {
                         args: [
                             "input": exportInputPath,
                             "output": tempExportURL.path,
-                            "handles": handlesArg as Any
+                            "handles": handlesArg as Any,
+                            "version": options.dxfVersion
                         ]
                     )
                 } else if format == "svg" {
-                    var args: [String: Any] = ["input": exportInputPath, "output": tempExportURL.path]
+                    var args: [String: Any] = [
+                        "input": exportInputPath, "output": tempExportURL.path,
+                        "precision": options.svgPrecision, "stroke_width": options.svgStrokeWidth
+                    ]
                     if let handles = handlesArg {
                         args["handles"] = handles
                     }
@@ -4541,8 +4579,11 @@ class AppState {
                 } else if format == "png" {
                     let tempSVG = tempDir.appendingPathComponent("temp_export_png_\(UUID().uuidString).svg")
                     try? FileManager.default.removeItem(at: tempSVG)
-                    
-                    var args: [String: Any] = ["input": exportInputPath, "output": tempSVG.path]
+
+                    var args: [String: Any] = [
+                        "input": exportInputPath, "output": tempSVG.path,
+                        "precision": options.svgPrecision, "stroke_width": options.svgStrokeWidth
+                    ]
                     if let handles = handlesArg {
                         args["handles"] = handles
                     }
@@ -4551,17 +4592,38 @@ class AppState {
                         op: "export_svg",
                         args: args
                     )
-                    
-                    if let image = NSImage(contentsOf: tempSVG) {
-                        guard let tiffData = image.tiffRepresentation,
-                              let bitmapRep = NSBitmapImageRep(data: tiffData),
-                              let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
-                            throw NSError(domain: "Pathstitch", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to generate PNG bytes"])
-                        }
-                        try pngData.write(to: tempExportURL)
-                    } else {
+
+                    guard let svgImage = NSImage(contentsOf: tempSVG) else {
                         throw NSError(domain: "Pathstitch", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to load SVG into NSImage"])
                     }
+                    // Rasterise at the requested resolution: scale so the longest
+                    // edge hits `pngLongestEdge` px (MAS-156), with a transparent
+                    // or white backdrop.
+                    let natural = svgImage.size
+                    let longest = max(natural.width, natural.height)
+                    let scale = longest > 0 ? CGFloat(options.pngLongestEdge) / longest : 1.0
+                    let pxW = max(1, Int((natural.width * scale).rounded()))
+                    let pxH = max(1, Int((natural.height * scale).rounded()))
+                    guard let rep = NSBitmapImageRep(
+                        bitmapDataPlanes: nil, pixelsWide: pxW, pixelsHigh: pxH,
+                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+                        throw NSError(domain: "Pathstitch", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate PNG bitmap"])
+                    }
+                    rep.size = NSSize(width: pxW, height: pxH)
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                    let fullRect = NSRect(x: 0, y: 0, width: pxW, height: pxH)
+                    if !options.pngTransparent {
+                        NSColor.white.setFill()
+                        fullRect.fill()
+                    }
+                    svgImage.draw(in: fullRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+                    NSGraphicsContext.restoreGraphicsState()
+                    guard let pngData = rep.representation(using: .png, properties: [:]) else {
+                        throw NSError(domain: "Pathstitch", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to generate PNG bytes"])
+                    }
+                    try pngData.write(to: tempExportURL)
                     try? FileManager.default.removeItem(at: tempSVG)
                 }
                 
@@ -6222,15 +6284,28 @@ class AppState {
         }
     }
     
+    /// Opens the one-off Export Options panel (MAS-156). The old "Export…" entry
+    /// point now lands here so format + per-format options are chosen together.
     func exportWithDialog() {
-        let format = self.exportFormat
+        showExportOptions = true
+    }
+
+    /// One-click export straight to `format` using defaults — no format step,
+    /// just a destination save panel (MAS-156).
+    func quickExport(format: String) {
+        runExport(options: ExportOptions(format: format))
+    }
+
+    /// Shows the destination save panel for `options.format`, then exports.
+    /// Shared by Quick Export and the Export Options panel's Export button.
+    func runExport(options: ExportOptions) {
+        guard currentFilePath != nil else { return }
         let savePanel = NSSavePanel()
         savePanel.title = "Export Drawing"
-        savePanel.nameFieldStringValue = "drawing.\(format)"
-        savePanel.allowedContentTypes = [UTType(filenameExtension: format)].compactMap { $0 }
-        
+        savePanel.nameFieldStringValue = "drawing.\(options.format)"
+        savePanel.allowedContentTypes = [UTType(filenameExtension: options.format)].compactMap { $0 }
         if savePanel.runModal() == .OK, let url = savePanel.url {
-            self.exportFile(to: url, format: format, selectedOnly: self.exportSelectedOnly)
+            self.exportFile(to: url, options: options)
         }
     }
     

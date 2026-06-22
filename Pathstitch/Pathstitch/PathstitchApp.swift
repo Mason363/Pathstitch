@@ -108,38 +108,30 @@ struct ExportMenu: View {
         // tracks them and re-renders the menu when they change.
         let state = activeDoc.state
         let canExport = state?.currentFilePath != nil
-        let format = state?.exportFormat ?? "dxf"
-        let selectedOnly = state?.exportSelectedOnly ?? false
-        let measurementLines = state?.exportMeasurementLines ?? false
 
         Menu("Export") {
-            Button("Export...") {
-                activeDoc.state?.exportWithDialog()
+            // One-click quick exports (MAS-156): no format step, just a
+            // destination save panel.
+            Button("Quick Export as DXF") {
+                activeDoc.state?.quickExport(format: "dxf")
             }
             .keyboardShortcut("e", modifiers: [.command])
             .disabled(!canExport)
 
+            Button("Quick Export as SVG") {
+                activeDoc.state?.quickExport(format: "svg")
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(!canExport)
+
             Divider()
 
-            Picker("Export Format", selection: Binding(
-                get: { format },
-                set: { activeDoc.state?.exportFormat = $0 }
-            )) {
-                Text("AutoCAD DXF (.dxf)").tag("dxf")
-                Text("Scalable Vector Graphics (.svg)").tag("svg")
-                Text("Document PDF (.pdf)").tag("pdf")
-                Text("Raster Image (.png)").tag("png")
+            // Full control: pick format + per-format options for this one export.
+            Button("Export Options…") {
+                activeDoc.state?.showExportOptions = true
             }
-
-            Toggle("Export Selected Only", isOn: Binding(
-                get: { selectedOnly },
-                set: { activeDoc.state?.exportSelectedOnly = $0 }
-            ))
-
-            Toggle("Export Measurement Lines", isOn: Binding(
-                get: { measurementLines },
-                set: { activeDoc.state?.exportMeasurementLines = $0 }
-            ))
+            .keyboardShortcut("e", modifiers: [.command, .option])
+            .disabled(!canExport)
         }
     }
 }

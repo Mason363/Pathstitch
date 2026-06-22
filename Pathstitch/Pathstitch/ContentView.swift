@@ -292,6 +292,13 @@ struct ContentView: View {
         .background(WindowAccessor(state: state).frame(width: 0, height: 0).opacity(0))
         .font(PlasticityFont.body)
         .preferredColorScheme((AppTheme(rawValue: themeRaw) ?? .dark).colorScheme)
+        // One-off Export Options panel (MAS-156).
+        .sheet(isPresented: Binding(
+            get: { state.showExportOptions },
+            set: { state.showExportOptions = $0 }
+        )) {
+            ExportOptionsPanel(state: state)
+        }
         // Bind hotkeys
         .background(hotkeyBindings)
         // Command search palette (MAS-53)
@@ -4288,5 +4295,96 @@ struct FontPickerField: View {
                 onHoverFont(nil)
                 show = false
             }
+    }
+}
+
+/// One-off Export Options panel (MAS-156) — styled like Settings. Holds its own
+/// options (not persisted); the Export button shows a destination save panel and
+/// exports once with these settings.
+struct ExportOptionsPanel: View {
+    let state: AppState
+    @State private var opts = ExportOptions()
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "square.and.arrow.up").foregroundColor(.accentColor)
+                Text("Export Options").font(.headline)
+                Spacer()
+            }
+            .padding(16)
+
+            Divider()
+
+            Form {
+                Section {
+                    Picker("Format", selection: $opts.format) {
+                        ForEach(ExportOptions.formats, id: \.self) { f in
+                            Text(ExportOptions.label(f)).tag(f)
+                        }
+                    }
+                }
+
+                if opts.format == "svg" {
+                    Section("SVG") {
+                        Stepper("Decimal Precision: \(opts.svgPrecision)", value: $opts.svgPrecision, in: 0...6)
+                        HStack {
+                            Text("Stroke Width (mm)")
+                            Spacer()
+                            TextField("", value: $opts.svgStrokeWidth, format: .number)
+                                .frame(width: 70).multilineTextAlignment(.trailing)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+                } else if opts.format == "dxf" {
+                    Section("DXF") {
+                        Picker("File Version", selection: $opts.dxfVersion) {
+                            ForEach(ExportOptions.dxfVersions, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                } else if opts.format == "png" {
+                    Section("PNG") {
+                        HStack {
+                            Text("Resolution — longest edge (px)")
+                            Spacer()
+                            TextField("", value: $opts.pngLongestEdge, format: .number)
+                                .frame(width: 80).multilineTextAlignment(.trailing)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        Toggle("Transparent Background", isOn: $opts.pngTransparent)
+                    }
+                } else if opts.format == "pdf" {
+                    Section("PDF") {
+                        Text("Vector PDF of the current drawing.")
+                            .font(.system(size: 11)).foregroundColor(.secondary)
+                    }
+                }
+
+                Section("Content") {
+                    Toggle("Export Selected Only", isOn: $opts.selectedOnly)
+                    Toggle("Export Measurement Lines", isOn: $opts.measurementLines)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Export") {
+                    let chosen = opts
+                    dismiss()
+                    // Let the sheet close before the save panel opens.
+                    DispatchQueue.main.async { state.runExport(options: chosen) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(state.currentFilePath == nil)
+            }
+            .padding(16)
+        }
+        .frame(width: 460, height: 430)
     }
 }
