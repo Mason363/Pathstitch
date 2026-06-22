@@ -7436,10 +7436,102 @@ class AppState {
         pendingDeletedHandles.formUnion(removedHandles)
         hasUnsavedChanges = true
         logAction("DELETE LAYER", details: "Deleted layer \(layerName) and \(removedHandles.count) associated entities")
-        
+
         Task { await reconcileBufferIfNeeded() }
     }
-    
+
+    // MARK: - Layer merging (MAS-147)
+
+    /// The layer directly beneath `id` in the visual stack — the next layer row
+    /// in the flattened panel order — or nil when `id` is already at the bottom.
+    func layerBelow(_ id: String) -> DXFLayer? {
+        let items = getFlattenedLayerItems()
+        guard let idx = items.firstIndex(where: { $0.id == id && !$0.isFolder }) else { return nil }
+        for j in (idx + 1)..<items.count where !items[j].isFolder {
+            if let l = layers.first(where: { $0.id == items[j].id }) { return l }
+        }
+        return nil
+    }
+
+    /// Photoshop-style merge-down: move all of `id`'s entities into the layer
+    /// directly beneath it, then delete the emptied source layer.
+    func mergeLayerDown(id: String) {
+        guard let target = layerBelow(id) else { return }
+        mergeLayers(sourceIds: [id], into: target.id, label: "Merge with Below")
+    }
+
+    /// Merge every selected layer (`activeLayerIds`) into the bottommost selected
+    /// layer, deleting the rest. Requires 2+ selected layers.
+    func mergeSelectedLayers() {
+        guard activeLayerIds.count >= 2 else { return }
+        let items = getFlattenedLayerItems()
+        let orderedSelected = items.filter { !$0.isFolder && activeLayerIds.contains($0.id) }
+        guard let target = orderedSelected.last else { return }
+        let sources = orderedSelected.dropLast().map { $0.id }
+        guard !sources.isEmpty else { return }
+        mergeLayers(sourceIds: Array(sources), into: target.id, label: "Merge Selected Layers")
+    }
+
+    /// Move every entity on each source layer onto `targetId`, then delete the
+    /// now-empty source layers. One undo step; the layer reassignment is
+    /// persisted to the active DXF via `set_layer` (mirrors `renameLayer`).
+    private func mergeLayers(sourceIds: [String], into targetId: String, label: String) {
+        guard let target = layers.first(where: { $0.id == targetId }) else { return }
+        let validSources = Set(sourceIds.filter { sid in sid != targetId && layers.contains { $0.id == sid } })
+        guard !validSources.isEmpty else { return }
+        let sourceNames = Set(layers.filter { validSources.contains($0.id) }.map { $0.name })
+        let targetName = target.name
+
+        saveToHistory()
+
+        var movedHandles: [String] = []
+        entities = entities.map { ent in
+            let onSource: Bool
+            if let lid = ent.layerId {
+                onSource = validSources.contains(lid)
+            } else {
+                onSource = sourceNames.contains(ent.layer)
+            }
+            if onSource {
+                var e = ent
+                e.layer = targetName
+                e.layerId = targetId
+                movedHandles.append(e.handle)
+                return e
+            }
+            return ent
+        }
+
+        layers.removeAll { validSources.contains($0.id) }
+        if let aid = activeLayerId, validSources.contains(aid) { activeLayerId = targetId }
+        activeLayerIds = activeLayerIds.subtracting(validSources)
+        if activeLayerIds.isEmpty { activeLayerIds = [targetId] }
+
+        if !movedHandles.isEmpty {
+            let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+            enqueueBufferWrite {
+                let inputPath = (await MainActor.run { self.currentFilePath?.path }) ?? activeDxfURL.path
+                do {
+                    _ = try await PythonBridge.shared.run(
+                        module: "dxf_ops",
+                        op: "set_layer",
+                        args: [
+                            "input": inputPath,
+                            "output": activeDxfURL.path,
+                            "handles": movedHandles,
+                            "layer": targetName
+                        ]
+                    )
+                } catch {
+                    print("Background layer merge failed: \(error)")
+                }
+            }
+        }
+
+        hasUnsavedChanges = true
+        logAction(label.uppercased(), details: "Merged \(validSources.count) layer\(validSources.count == 1 ? "" : "s") into \(targetName) (\(movedHandles.count) entities)")
+    }
+
     func deleteFolder(id: String) {
         guard let idx = layerFolders.firstIndex(where: { $0.id == id }) else { return }
         let folderName = layerFolders[idx].name

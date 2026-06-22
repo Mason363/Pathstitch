@@ -2606,8 +2606,25 @@ extension ContentView {
                                             }
                                         }
                                         
+                                        // Layer merging (MAS-147): merge-down
+                                        // when a layer sits below, and merge the
+                                        // whole multi-selection into its bottom.
+                                        if !item.isFolder && (state.layerBelow(item.id) != nil || (state.activeLayerIds.count >= 2 && state.activeLayerIds.contains(item.id))) {
+                                            Divider()
+                                            if state.layerBelow(item.id) != nil {
+                                                Button("Merge with Below") {
+                                                    state.mergeLayerDown(id: item.id)
+                                                }
+                                            }
+                                            if state.activeLayerIds.count >= 2 && state.activeLayerIds.contains(item.id) {
+                                                Button("Merge Selected Layers") {
+                                                    state.mergeSelectedLayers()
+                                                }
+                                            }
+                                        }
+
                                         Divider()
-                                        
+
                                         Button("Delete", role: .destructive) {
                                             if item.isFolder {
                                                 state.deleteFolder(id: item.id)
