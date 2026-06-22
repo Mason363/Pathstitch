@@ -1305,6 +1305,30 @@ class AppState {
         }
     }
 
+    // MARK: - Boolean combine (MAS-144)
+
+    /// True when an entity is a watertight closed region that can participate in
+    /// boolean operations (closed polyline/spline/ellipse, or a circle). Mirrors
+    /// the backend's `_entity_to_region` acceptance so the menu only offers
+    /// "Combine" when it can actually run.
+    func isWatertightClosed(_ e: DXFEntity) -> Bool {
+        switch e.type.uppercased() {
+        case "CIRCLE": return true
+        case "LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE": return e.closed == true
+        default: return false
+        }
+    }
+
+    /// How many selected entities are watertight closed regions.
+    var watertightSelectionCount: Int {
+        entities.reduce(0) { count, e in
+            (selectedHandles.contains(e.handle) && isWatertightClosed(e)) ? count + 1 : count
+        }
+    }
+
+    /// Boolean combine is offered when 2+ qualifying closed paths are selected.
+    var selectionCanBoolean: Bool { watertightSelectionCount >= 2 }
+
     // MARK: - Convert Lines (MAS-58)
 
     /// The seven supported line styles, in menu order.
@@ -6600,6 +6624,57 @@ class AppState {
                     self.reloadDXF()
                     if !newHandles.isEmpty { self.selectedHandles = Set(newHandles) }
                     self.logEntries.append(LogEntry(action: "Duplicate", details: "Duplicated \(handlesSnapshot.count) entit\(handlesSnapshot.count == 1 ? "y" : "ies")"))
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isProcessing = false
+                }
+            }
+        }
+    }
+
+    /// Boolean-combine the selected watertight closed paths (MAS-144).
+    /// `operation` is "union", "subtract", or "intersect". The result is written
+    /// back as closed polyline(s) on the active layer (or the base operand's
+    /// layer when there's no usable active layer) and selected.
+    func booleanCombineSelection(_ operation: String) {
+        guard let url = currentFilePath else { return }
+        let qualifying = entities.filter { selectedHandles.contains($0.handle) && isWatertightClosed($0) }
+        guard qualifying.count >= 2 else {
+            errorMessage = "Select at least two closed paths (closed polylines, circles, ellipses) to combine."
+            return
+        }
+        saveToHistory()
+        isProcessing = true
+        let handlesSnapshot = qualifying.map { $0.handle }
+        // Active layer to land the result on; nil lets the backend keep the
+        // base operand's own layer (reference-image layers never qualify).
+        let layerName: String? = activeLayer.flatMap { $0.isReferenceImageLayer ? nil : $0.name }
+        Task {
+            do {
+                let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+                var args: [String: Any] = [
+                    "input": url.path,
+                    "output": activeDxfURL.path,
+                    "handles": handlesSnapshot,
+                    "operation": operation
+                ]
+                if let layerName { args["layer"] = layerName }
+                let res = try await PythonBridge.shared.run(
+                    module: "dxf_ops", op: "boolean", args: args
+                )
+                await MainActor.run {
+                    if let status = res["status"] as? String, status != "ok" {
+                        self.errorMessage = (res["message"] as? String) ?? "Combine failed."
+                        self.isProcessing = false
+                        return
+                    }
+                    let newHandles = (res["data"] as? [String: Any])?["new_handles"] as? [String] ?? []
+                    self.currentFilePath = activeDxfURL
+                    self.reloadDXF()
+                    self.selectedHandles = Set(newHandles)
+                    self.logAction("Combine", details: "\(operation.capitalized) of \(handlesSnapshot.count) paths")
                 }
             } catch {
                 await MainActor.run {

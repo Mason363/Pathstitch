@@ -725,7 +725,32 @@ extension ContentView {
                             .help("Deselect all selected entities on the canvas")
                         }
                         .padding(.vertical, 4)
-                        
+
+                        // Boolean combine (MAS-144): surface Union/Subtract/
+                        // Intersect without right-clicking, when 2+ watertight
+                        // closed paths are selected.
+                        if state.selectionCanBoolean {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Divider().background(Color.border_subtle).padding(.vertical, 4)
+                                Text("COMBINE")
+                                    .font(PlasticityFont.label)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(Color.accent)
+                                HStack(spacing: 6) {
+                                    Button("Union") { state.booleanCombineSelection("union") }
+                                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                                        .help("Merge the selected closed paths into one")
+                                    Button("Subtract") { state.booleanCombineSelection("subtract") }
+                                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                                        .help("Cut the other selected paths out of the largest one")
+                                    Button("Intersect") { state.booleanCombineSelection("intersect") }
+                                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                                        .help("Keep only the overlapping region")
+                                }
+                            }
+                            .padding(.bottom, 6)
+                        }
+
                         if state.selectedHandles.count == 1,
                            let handle = state.selectedHandles.first,
                            let wMeasure = state.measurements.first(where: { $0.entityHandle == handle && $0.dimensionType == "width" }),

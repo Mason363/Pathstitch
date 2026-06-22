@@ -2069,6 +2069,21 @@ struct DxfCanvasView: View {
                         }
                     }
 
+                    // Boolean combine (MAS-144): only when 2+ watertight closed
+                    // paths are selected.
+                    if state.selectionCanBoolean {
+                        contextMenuDivider()
+                        contextMenuButton("Union", systemImage: "plus.circle") {
+                            state.booleanCombineSelection("union"); contextMenuScreenPos = nil
+                        }
+                        contextMenuButton("Subtract", systemImage: "minus.circle") {
+                            state.booleanCombineSelection("subtract"); contextMenuScreenPos = nil
+                        }
+                        contextMenuButton("Intersect", systemImage: "circle.lefthalf.filled") {
+                            state.booleanCombineSelection("intersect"); contextMenuScreenPos = nil
+                        }
+                    }
+
                     if hasMirrorLink {
                         contextMenuDivider()
                         contextMenuButton("Break Mirror Link", systemImage: "link.badge.plus") {

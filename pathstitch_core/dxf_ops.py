@@ -5302,6 +5302,148 @@ def op_parse_psd(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Failed to parse PSD: {str(e)}"}
 
 
+def _entity_to_region(ent) -> Optional["Polygon"]:
+    """Convert a watertight closed entity to a shapely ``Polygon`` (a filled
+    region) for boolean ops (MAS-144). Returns ``None`` for anything that is not
+    a closed region — open polylines, lines, arcs, text — so the caller can
+    reject the whole operation with a clear error. Curves are flattened the same
+    way the rest of the pipeline flattens them (`entity_to_shapely`)."""
+    if ent.dxftype() == "TEXT":
+        return None
+    geom = entity_to_shapely(ent)
+    if geom is None or not isinstance(geom, LinearRing):
+        return None
+    try:
+        poly = Polygon(geom)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        if poly.is_empty or not isinstance(poly, (Polygon, MultiPolygon)):
+            return None
+        return poly
+    except Exception:
+        return None
+
+
+def _polys_from_result(result) -> List["Polygon"]:
+    """Flatten a shapely boolean result into a list of non-empty Polygons."""
+    if result is None or result.is_empty:
+        return []
+    if isinstance(result, Polygon):
+        return [result]
+    if isinstance(result, MultiPolygon):
+        return [p for p in result.geoms if not p.is_empty]
+    # GeometryCollection (mixed): keep only the polygonal parts.
+    out: List[Polygon] = []
+    for g in getattr(result, "geoms", []):
+        if isinstance(g, Polygon) and not g.is_empty:
+            out.append(g)
+        elif isinstance(g, MultiPolygon):
+            out.extend(p for p in g.geoms if not p.is_empty)
+    return out
+
+
+def op_boolean(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Boolean combine of watertight closed paths (MAS-144): Union, Subtract,
+    Intersect. Each operand (closed LWPOLYLINE/POLYLINE/SPLINE, CIRCLE, ELLIPSE)
+    becomes a shapely Polygon; the result is written back as closed
+    LWPOLYLINE(s) — one per exterior ring plus one per hole — on the target
+    layer, and the originals are deleted.
+
+    * ``operation``: "union" | "subtract" | "intersect".
+    * Subtract is ``base − (everything else)``. The base is the explicitly
+      provided ``base`` handle, else the largest-area operand — the least
+      surprising default for cutting notches/holes out of a big shape.
+    * ``layer`` (optional): the active layer the result should land on. When
+      omitted the base operand's own layer is used.
+    """
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", []) or []
+    operation = str(args.get("operation") or "union").lower()
+    layer_arg = args.get("layer")
+    base_handle = args.get("base")
+
+    if operation not in ("union", "subtract", "intersect"):
+        return {"status": "error", "message": f"Unknown boolean operation: {operation}"}
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if len(handles) < 2:
+        return {"status": "error", "message": "Select at least two closed paths to combine."}
+
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        ents = []
+        regions = []
+        for h in handles:
+            try:
+                ent = doc.entitydb[h]
+            except KeyError:
+                continue
+            poly = _entity_to_region(ent)
+            if poly is None:
+                return {"status": "error", "message": "Boolean operations need watertight closed paths (closed polylines, circles, ellipses). One or more selected paths are open or not a closed region."}
+            ents.append(ent)
+            regions.append(poly)
+        if len(regions) < 2:
+            return {"status": "error", "message": "Select at least two closed paths to combine."}
+
+        # Pick the base operand (subtract & default layer): explicit handle wins,
+        # else the largest-area shape.
+        if base_handle is not None:
+            base_idx = next((i for i, e in enumerate(ents) if e.dxf.handle == base_handle), 0)
+        else:
+            base_idx = max(range(len(regions)), key=lambda i: regions[i].area)
+
+        out_layer = sanitize_layer_name(layer_arg) if layer_arg else ents[base_idx].dxf.layer
+        if out_layer not in doc.layers:
+            doc.layers.new(out_layer)
+
+        if operation == "union":
+            result = unary_union(regions)
+        elif operation == "intersect":
+            result = regions[0]
+            for r in regions[1:]:
+                result = result.intersection(r)
+        else:  # subtract
+            others = unary_union([r for i, r in enumerate(regions) if i != base_idx])
+            result = regions[base_idx].difference(others)
+
+        polys = _polys_from_result(result)
+        if not polys:
+            if operation == "intersect":
+                return {"status": "error", "message": "The selected shapes do not overlap; the intersection is empty."}
+            return {"status": "error", "message": "The boolean result is empty (the shape was fully consumed)."}
+
+        # Only mutate the document once we know we have a valid result.
+        for e in ents:
+            try:
+                msp.delete_entity(e)
+            except Exception:
+                pass
+
+        new_handles: List[str] = []
+        for poly in polys:
+            ext = list(poly.exterior.coords)
+            if len(ext) >= 4:
+                ne = msp.add_lwpolyline([(c[0], c[1]) for c in ext][:-1],
+                                        dxfattribs={"layer": out_layer, "closed": True})
+                new_handles.append(ne.dxf.handle)
+            for interior in poly.interiors:
+                ic = list(interior.coords)
+                if len(ic) >= 4:
+                    ne = msp.add_lwpolyline([(c[0], c[1]) for c in ic][:-1],
+                                            dxfattribs={"layer": out_layer, "closed": True})
+                    new_handles.append(ne.dxf.handle)
+
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_handles": new_handles, "operation": operation}}
+    except Exception as e:
+        return {"status": "error", "message": f"Boolean operation failed: {str(e)}"}
+
+
 OPERATIONS = {
     "list_entities": op_list_entities,
     "offset_lines": op_offset_lines,
@@ -5347,6 +5489,7 @@ OPERATIONS = {
     "add_construction_lines": op_add_construction_lines,
     "join_lines": op_join_lines,
     "trim_segment": op_trim_segment,
+    "boolean": op_boolean,
 }
 
 
