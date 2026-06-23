@@ -267,6 +267,10 @@ struct ContentView: View {
     @State private var textHeight: Double = 5.0
     @State private var textInsertX: Double = 0.0
     @State private var textInsertY: Double = 0.0
+
+    // Drives the first-run guided tutorial's spotlight + auto-advance; shared with
+    // the left toolbar so it can scroll the current step's tool into view.
+    @State private var tutorial = TutorialController()
     
     var body: some View {
         VStack(spacing: 0) {
@@ -318,7 +322,7 @@ struct ContentView: View {
         }
         // First-run guided tutorial + per-mode intros (batch 4), bundled into one
         // modifier so the (already large) body stays type-checkable.
-        .modifier(OnboardingModifier(state: state))
+        .modifier(OnboardingModifier(state: state, tutorial: tutorial))
         // Only reveal the loading overlay if work outlasts a short delay, so the
         // now-fast worker ops never flash a loader (§7).
         .task(id: state.isProcessing) {
@@ -3607,6 +3611,7 @@ extension ContentView {
 extension ContentView {
     private var leftToolbar: some View {
         VStack(spacing: 4) {
+            ScrollViewReader { scrollProxy in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 4) {
                     Spacer().frame(height: 12)
@@ -3641,6 +3646,7 @@ extension ContentView {
                                 LazyVGrid(columns: gridCols, spacing: 0) {
                                     ForEach(zoneItems) { def in
                                         OrganizableToolButton(def: def, state: state, layout: layout)
+                                            .id(def.id)
                                     }
                                 }
                             }
@@ -3671,6 +3677,8 @@ extension ContentView {
                         .buttonStyle(PlainButtonStyle())
                         .background(isShapeActive ? Color.bg_selected : (isShapesHovered ? Color.accent.opacity(0.08) : Color.clear))
                         .foregroundColor(isShapeActive ? Color.accent : (isShapesHovered ? Color.accent_hover : Color.text_secondary))
+                        .id("__shapes__")
+                        .tutorialAnchor(.shapesFlyout)
                         .help("Shapes Sketching  (⌘-drop a shape tool here)")
                         .onHover { hover in
                             isShapesHovered = hover
@@ -3703,6 +3711,8 @@ extension ContentView {
                         .buttonStyle(PlainButtonStyle())
                         .background(isMoreToolsHovered ? Color.accent.opacity(0.08) : Color.clear)
                         .foregroundColor(isMoreToolsHovered ? Color.accent_hover : Color.text_secondary)
+                        .id("__extra__")
+                        .tutorialAnchor(.extraFlyout)
                         .help("More tools  (⌘-drop a tool here)")
                         .onHover { isMoreToolsHovered = $0 }
                         .onDrop(of: [UTType.text], isTargeted: $isMoreToolsHovered) { providers in
@@ -3719,6 +3729,14 @@ extension ContentView {
 
                     Spacer()
                 }
+            }
+            // Scroll the current tutorial step's tool into view before spotlighting.
+            .onChange(of: tutorial.scrollTarget) { _, target in
+                guard let target else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    scrollProxy.scrollTo(target, anchor: .center)
+                }
+            }
             }
         }
         .frame(width: leftToolbarWidth)
@@ -3945,6 +3963,7 @@ extension ContentView {
                         bottom: ScrollView {
                             layersSection
                                 .padding(14)
+                                .tutorialAnchor(.layersPanel)
                         },
                         topHeight: $leftSidebarTopHeight,
                         minTopHeight: 100,
@@ -4563,26 +4582,35 @@ extension Notification.Name {
 /// large) expression within the Swift type-checker's budget.
 struct OnboardingModifier: ViewModifier {
     var state: AppState
+    var tutorial: TutorialController
 
     @AppStorage("onboarding.tutorialDone") private var tutorialDone = false
     @AppStorage("onboarding.seenIntro.twoD") private var seenIntro2D = false
     @AppStorage("onboarding.seenIntro.threeD") private var seenIntro3D = false
     @AppStorage("onboarding.seenIntro.batch") private var seenIntroBatch = false
-    @State private var tutorialStep: Int? = nil
     @State private var modeIntro: AppMode? = nil
     @State private var modeIntroDontShowAgain = true
+    /// Document snapshot captured when the current step began, so auto-advance can
+    /// judge what the user changed during the step.
+    @State private var stepBaseline: TutorialBaseline? = nil
 
     func body(content: Content) -> some View {
         content
+            // Glowing ring around the tool/panel the current step points at.
+            .overlayPreferenceValue(TutorialAnchorKey.self) { anchors in
+                GeometryReader { proxy in
+                    if let s = tutorial.step,
+                       let rect = spotlightRect(step: s, anchors: anchors, proxy: proxy) {
+                        SpotlightRing(rect: rect)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
             .overlay {
-                if let step = tutorialStep {
+                if let step = tutorial.step {
                     TutorialOverlay(
-                        step: Binding(get: { step }, set: { tutorialStep = $0 }),
-                        onFinish: {
-                            tutorialStep = nil
-                            tutorialDone = true
-                            maybeShowModeIntro(state.activeMode)
-                        }
+                        step: Binding(get: { step }, set: { tutorial.step = $0 }),
+                        onFinish: { finishTutorial() }
                     )
                 }
             }
@@ -4601,18 +4629,104 @@ struct OnboardingModifier: ViewModifier {
             }
             .onAppear { startOnboardingIfNeeded() }
             .onChange(of: state.activeMode) { _, newMode in maybeShowModeIntro(newMode) }
+            // Re-baseline + (re)position the spotlight whenever the step changes.
+            .onChange(of: tutorial.step) { _, new in handleStepChange(new) }
+            // Auto-advance once the user has done what the step asked.
+            .onChange(of: state.entities) { _, _ in checkCompletion() }
+            .onChange(of: state.undoStack.count) { _, _ in checkCompletion() }
+            // Fires when a fillet/chamfer session is confirmed or cancelled.
+            .onChange(of: state.isCornerSessionActive) { _, _ in checkCompletion() }
             .onReceive(NotificationCenter.default.publisher(for: .pathstitchReplayTutorial)) { _ in
                 modeIntro = nil
-                tutorialStep = 0
+                tutorial.step = 0
             }
             .onReceive(NotificationCenter.default.publisher(for: .pathstitchResetIntros)) { _ in
                 seenIntro2D = false; seenIntro3D = false; seenIntroBatch = false
             }
     }
 
+    // MARK: Spotlight resolution
+
+    /// The on-screen rect to ring for `step`, resolving a tool to whichever element
+    /// currently hosts it (sidebar button, or the Shapes/More flyout button).
+    private func spotlightRect(step: Int,
+                               anchors: [TutorialHighlight: Anchor<CGRect>],
+                               proxy: GeometryProxy) -> CGRect? {
+        guard step >= 0, step < pathstitchTutorialSteps.count,
+              let target = pathstitchTutorialSteps[step].spotlight,
+              let highlight = resolveHighlight(target, anchors: anchors),
+              let anchor = anchors[highlight] else { return nil }
+        return proxy[anchor]
+    }
+
+    private func resolveHighlight(_ target: SpotlightTarget,
+                                  anchors: [TutorialHighlight: Anchor<CGRect>]) -> TutorialHighlight? {
+        switch target {
+        case .layersPanel:
+            return anchors[.layersPanel] != nil ? .layersPanel : nil
+        case .tool(let tool):
+            if anchors[.tool(tool)] != nil { return .tool(tool) }
+            guard let id = tutorialToolItemId(tool) else { return nil }
+            switch ToolbarLayout.shared.container(of: id) {
+            case .shapes: return anchors[.shapesFlyout] != nil ? .shapesFlyout : nil
+            case .extra:  return anchors[.extraFlyout] != nil ? .extraFlyout : nil
+            default:      return nil
+            }
+        }
+    }
+
+    /// The toolbar `ScrollViewReader` id to scroll to so `step`'s tool is visible.
+    private func scrollTargetId(for step: Int) -> String? {
+        guard step >= 0, step < pathstitchTutorialSteps.count,
+              case .tool(let tool)? = pathstitchTutorialSteps[step].spotlight,
+              let id = tutorialToolItemId(tool) else { return nil }
+        switch ToolbarLayout.shared.container(of: id) {
+        case .main:   return id
+        case .shapes: return "__shapes__"
+        case .extra:  return "__extra__"
+        case .none:   return nil
+        }
+    }
+
+    // MARK: Step lifecycle
+
+    private func handleStepChange(_ new: Int?) {
+        guard let s = new else { tutorial.scrollTarget = nil; return }
+        stepBaseline = TutorialBaseline(state)
+        tutorial.scrollTarget = scrollTargetId(for: s)
+    }
+
+    private func checkCompletion() {
+        guard let s = tutorial.step,
+              s >= 0, s < pathstitchTutorialSteps.count,
+              let baseline = stepBaseline,
+              let isDone = pathstitchTutorialSteps[s].isComplete,
+              isDone(state, baseline) else { return }
+        advance(from: s)
+    }
+
+    /// Move on a beat after the action so the user sees their shape register.
+    private func advance(from step: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+            guard tutorial.step == step else { return }   // user already moved on
+            if step >= pathstitchTutorialSteps.count - 1 {
+                finishTutorial()
+            } else {
+                withAnimation(.easeInOut(duration: 0.25)) { tutorial.step = step + 1 }
+            }
+        }
+    }
+
+    private func finishTutorial() {
+        tutorial.step = nil
+        tutorial.scrollTarget = nil
+        tutorialDone = true
+        maybeShowModeIntro(state.activeMode)
+    }
+
     private func startOnboardingIfNeeded() {
         if !tutorialDone {
-            tutorialStep = 0
+            tutorial.step = 0
             seenIntro2D = true   // the tutorial already covers 2D
         } else {
             maybeShowModeIntro(state.activeMode)
@@ -4620,7 +4734,7 @@ struct OnboardingModifier: ViewModifier {
     }
 
     private func maybeShowModeIntro(_ mode: AppMode) {
-        guard tutorialStep == nil, modeIntro == nil else { return }
+        guard tutorial.step == nil, modeIntro == nil else { return }
         switch mode {
         case .twoD:   if !seenIntro2D    { modeIntro = .twoD }
         case .threeD: if !seenIntro3D    { modeIntro = .threeD }
@@ -4643,6 +4757,12 @@ struct TutorialStep {
     let body: String
     /// A short directional cue toward the relevant UI region (nil for none).
     let hint: String?
+    /// The tool/panel to spotlight while this step is showing (nil = none).
+    var spotlight: SpotlightTarget? = nil
+    /// Returns true once the user has done what the step asks, judged against the
+    /// baseline captured when the step began. nil ⇒ advance only via the Next
+    /// button (intro / outro steps).
+    var isComplete: ((AppState, TutorialBaseline) -> Bool)? = nil
 }
 
 let pathstitchTutorialSteps: [TutorialStep] = [
@@ -4650,17 +4770,29 @@ let pathstitchTutorialSteps: [TutorialStep] = [
           body: "Let's make your first part in about a minute. Pathstitch turns drawings and 3D models into clean patterns that are ready to cut, score, or stitch.",
           hint: nil),
     .init(title: "1 · Draw a rectangle",
-          body: "Pick the Rectangle tool from the toolbar on the left, then drag on the canvas. Shapes stay fully editable — you can tweak size and corners any time.",
-          hint: "← Tools live in the left sidebar"),
+          body: "Open the highlighted Shapes tool, pick Rectangle, then drag on the canvas. After you drag it out, press Enter to confirm the shape. Shapes stay fully editable — you can tweak size and corners any time.",
+          hint: nil,
+          spotlight: .tool(.sketchRectangle),
+          isComplete: { s, b in TutorialBaseline.polylines(in: s) > b.polylineCount }),
     .init(title: "2 · Add a circle",
-          body: "Grab the Circle tool and drag out a circle beside your rectangle. Use the Scale tool or type exact values to size things precisely.",
-          hint: "← Circle tool"),
+          body: "Grab the highlighted Circle tool and drag out a circle beside your rectangle, then press Enter to confirm it. Use the Scale tool or type exact values to size things precisely.",
+          hint: nil,
+          spotlight: .tool(.sketchCircle),
+          isComplete: { s, b in TutorialBaseline.circles(in: s) > b.circleCount }),
     .init(title: "3 · Round a corner with Fillet",
-          body: "Select Fillet, click a corner of the rectangle, then drag the orange arrow (or type a radius). Chamfer works the same way for an angled cut.",
-          hint: "← Fillet / Chamfer"),
+          body: "Select the highlighted Fillet tool, click a corner of the rectangle, then drag the orange arrow (or type a radius) and press Enter to confirm. Chamfer works the same way for an angled cut.",
+          hint: nil,
+          spotlight: .tool(.fillet),
+          // Only advance once a fillet is actually applied AND the corner session is
+          // confirmed (Enter / leaving the tool) — not on the preview that appears
+          // the instant the tool is entered on a selected shape.
+          isComplete: { s, b in
+              !s.isCornerSessionActive && TutorialBaseline.filletedCorners(in: s) > b.filletedCorners
+          }),
     .init(title: "4 · Layers organize your cuts",
-          body: "The Layers panel on the right groups geometry — for example separate cut, score, and engrave layers — so each exports the way your machine expects.",
-          hint: "Layers panel →"),
+          body: "The highlighted Layers panel groups geometry — for example separate cut, score, and engrave layers — so each exports the way your machine expects.",
+          hint: nil,
+          spotlight: .layersPanel),
     .init(title: "You're ready!",
           body: "That's the whole loop: draw → edit → organize → export. You can replay this tour anytime from Settings ▸ General ▸ Replay Tutorial.",
           hint: nil),
@@ -4668,13 +4800,16 @@ let pathstitchTutorialSteps: [TutorialStep] = [
 
 /// The first-run guided tutorial: a compact, non-blocking floating card stepped
 /// with Back / Skip / Next. It dims the canvas only lightly so the user can still
-/// see (and try) what each step describes.
+/// see (and try) what each step describes — and most steps advance on their own
+/// once the action is done.
 struct TutorialOverlay: View {
     @Binding var step: Int
     let onFinish: () -> Void
 
     private var current: TutorialStep { pathstitchTutorialSteps[min(max(step, 0), pathstitchTutorialSteps.count - 1)] }
     private var isLast: Bool { step >= pathstitchTutorialSteps.count - 1 }
+    /// Actionable steps wait for the user and advance automatically.
+    private var waitsForAction: Bool { current.isComplete != nil }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -4708,6 +4843,11 @@ struct TutorialOverlay: View {
                         .padding(.top, 8)
                 }
 
+                if waitsForAction {
+                    WaitingForActionCue()
+                        .padding(.top, 8)
+                }
+
                 HStack(spacing: 8) {
                     // Step progress dots.
                     HStack(spacing: 5) {
@@ -4722,7 +4862,9 @@ struct TutorialOverlay: View {
                         Button("Back") { step -= 1 }
                             .buttonStyle(PlasticityButtonStyle(isEnabled: true))
                     }
-                    Button(isLast ? "Done" : "Next") {
+                    // Actionable steps advance themselves; the button just lets the
+                    // user skip ahead if they'd rather not try it.
+                    Button(isLast ? "Done" : (waitsForAction ? "Skip step" : "Next")) {
                         if isLast { onFinish() } else { step += 1 }
                     }
                     .buttonStyle(PlasticityButtonStyle(isEnabled: true))
@@ -4738,6 +4880,25 @@ struct TutorialOverlay: View {
             .shadow(color: .black.opacity(0.4), radius: 24, y: 8)
             .padding(.bottom, 80)
         }
+    }
+}
+
+/// A small pulsing "your turn" cue shown on steps that auto-advance.
+private struct WaitingForActionCue: View {
+    @State private var pulse = false
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(Color.accent)
+                .frame(width: 7, height: 7)
+                .scaleEffect(pulse ? 1.0 : 0.55)
+                .opacity(pulse ? 1.0 : 0.4)
+                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+            Text("Your turn — I'll continue once you've done it.")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.accent)
+        }
+        .onAppear { pulse = true }
     }
 }
 

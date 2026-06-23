@@ -60,6 +60,19 @@ private func toolbarMoveMenu(_ def: ToolbarItemDef, layout: ToolbarLayout) -> so
     Button("Reset Toolbar Layout") { layout.resetToDefaults() }
 }
 
+/// Registers a sidebar tool button's frame for the guided tutorial, but only for
+/// real tools (the flip/duplicate actions aren't tutorial targets).
+private struct ToolButtonTutorialAnchor: ViewModifier {
+    let kind: ToolbarItemKind
+    func body(content: Content) -> some View {
+        if case .tool(let t) = kind {
+            content.tutorialAnchor(.tool(t))
+        } else {
+            content
+        }
+    }
+}
+
 /// An icon-only sidebar tool that can be Command-dragged to reorder or move it to
 /// another container, and accepts a drop to position another item before it.
 struct OrganizableToolButton: View {
@@ -91,6 +104,8 @@ struct OrganizableToolButton: View {
             : (active ? Color.bg_selected : (isHovered ? Color.accent.opacity(0.08) : Color.clear))
         )
         .foregroundColor(active ? Color.accent : (isHovered ? Color.accent_hover : Color.text_secondary))
+        // Let the guided tutorial spotlight this tool when it lives in the sidebar.
+        .modifier(ToolButtonTutorialAnchor(kind: def.kind))
         .help(def.title + "  (⌘-drag to rearrange)")
         .onHover { isHovered = $0 }
         .onDrag { commandDragProvider(def.id) }

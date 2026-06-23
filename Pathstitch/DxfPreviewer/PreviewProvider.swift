@@ -282,20 +282,35 @@ class PreviewViewController: NSViewController, QLPreviewingController {
         return node
     }
 
-    /// Crease-thresholded smooth normals. Welds vertices that share a position
-    /// and averages the face normals around each weld, but only blends faces whose
-    /// normals are within `creaseDegrees` of the vertex's own faces — so smooth
-    /// surfaces (including foxtrot's intra-face seams) become seamless while real
-    /// hard edges stay sharp. O(verts) with small constant factors.
+    /// Crease-aware smooth normals via per-position *smoothing groups*. Welds the
+    /// vertices foxtrot splits along every B-rep seam, then partitions the faces
+    /// meeting at each welded position into groups of mutually-smooth faces and
+    /// gives every vertex in a group one shared, area-weighted normal.
+    ///
+    /// The previous implementation seeded each duplicate vertex's normal from its
+    /// OWN faces and flooded outward by `creaseDegrees`. That comparison is
+    /// asymmetric: on a curved surface the two sides of a seam pick different face
+    /// sets, so coincident vertices ended up with slightly different normals —
+    /// SceneKit interpolated the mismatch into the thin bright/dark STRIPES users
+    /// saw running along the seams. Grouping the faces with symmetric, transitive
+    /// union-find removes that asymmetry entirely: any two faces within the crease
+    /// angle (directly or via intermediate faces) land in the same group and share
+    /// a normal, so a smooth surface is seamless regardless of which duplicate you
+    /// look at, while a genuine hard edge (faces beyond the crease angle, not
+    /// transitively connected) still splits into separate groups and stays crisp.
     static func smoothNormals(positions pos: [SIMD3<Float>], indices: [UInt32],
                               creaseDegrees: Float) -> [SIMD3<Float>] {
         let triCount = indices.count / 3
-        var faceN = [SIMD3<Float>](repeating: SIMD3<Float>(0, 0, 1), count: triCount)
+        // Unit normal (for crease comparison) and area-scaled normal (so larger
+        // faces dominate the average) for every triangle.
+        var faceUnit = [SIMD3<Float>](repeating: SIMD3<Float>(0, 0, 1), count: triCount)
+        var faceArea = [SIMD3<Float>](repeating: SIMD3<Float>(0, 0, 0), count: triCount)
         for t in 0..<triCount {
             let a = pos[Int(indices[t*3])], b = pos[Int(indices[t*3+1])], c = pos[Int(indices[t*3+2])]
-            let n = simd_cross(b - a, c - a)
-            let len = simd_length(n)
-            if len > 1e-12 { faceN[t] = n / len }
+            let cr = simd_cross(b - a, c - a)          // length == 2 × area
+            faceArea[t] = cr
+            let len = simd_length(cr)
+            if len > 1e-12 { faceUnit[t] = cr / len }
         }
         // Triangles touching each vertex index, and a position hash → indices map
         // so we can find the coincident vertices foxtrot split apart.
@@ -313,19 +328,47 @@ class PreviewViewController: NSViewController, QLPreviewingController {
         }
         let cosThresh = cos(creaseDegrees * .pi / 180)
         var out = [SIMD3<Float>](repeating: SIMD3<Float>(0, 0, 1), count: pos.count)
-        for vi in 0..<pos.count {
-            let own = triOfIndex[vi]
-            if own.isEmpty { continue }
-            var ref = SIMD3<Float>.zero
-            for t in own { ref += faceN[t] }
-            let rl = simd_length(ref)
-            ref = rl > 1e-12 ? ref / rl : faceN[own[0]]
-            var acc = SIMD3<Float>.zero
-            for cvi in byPos[key(pos[vi])] ?? [vi] {
-                for t in triOfIndex[cvi] where simd_dot(faceN[t], ref) >= cosThresh { acc += faceN[t] }
+
+        for (_, group) in byPos {
+            // Unique triangles meeting at this welded position.
+            var seen = Set<Int>()
+            var tris: [Int] = []
+            for vi in group { for t in triOfIndex[vi] where seen.insert(t).inserted { tris.append(t) } }
+            let n = tris.count
+            if n == 0 { continue }
+
+            // Union-find over the faces: connect any two within the crease angle.
+            // Transitivity lets a curved fan (each facet smooth to its neighbour)
+            // collapse into a single group even when its extremes exceed the angle.
+            var parent = Array(0..<n)
+            func find(_ x: Int) -> Int {
+                var r = x
+                while parent[r] != r { parent[r] = parent[parent[r]]; r = parent[r] }
+                return r
             }
-            let al = simd_length(acc)
-            out[vi] = al > 1e-12 ? acc / al : ref
+            for i in 0..<n {
+                for j in (i+1)..<n where simd_dot(faceUnit[tris[i]], faceUnit[tris[j]]) >= cosThresh {
+                    let ri = find(i), rj = find(j)
+                    if ri != rj { parent[ri] = rj }
+                }
+            }
+            // Area-weighted normal per smoothing group.
+            var groupNormal = [Int: SIMD3<Float>]()
+            for i in 0..<n { groupNormal[find(i), default: SIMD3<Float>(0, 0, 0)] += faceArea[tris[i]] }
+            var groupUnit = [Int: SIMD3<Float>]()
+            for (r, acc) in groupNormal {
+                let l = simd_length(acc)
+                groupUnit[r] = l > 1e-12 ? acc / l : faceUnit[tris[r]]
+            }
+            // Assign each welded vertex the normal of the group its faces belong to.
+            // foxtrot duplicates per B-rep face, so a duplicate's faces share one
+            // group; the shared normal is what makes the seam vanish.
+            for i in 0..<n {
+                let normal = groupUnit[find(i)]!
+                let t = tris[i]
+                let corners = [Int(indices[t*3]), Int(indices[t*3+1]), Int(indices[t*3+2])]
+                for vi in group where corners.contains(vi) { out[vi] = normal }
+            }
         }
         return out
     }

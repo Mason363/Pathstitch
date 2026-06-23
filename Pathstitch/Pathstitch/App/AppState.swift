@@ -4198,6 +4198,12 @@ class AppState {
     /// The kind ("fillet"/"chamfer") implied by the active tool.
     var cornerToolKind: String { currentTool == .chamfer ? "chamfer" : "fillet" }
 
+    /// True while a fillet/chamfer corner session is in progress — between entering
+    /// the tool and confirming (Enter / leaving) or cancelling (Esc) it. The guided
+    /// tutorial uses this to wait until a fillet is actually confirmed, not just
+    /// previewed on tool entry.
+    var isCornerSessionActive: Bool { cornerSessionUndoDepth != nil }
+
     /// Indices of a base polygon's corners that can take a fillet/chamfer.
     private func filletableIndices(base: [[Double]], closed: Bool) -> [Int] {
         guard base.count >= 3 else { return [] }

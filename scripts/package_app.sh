@@ -17,7 +17,9 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 CONDA_ENV="${CONDA_ENV:-/opt/homebrew/Caskroom/miniconda/base/envs/pathstitch}"
 SCHEME="Pathstitch"
 PROJ="$REPO/Pathstitch/Pathstitch.xcodeproj"
-VERSION="$(/usr/libexec/PlistBuddy -c 'Print MARKETING_VERSION' /dev/stdin 2>/dev/null <<<'' || true)"
+# Version for the DMG filename: honor an explicit VERSION env override, else read
+# MARKETING_VERSION straight from the Xcode project (single source of truth).
+VERSION="${VERSION:-$(grep -m1 'MARKETING_VERSION = ' "$PROJ/project.pbxproj" | sed 's/.*MARKETING_VERSION = //; s/;.*//')}"
 VERSION="${VERSION:-1.0}"
 DIST="$REPO/dist"
 APP_OUT="$DIST/Pathstitch.app"

@@ -18,6 +18,8 @@ not a web wrapper.
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 52 39 PM" src="https://github.com/user-attachments/assets/63cfbd20-b581-47fe-a3eb-1ff0c9cac5cb" />
 
+> [VIDEO: 25–35s hero overview — a fast highlight reel cut from the section demos below. Blank canvas → sketch a rectangle with live dimensions → round a corner with the fillet drag → drop in a saddle-stitch line → import a STEP and unfold it → export a DXF. The goal is "look how much this one app does, and how fast," not a tutorial. This is the one clip most visitors will actually watch, so make the first 3 seconds land.]
+
 ---
 
 ## Download
@@ -37,8 +39,11 @@ engine ships inside the app.
 ## What it does
 
 ### Draw
-Line, circle, rectangle, text, and an Illustrator‑style **pen** tool, all with point/edge **snapping** and
-**on‑creation dimensions** — type a width, `Tab`, type a height, `Enter`, done.
+Line, circle, rectangle, polygon, text, and an Illustrator‑style **pen** tool, all with point/edge/grid **snapping** and
+**on‑creation dimensions** — type a width, `Tab`, type a height, `Enter`, done. No modal dialogs, no hunting through panels: the number you want is already
+under your cursor.
+
+> [VIDEO: 8–12s loop — drawing one rectangle by typing exact dimensions (e.g. 80 `Tab` 50 `Enter`), then a circle snapping to its corner. Keep keystrokes visible on screen so people see the type-a-number-and-go flow. Silent loop, no narration needed.]
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 53 33 PM" src="https://github.com/user-attachments/assets/e4abe9a9-303a-477e-a92a-b73f2b6d0251" />
 
@@ -48,7 +53,11 @@ Line, circle, rectangle, text, and an Illustrator‑style **pen** tool, all with
   separate lines meet, and imported geometry.
 - **Trim**, Fusion‑style: hover a segment to see exactly what will be removed, then click — or drag across
   several — to cut at every intersection.
+- **Boolean** union / subtract / intersect on closed shapes, and **Explode** to break a compound back into
+  its individual edges.
 - Move/rotate gizmo, point‑to‑point move, scale, mirror, reflect, duplicate.
+
+> [VIDEO: 10–15s — the fillet tool is the showpiece. Drag a single corner's radius up and down so the rounding updates live, then grab a second corner so two fillets grow until they meet. End by re-selecting an already-filleted corner to show it's still editable. This clip should make the "parametric, forever-editable" claim obvious without words.]
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 54 20 PM" src="https://github.com/user-attachments/assets/85944b0c-71b1-4632-8773-ce5b9ddc906c" />
 
@@ -56,14 +65,20 @@ Line, circle, rectangle, text, and an Illustrator‑style **pen** tool, all with
 
 ### Make
 - **Stitch holes & saddle‑stitch patterns** generated along any path, with spacing and corner controls.
-- **Offset**, **convert‑lines** (dashed/perforated styles), **patterning**, and **paper folding**
-  (crease lines + glue tabs) for assembling 3D objects from flat stock.
+- **Offset**, **convert‑lines** (dashed/perforated styles), **fill / hatch** a closed region,
+  **patterning** (grid, circular, or along a path), and **paper folding** (crease lines + glue tabs) for
+  assembling 3D objects from flat stock.
+
+> [VIDEO: 8–12s — click along an edge to lay down a saddle-stitch hole line, then tweak the spacing field and watch the holes re-flow evenly around a corner. The "it spaces itself perfectly around corners" moment is what leatherworkers care about, so make sure a corner is in frame.]
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 5 03 09 PM" src="https://github.com/user-attachments/assets/5959eb5d-2da1-4abb-9f9f-e1c15734566c" />
 
 ### Go 3D → 2D
 Import `.step` / `.stp`, inspect it in a Three.js viewport, and **unfold developable surfaces into flat
-nets** ready for the 2D tools.
+nets** ready for the 2D tools — the thing most pattern tools simply can't do. Drag in several models at once
+and they auto‑arrange; take a cross‑section from any plane to sketch against.
+
+> [VIDEO: 12–18s — the headline feature. Orbit an imported STEP model in 3D, hit unfold, and watch the curved part flatten into 2D panels you could cut. Then cut to those panels living in the 2D editor with stitch holes on them. This is the "wait, it does *that*?" clip — worth making it the most polished of the set.]
 
 <img width="1312" height="912" alt="Screenshot 2026-06-15 at 5 05 53 PM" src="https://github.com/user-attachments/assets/802bf6e9-4b0f-4159-962b-fa0768eef29b" />
 
@@ -71,8 +86,12 @@ nets** ready for the 2D tools.
 
 ### Export & integrate
 DXF, SVG, PDF, and PNG export; native `.stch` project files; and **Finder QuickLook previews + thumbnails**
-for DXF and STEP. Plus the niceties: customizable keybinds, light/dark themes, a `⌘K` command palette, and a
-rearrangeable toolbar.
+for DXF and STEP — press Space on a file and see the real geometry, not a generic icon. Plus the niceties:
+customizable keybinds, light/dark themes, a `⌘K` command palette, and a rearrangeable toolbar.
+
+> [VIDEO: 6–10s — in Finder, arrow through a folder of `.dxf` and `.step` files pressing Space on each so the QuickLook preview renders the actual part. Short and satisfying; shows the macOS-native integration most CAD tools don't bother with.]
+
+> [IMAGE: a Finder window in icon/gallery view showing a folder of Pathstitch files where the thumbnails are real previews of each pattern/part — a clean, single still that demonstrates the thumbnail extension at a glance.]
 
 ---
 
@@ -94,6 +113,9 @@ rearrangeable toolbar.
 - **Offset** — chain-select, live ghost, flip side, construction lines.
 - **Join / Cleanup** — bridge hanging endpoints with straight lines.
 - **Convert Lines** — restyle to dashed / perforated / decorative lines.
+- **Boolean** — union, subtract, and intersect closed shapes.
+- **Fill / Hatch** — fill a closed region with a solid or hatch pattern.
+- **Explode** — break a compound / polyline back into its individual edges.
 - **Move** — gizmo + exact point-to-point.
 - **Scale** — live drag, from center or a picked point.
 - **Mirror** — objects/mirror-line modes with live ghost.
@@ -107,7 +129,7 @@ rearrangeable toolbar.
 **Make**
 - **Stitch holes** — saddle-stitch generation along any path, spacing/corner controls.
 - **Keep-out avoidance** — gap the stitch line around tagged hardware.
-- **Patterning** — rectangular & circular arrays with live ghost preview.
+- **Patterning** — rectangular, circular, and along-a-path arrays with live ghost preview.
 - **Paper folding** — crease lines + glue tabs for 3D assembly.
 
 **3D → 2D**
