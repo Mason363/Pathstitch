@@ -75,10 +75,14 @@ ln -s /Applications "$STAGE/Applications"
 
 DMG_BG="$REPO/scripts/dmg/background.png"
 VOL="Pathstitch"
-WIN_W=600; WIN_H=400          # window content size (points)
-APP_X=150;  APP_Y=190         # Pathstitch.app icon center
-APPL_X=450; APPL_Y=190        # Applications shortcut icon center
-ICON_SIZE=100
+# Square window (500×500 pt) so a square 10×10 cm leather background maps 1:1.
+# Scale is 5 pt/mm: 100 mm → 500 pt. Finder y is top-down, so a point at model
+# height h mm sits at y = 500 − h·5. Constants below match the engraving spec /
+# scripts/dmg/background-template.svg.
+WIN_W=500; WIN_H=500          # window content size (points)
+APP_X=150;  APP_Y=260         # Pathstitch.app icon center  (= 30 mm, 48 mm)
+APPL_X=350; APPL_Y=260        # Applications shortcut center (= 70 mm, 48 mm)
+ICON_SIZE=100                 # 100 pt = 20 mm icon
 
 build_plain_dmg() {
   hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null

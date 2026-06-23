@@ -1,47 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Pathstitch DMG background TEMPLATE.
+  Pathstitch DMG background TEMPLATE (square, to match a 10×10 cm leather piece).
 
-  This shows EXACTLY where the two icons land in the installer window so you can
-  paint your leather-cut background to match. The DMG window content area is
-  600 × 400 points. Export your finished art as a 600 × 400 px PNG named
-  `background.png` in this folder (scripts/dmg/background.png) and the packager
-  picks it up automatically. Keep the two marked zones visually clear — the real
-  app icon and the Applications shortcut are drawn ON TOP of your background at
-  the centers shown below.
+  The installer window is 500 × 500 points, mapped 1:1 to a 100 × 100 mm leather
+  background. Export your finished art as a 500 × 500 px PNG named
+  `background.png` in this folder. Keep the two marked icon zones visually clear —
+  the real app icon and the Applications shortcut are drawn ON TOP, and Finder
+  prints each icon's name just below it.
 
-  Icon centers (content-area coords, origin top-left), icon size 100:
-    • Pathstitch.app   → (150, 190)
-    • Applications     → (450, 190)
+  Scale: 5 pt = 1 mm. SVG y is top-down; the mm values in the engraving spec are
+  bottom-up (standard Pathstitch). Icon centers / size (points):
+    • Pathstitch.app  → (150, 260)  [30 mm, 48 mm]   size 100 pt = 20 mm
+    • Applications    → (350, 260)  [70 mm, 48 mm]
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
-  <!-- Placeholder canvas — replace this whole layer with your leather texture. -->
-  <rect x="0" y="0" width="600" height="400" fill="#3a2a1d"/>
-  <rect x="0" y="0" width="600" height="400" fill="none" stroke="#5a4636" stroke-width="2"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
+  <!-- Placeholder canvas — replace with your leather texture photo (100×100 mm). -->
+  <rect x="0" y="0" width="500" height="500" fill="#3a2a1d"/>
+  <!-- Optional decorative border, inset 4 mm (20 pt), corner radius 6 mm (30 pt). -->
+  <rect x="20" y="20" width="460" height="460" rx="30" fill="none" stroke="#5a4636" stroke-width="3"/>
 
-  <!-- Title -->
-  <text x="300" y="64" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="26" font-weight="700" fill="#f3e6d2">Install Pathstitch</text>
-  <text x="300" y="92" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="14" fill="#cdb89c">Drag the app onto the Applications folder</text>
+  <!-- Title — baseline 84 mm → y = 500 − 84·5 = 80 -->
+  <text x="250" y="86" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
+        font-size="30" font-weight="700" fill="#f3e6d2">Install Pathstitch</text>
+  <!-- Subtitle — baseline 74 mm → y = 130 -->
+  <text x="250" y="124" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
+        font-size="15" fill="#cdb89c">Drag the app onto the Applications folder</text>
 
-  <!-- App icon zone (center 150,190; 100×100) -->
-  <rect x="100" y="140" width="100" height="100" rx="18" fill="none"
+  <!-- App icon zone: center (150,260), 100×100 pt = 20×20 mm -->
+  <rect x="100" y="210" width="100" height="100" rx="18" fill="none"
         stroke="#d9b98c" stroke-width="2" stroke-dasharray="6 5"/>
-  <text x="150" y="262" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
+  <text x="150" y="332" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
         font-size="13" fill="#e8d6bd">Pathstitch.app</text>
 
-  <!-- Applications zone (center 450,190; 100×100) -->
-  <rect x="400" y="140" width="100" height="100" rx="18" fill="none"
+  <!-- Applications icon zone: center (350,260) -->
+  <rect x="300" y="210" width="100" height="100" rx="18" fill="none"
         stroke="#d9b98c" stroke-width="2" stroke-dasharray="6 5"/>
-  <text x="450" y="262" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
+  <text x="350" y="332" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
         font-size="13" fill="#e8d6bd">Applications</text>
 
-  <!-- Drag arrow -->
-  <line x1="212" y1="190" x2="388" y2="190" stroke="#d9b98c" stroke-width="3"/>
-  <polygon points="388,190 372,181 372,199" fill="#d9b98c"/>
+  <!-- Drag arrow: 43 mm → 57 mm at 48 mm  →  x 215→285, y 260 -->
+  <line x1="215" y1="260" x2="281" y2="260" stroke="#d9b98c" stroke-width="3"/>
+  <polygon points="285,260 269,251 269,269" fill="#d9b98c"/>
 
-  <!-- Reminder (delete in your final art) -->
-  <text x="300" y="346" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
-        font-size="11" fill="#b59c7d">Template only — export 600×400 background.png, keep the dashed zones clear.</text>
+  <text x="250" y="452" text-anchor="middle" font-family="Helvetica, Arial, sans-serif"
+        font-size="11" fill="#b59c7d">Template only — export 500×500 background.png, keep the dashed zones clear.</text>
 </svg>

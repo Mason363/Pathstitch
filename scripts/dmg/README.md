@@ -10,7 +10,7 @@ other.
    size and where the two icons land, with an arrow between them.
 2. Paint your leather-cut background over the placeholder, keeping the two dashed
    zones visually clear (the real icons render on top of them).
-3. Export it as **`background.png`** (this folder), at **600 × 400 px**.
+3. Export it as **`background.png`** (this folder), at **500 × 500 px**.
 
 That's it. `scripts/package_app.sh` automatically detects `background.png` and
 builds the styled, positioned DMG. If `background.png` is absent, it falls back
@@ -20,9 +20,12 @@ to a plain (un-styled) drag-install DMG, so packaging never breaks.
 
 | Item            | Icon center (pt) | Icon size |
 |-----------------|------------------|-----------|
-| Window content  | 600 × 400        | —         |
-| Pathstitch.app  | (150, 190)       | 100       |
-| Applications    | (450, 190)       | 100       |
+| Window content  | 500 × 500        | —         |
+| Pathstitch.app  | (150, 260)       | 100       |
+| Applications    | (350, 260)       | 100       |
+
+Square (500 × 500 pt = 100 × 100 mm) so a 10 × 10 cm leather background maps 1:1.
+See the laser-cut dimensions in the engraving spec.
 
 Coordinates are in the window's content area, origin top-left — the same space
 the Finder AppleScript in `package_app.sh` uses, so the art and the icons stay
