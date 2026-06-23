@@ -14,6 +14,13 @@ crate-type = ["staticlib"]
 step = { git = "https://github.com/Formlabs/foxtrot", rev = "69fb37688892246e670fc08eb60b7d3a92d70d3f" }
 triangulate = { git = "https://github.com/Formlabs/foxtrot", rev = "69fb37688892246e670fc08eb60b7d3a92d70d3f" }
 
+# Override only the `triangulate` crate with our vendored copy (same rev) that
+# samples doubly-curved surfaces more densely — spheres/ellipsoids and freeform
+# NURBS/B-spline faces were too coarse in the QuickLook previews. step/nurbs/cdt
+# still come from the pinned git rev. See ../foxtrot-triangulate/.
+[patch."https://github.com/Formlabs/foxtrot"]
+triangulate = { path = "../foxtrot-triangulate" }
+
 [profile.release]
 opt-level = 3
 codegen-units = 1

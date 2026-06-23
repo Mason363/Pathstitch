@@ -339,7 +339,6 @@ dependencies = [
 [[package]]
 name = "triangulate"
 version = "0.1.0"
-source = "git+https://github.com/Formlabs/foxtrot?rev=69fb37688892246e670fc08eb60b7d3a92d70d3f#69fb37688892246e670fc08eb60b7d3a92d70d3f"
 dependencies = [
  "cdt",
  "log",

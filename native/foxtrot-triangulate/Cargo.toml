@@ -1,0 +1,29 @@
+# Vendored copy of Formlabs/foxtrot's `triangulate` crate (MIT/Apache-2.0),
+# pinned to the same rev as the git dependency, with one local change: denser
+# Steiner-point sampling for doubly-curved surfaces (see src/surface.rs,
+# `add_steiner_points`). Spheres/ellipsoids and freeform NURBS/B-spline faces
+# were tessellated too coarsely, so they looked faceted/deformed in the STEP
+# QuickLook previews (cylinders/cones are developable and were already fine).
+#
+# This crate is wired in via `[patch]` in ../step_mesh/Cargo.toml so the rest of
+# foxtrot (step, nurbs, cdt) still comes from the pinned git rev — only the
+# triangulator's interior sampling is overridden. Edit here, then run
+# ../step_mesh/build.sh to regenerate the committed static lib.
+[package]
+name = "triangulate"
+version = "0.1.0"
+authors = ["Matt Keeter <matt.j.keeter@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+cdt = { git = "https://github.com/Formlabs/foxtrot", rev = "69fb37688892246e670fc08eb60b7d3a92d70d3f" }
+nurbs = { git = "https://github.com/Formlabs/foxtrot", rev = "69fb37688892246e670fc08eb60b7d3a92d70d3f" }
+step = { git = "https://github.com/Formlabs/foxtrot", rev = "69fb37688892246e670fc08eb60b7d3a92d70d3f" }
+
+log = "0.4.14"
+nalgebra-glm = "0.13.0"
+rayon = { version = "1.5", optional = true }
+thiserror = "1.0"
+
+[features]
+parallel = ["rayon", "step/parallel"]
