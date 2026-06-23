@@ -249,6 +249,12 @@ LLVM/Qt/VTK/headers are dropped) plus `pathstitch_core` into the bundle, ad‑ho
 `.dmg` whose window has the app next to an **Applications** shortcut (drag one onto the other). Point it at a
 different env with `CONDA_ENV=/path/to/env bash scripts/package_app.sh`.
 
+**Styled installer window.** Drop a `scripts/dmg/background.png` (600 × 400) and the packager builds a
+positioned drag‑to‑Applications window over your artwork; without it you get a plain (but still functional)
+drag‑install DMG. Use **`scripts/dmg/background-template.svg`** as the guide — it marks exactly where the app
+and Applications icons land so you can paint a matching background (e.g. a leather‑cut texture). See
+`scripts/dmg/README.md`.
+
 > The bundled env is **arm64**, so the image targets Apple‑Silicon Macs. For a no‑warning install you'd need a
 > paid **Apple Developer ID** signature + notarization (`xcrun notarytool`); without it, users do the
 > one‑time bypass below.

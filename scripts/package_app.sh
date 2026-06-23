@@ -64,11 +64,73 @@ codesign --force --deep --sign - "$APP_OUT"
 codesign --verify --verbose=1 "$APP_OUT" || true
 
 # ---- 5. build the drag-install .dmg -----------------------------------------
+# A styled window (leather background + positioned icons + Applications arrow)
+# when scripts/dmg/background.png exists; otherwise a plain drag-install DMG so
+# packaging never depends on the artwork being present. Layout constants here
+# MUST match scripts/dmg/background-template.svg.
 echo "▶ Building .dmg …"
 STAGE="$(mktemp -d)"
 cp -R "$APP_OUT" "$STAGE/Pathstitch.app"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Pathstitch" -srcfolder "$STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
+
+DMG_BG="$REPO/scripts/dmg/background.png"
+VOL="Pathstitch"
+WIN_W=600; WIN_H=400          # window content size (points)
+APP_X=150;  APP_Y=190         # Pathstitch.app icon center
+APPL_X=450; APPL_Y=190        # Applications shortcut icon center
+ICON_SIZE=100
+
+build_plain_dmg() {
+  hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
+}
+
+build_styled_dmg() {
+  mkdir -p "$STAGE/.background"
+  cp "$DMG_BG" "$STAGE/.background/background.png" || return 1
+
+  local rw="$DIST/Pathstitch-rw.dmg"
+  rm -f "$rw"
+  hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDRW "$rw" >/dev/null || return 1
+
+  local dev
+  dev=$(hdiutil attach -readwrite -noverify -noautoopen "$rw" | grep -E '^/dev/' | head -1 | awk '{print $1}')
+  [ -n "$dev" ] || return 1
+  sleep 2
+
+  osascript <<OSA || { hdiutil detach "$dev" >/dev/null 2>&1 || true; return 1; }
+tell application "Finder"
+  tell disk "$VOL"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {200, 120, $((200 + WIN_W)), $((120 + WIN_H))}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to $ICON_SIZE
+    set background picture of opts to file ".background:background.png"
+    set position of item "Pathstitch.app" of container window to {$APP_X, $APP_Y}
+    set position of item "Applications" of container window to {$APPL_X, $APPL_Y}
+    update without registering applications
+    delay 1
+    close
+  end tell
+end tell
+OSA
+
+  sync
+  hdiutil detach "$dev" >/dev/null 2>&1 || true
+  hdiutil convert "$rw" -format UDZO -ov -o "$DMG_OUT" >/dev/null || { rm -f "$rw"; return 1; }
+  rm -f "$rw"
+}
+
+if [ -f "$DMG_BG" ]; then
+  echo "  • styling DMG with scripts/dmg/background.png …"
+  build_styled_dmg || { echo "  • styled DMG failed — falling back to a plain drag-install DMG"; build_plain_dmg; }
+else
+  echo "  • no scripts/dmg/background.png — plain drag-install DMG (see scripts/dmg/README.md to add the leather background)"
+  build_plain_dmg
+fi
 rm -rf "$STAGE"
 
 echo "✓ Done:"
