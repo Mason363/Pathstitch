@@ -1706,6 +1706,13 @@ extension ContentView {
                  : "\(activeCorners) corner\(activeCorners == 1 ? "" : "s") selected — they share this radius. Drag the corner arrow or edit the value.")
                 .font(PlasticityFont.label)
                 .foregroundColor(Color.text_muted)
+
+            if let notice = state.cornerLimitNotice {
+                Text(notice)
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.status_err)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -3064,6 +3071,15 @@ extension ContentView {
                     .buttonStyle(PlainButtonStyle())
                 }
 
+                // Trim empty transparent borders from images as they're imported.
+                // Moved here from the global header — it's an image setting (was
+                // "Crop Transparent Margins" in the top toolbar).
+                Toggle("Crop Transparent Margins", isOn: $state.autocropBackgroundlessImage)
+                    .toggleStyle(.checkbox)
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_primary)
+                    .help("When importing an image, trim the empty transparent border so the artwork fills the frame")
+
                 Divider()
                     .padding(.vertical, 4)
 
@@ -3334,17 +3350,13 @@ extension ContentView {
                 .foregroundColor(Color.text_primary)
                 .font(PlasticityFont.body)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
-                // Enter applies the exact factor (MAS-111).
+                // Enter commits the staged/typed factor (MAS-111).
                 .onSubmit {
-                    if !state.selectedHandles.isEmpty, state.scaleFactor > 0 {
-                        state.scaleSelected(factor: state.scaleFactor)
-                    }
+                    state.commitPendingScale()
                 }
 
             Button("Apply Scale") {
-                if !state.selectedHandles.isEmpty, state.scaleFactor > 0 {
-                    state.scaleSelected(factor: state.scaleFactor)
-                }
+                state.commitPendingScale()
             }
             .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedHandles.isEmpty && state.scaleFactor > 0))
             .disabled(state.selectedHandles.isEmpty || state.scaleFactor <= 0)

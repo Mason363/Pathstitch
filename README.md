@@ -27,8 +27,10 @@ not a web wrapper.
 engine ships inside the app.
 
 - **Requires:** an Apple‑Silicon Mac (M1 or newer) on **macOS 14 (Sonoma)+**.
-- The app is **ad‑hoc signed, not Apple‑notarized**, so the first launch needs a one‑time Gatekeeper
-  approval — see **[Installing](#installing-the-app)**.
+- **Free, and you don't need an Apple Developer account to run it.** The app is **ad‑hoc signed, not
+  Apple‑notarized** (notarization needs a paid $99/yr Apple Developer ID, which this project doesn't have
+  yet), so the very first launch needs a **one‑time** Gatekeeper approval — a 15‑second, two‑click bypass.
+  See **[Installing](#installing-the-app)**. After that first approval it opens normally forever.
 
 ---
 
@@ -312,7 +314,22 @@ Pathstitch is an actively developed **1.0**. The 2D pipeline (draw → edit → 
 core; 3D STEP import + unfolding works for developable surfaces and is expanding. Currently **Apple‑Silicon
 only** — an Intel/universal build is possible by repackaging the backend on an Intel Mac.
 
-Issues and ideas are welcome via the tracker.
+---
+
+## Feedback & bug reports
+
+Found a bug, hit a rough edge, or have an idea? It genuinely helps.
+
+- **🐛 Bugs** → [open an issue](https://github.com/Mason363/Pathstitch/issues/new?template=bug_report.yml).
+  Steps to reproduce + a screenshot or short screen recording make it far easier to fix — visual and
+  interaction bugs especially.
+- **💡 Feature requests** → [open an issue](https://github.com/Mason363/Pathstitch/issues/new?template=feature_request.yml).
+  Tell me what you're trying to *do*; the goal matters more than a specific implementation.
+- **💬 Questions, ideas to talk through, or showing off what you made** →
+  [Discussions](https://github.com/Mason363/Pathstitch/discussions).
+
+Before filing, a quick search of [existing issues](https://github.com/Mason363/Pathstitch/issues) avoids
+duplicates. That's it — no account hoops beyond a free GitHub login.
 
 ---
 

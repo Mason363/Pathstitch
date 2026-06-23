@@ -317,7 +317,22 @@ enum AppIconManager {
     }
 
     /// Applies the user's icon choice to the dock/app icon.
+    ///
+    /// For the default "auto" choice we deliberately do NOT override the icon:
+    /// the AppIcon asset already carries light/dark/tinted appearance variants,
+    /// so macOS renders the appearance-correct icon consistently across the
+    /// Dock, Finder, Spotlight and the launch/quit moments. Overriding it with a
+    /// fixed bitmap is what caused the wrong-colour flashes (a stale bitmap that
+    /// differed from the native icon, re-swapped on every appearance change).
+    /// Setting `applicationIconImage = nil` restores that native, OS-managed
+    /// icon. We only force a specific bitmap when the user explicitly picks
+    /// light or dark in Settings ▸ App Icon.
     static func refresh() {
-        NSApp.applicationIconImage = currentIcon()
+        let choice = UserDefaults.standard.string(forKey: SettingsKeys.icon) ?? "auto"
+        if choice == "light" || choice == "dark" {
+            NSApp.applicationIconImage = currentIcon()
+        } else {
+            NSApp.applicationIconImage = nil
+        }
     }
 }

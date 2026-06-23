@@ -276,6 +276,13 @@ struct DxfCanvasView: View {
                         state.cancelOffsetTool()
                         return
                     }
+                    // Esc discards a staged (un-committed) scale preview and exits.
+                    if state.currentTool == .scale {
+                        state.scaleFactor = 1.0
+                        state.scalePivotModel = nil
+                        if state.currentTool != .select { state.currentTool = .select }
+                        return
+                    }
                     if state.currentTool == .pen && !penAnchors.isEmpty {
                         // Esc abandons the in-progress pen path, or cancels a
                         // re-edit and restores the original (parametric pen lines).
@@ -648,10 +655,13 @@ struct DxfCanvasView: View {
                                 state.scaleFactor = Double(f)
                             }
                             .onEnded { _ in
-                                let f = Double(gizmoDragScale)
+                                // Don't bake on release. Keep state.scaleFactor as a
+                                // live preview so the factor pill and the tool-options
+                                // field persist after letting go. The scale is only
+                                // committed on Apply / Enter, or when the tool is
+                                // deselected; Escape discards it.
                                 isDraggingScale = false
                                 gizmoDragScale = 1.0
-                                if abs(f - 1.0) > 0.001 { state.scaleSelected(factor: f) }
                             }
                     )
 
@@ -2335,19 +2345,38 @@ struct DxfCanvasView: View {
 
     @ViewBuilder
     private func contextMenuButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage).frame(width: 16)
-                Text(title)
-                Spacer()
+        ContextMenuButtonRow(title: title, systemImage: systemImage, action: action)
+    }
+
+    /// A single row of the canvas right-click menu. Highlights on hover so the
+    /// user can see what a click will select before committing.
+    private struct ContextMenuButtonRow: View {
+        let title: String
+        let systemImage: String
+        let action: () -> Void
+        @State private var isHovering = false
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    Image(systemName: systemImage).frame(width: 16)
+                    Text(title)
+                    Spacer()
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .foregroundColor(isHovering ? Color.accent : Color.text_primary)
+                .font(PlasticityFont.body)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(isHovering ? Color.accent.opacity(0.16) : Color.clear)
+                )
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
-            .foregroundColor(Color.text_primary)
-            .font(PlasticityFont.body)
+            .buttonStyle(PlainButtonStyle())
+            .onHover { isHovering = $0 }
         }
-        .buttonStyle(PlainButtonStyle())
     }
 
     private func handleDragChanged(val: DragGesture.Value, size: CGSize, modelBounds: CGRect) {

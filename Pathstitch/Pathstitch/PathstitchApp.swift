@@ -11,6 +11,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Start screen, Settings, Help and document windows all open themed (MAS-72).
         // Calling this early also sets the correct Dock icon before the app finishes launching.
         ThemeManager.apply()
+
+        // Show `.help()` tooltips sooner. AppKit's default initial delay is ~2s,
+        // which feels sluggish when scrubbing across the tool sidebar; ~0.5s is
+        // noticeably quicker without being intrusive. Key is in milliseconds.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 500])
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {

@@ -1,0 +1,61 @@
+name: 🐛 Bug report
+description: Something isn't working the way it should.
+title: "[Bug]: "
+labels: ["bug", "needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more detail you give,
+        the faster it can be fixed. A screenshot or short screen recording helps
+        a lot for visual / interaction issues.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, and what went wrong?
+      placeholder: I selected two lines, picked Fillet, and…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Number the steps so they can be followed exactly.
+      placeholder: |
+        1. Open a new 2D document
+        2. Draw a rectangle
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: Pathstitch version
+      description: See Pathstitch ▸ About Pathstitch.
+      placeholder: "1.0"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.5 (Sequoia)"
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / recording
+      description: Drag images or a video here. Hugely helpful for visual bugs.
+  - type: textarea
+    id: files
+    attributes:
+      label: Sample file (optional)
+      description: If a specific .stch / .dxf / .step triggers it, attach it here.

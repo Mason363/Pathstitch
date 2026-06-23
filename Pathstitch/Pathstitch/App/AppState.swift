@@ -889,6 +889,10 @@ class AppState {
     var currentTool: TwoDTool = .select {
         didSet {
             guard currentTool != oldValue else { return }
+            // Leaving the Scale tool commits any staged (previewed-but-unbaked)
+            // scale, so switching tools doesn't silently drop the work. Escape
+            // resets scaleFactor to 1 first, so this is a no-op on cancel.
+            if oldValue == .scale { commitPendingScale() }
             if currentTool == .offset {
                 // Entering Offset: always start at a predictable 12 mm rather than
                 // inheriting the last session's distance, so the tool behaves the
@@ -1097,6 +1101,10 @@ class AppState {
     var filletContinuity: String = "G1"      // "G1" (arc) | "G2" (biarc blend)
     var filletToolRadius: Double = 3.0       // radius (fillet) / setback (chamfer)
     var filletSelectedHandle: String? = nil  // the shape the corner tools act on
+    /// Set when a typed fillet/chamfer value is clamped to the geometric limit,
+    /// so the panel can tell the user the max instead of silently snapping back.
+    /// Cleared whenever a valid value is applied or the session restarts.
+    var cornerLimitNotice: String? = nil
     /// Undo-stack depth captured when a Fillet/Chamfer session began, so Enter can
     /// confirm (keep) and Esc can cancel (revert the whole session).
     private var cornerSessionUndoDepth: Int? = nil
@@ -1257,6 +1265,13 @@ class AppState {
                     self.currentFilePath = activeDxfURL
                     self.reloadDXF()
                     self.selectedHandles = Set(workingHandles)
+                    // Scale the attached editable models about the same pivot so
+                    // the shape stays editable at its new size and its dimension
+                    // lines scale with it (instead of snapping back on re-edit).
+                    self.transformAttachedModels(handles: Set(workingHandles)) { p in
+                        CGPoint(x: pivot.x + (p.x - pivot.x) * CGFloat(factor),
+                                y: pivot.y + (p.y - pivot.y) * CGFloat(factor))
+                    }
                     self.scaleFactor = 1.0
                     self.logEntries.append(LogEntry(action: "Scale", details: String(format: "Scaled selection ×%.3f", factor)))
                 }
@@ -1267,6 +1282,18 @@ class AppState {
                 }
             }
         }
+    }
+
+    /// Commit a staged scale preview (the live factor shown on the gizmo pill
+    /// and the tool-options field). Called by Apply / Enter and when the Scale
+    /// tool is deselected. A factor of ~1 means nothing was staged, so no-op.
+    func commitPendingScale() {
+        guard !selectedHandles.isEmpty, scaleFactor > 0,
+              abs(scaleFactor - 1.0) > 0.001 else {
+            scaleFactor = 1.0
+            return
+        }
+        scaleSelected(factor: scaleFactor)   // resets scaleFactor to 1 on success
     }
 
     /// Point-to-point move (MAS-80): translate the selection by (to − from),
@@ -4172,9 +4199,61 @@ class AppState {
 
     /// Sets only the active corner's value (radius box / drag arrow), leaving all
     /// other corners untouched (MAS-91).
+    /// The largest fillet radius / chamfer setback the active corner group can
+    /// take before the blend would run past the midpoint of its shorter adjacent
+    /// edge (where it collides with the neighbouring corner / overruns the edge).
+    /// For a multi-corner group it's the min over all corners. nil when nothing
+    /// is selected.
+    func activeCornerMaxValue() -> Double? {
+        guard let handle = filletSelectedHandle, let model = parametricShapes[handle] else { return nil }
+        let group = activeCornerIndices.isEmpty ? Set(activeCornerIndex.map { [$0] } ?? []) : activeCornerIndices
+        guard !group.isEmpty else { return nil }
+        let n = model.base.count
+        guard n >= 3 else { return nil }
+        let isChamfer = (currentTool == .chamfer)
+        var maxVal = Double.greatestFiniteMagnitude
+        for c in model.corners where group.contains(c.index) {
+            let i = c.index
+            guard i >= 0, i < n else { continue }
+            let cur = model.base[i]
+            let prev = model.base[(i - 1 + n) % n]
+            let nxt = model.base[(i + 1) % n]
+            let aLen = hypot(prev[0] - cur[0], prev[1] - cur[1])
+            let bLen = hypot(nxt[0] - cur[0], nxt[1] - cur[1])
+            let halfEdge = Swift.min(aLen, bLen) / 2.0   // never pass the edge midpoint
+            guard halfEdge > 1e-6 else { return 0 }
+            if isChamfer {
+                maxVal = Swift.min(maxVal, halfEdge)
+            } else {
+                // Fillet radius from the max tangent setback: t = r / tan(θ/2),
+                // so r_max = halfEdge · tan(θ/2) where θ is the interior angle.
+                let d1x = (prev[0] - cur[0]) / aLen, d1y = (prev[1] - cur[1]) / aLen
+                let d2x = (nxt[0] - cur[0]) / bLen, d2y = (nxt[1] - cur[1]) / bLen
+                let cosT = Swift.max(-1.0, Swift.min(1.0, d1x * d2x + d1y * d2y))
+                let theta = acos(cosT)
+                maxVal = Swift.min(maxVal, halfEdge * tan(theta / 2.0))
+            }
+        }
+        return maxVal == Double.greatestFiniteMagnitude ? nil : Swift.max(0, maxVal)
+    }
+
+    /// Clamps a requested corner value to the geometric limit and, when the
+    /// request overran, records a notice naming the max so the panel can show it.
+    private func clampedCornerValue(_ value: Double) -> Double {
+        var v = max(0, value)
+        if let cap = activeCornerMaxValue(), v > cap + 1e-6 {
+            let label = (currentTool == .chamfer) ? "setback" : "radius"
+            cornerLimitNotice = String(format: "Max %@ here is %.2f mm — limited where the edges meet.", label, cap)
+            v = cap
+        } else {
+            cornerLimitNotice = nil
+        }
+        return v
+    }
+
     func setActiveCornerValue(_ value: Double) {
         guard let handle = filletSelectedHandle, var model = parametricShapes[handle] else { return }
-        let v = max(0, value)
+        let v = clampedCornerValue(value)
         // Apply to every corner selected together (MAS-103); falls back to just the
         // active corner when only one is selected.
         let group = activeCornerIndices.isEmpty ? Set(activeCornerIndex.map { [$0] } ?? []) : activeCornerIndices
@@ -4195,7 +4274,11 @@ class AppState {
     /// is what makes the fillet drag fluid instead of one round-trip per frame.
     func setActiveCornerValueLocal(_ value: Double) {
         guard let handle = filletSelectedHandle, var model = parametricShapes[handle] else { return }
-        let v = max(0, value)
+        // Clamp to the geometric limit so the drag handle stops at the corner's
+        // natural max instead of overshooting and snapping back on release.
+        let cap = activeCornerMaxValue()
+        let v = min(max(0, value), cap ?? .greatestFiniteMagnitude)
+        filletToolRadius = v
         // Drag the radius arrow → all corners selected together follow (MAS-103).
         let group = activeCornerIndices.isEmpty ? Set(activeCornerIndex.map { [$0] } ?? []) : activeCornerIndices
         for i in model.corners.indices where group.contains(model.corners[i].index) {
@@ -4217,6 +4300,7 @@ class AppState {
     func beginCornerToolSession() {
         cornerSessionUndoDepth = undoStack.count
         activeCornerIndices.removeAll()   // fresh group each session (MAS-103)
+        cornerLimitNotice = nil
     }
 
     /// Enter — confirm the in-progress fillet/chamfer: keep the changes.
@@ -6747,6 +6831,54 @@ class AppState {
         }
     }
 
+    /// Applies a point transform to every *editable* model attached to the given
+    /// handles — parametric corner bases, pen-path anchors/handles, and dimension
+    /// (measurement) lines — so a geometric transform (scale, reflect, …) stays
+    /// editable afterwards and its dimensions travel with it. Without this the
+    /// models keep their pre-transform coordinates, so the next parametric edit
+    /// snaps the shape back to its original size/position and dimension lines are
+    /// left behind. `pointTransform` maps a model-space point to its new position.
+    func transformAttachedModels(handles: Set<String>, _ pointTransform: (CGPoint) -> CGPoint) {
+        func tf(_ a: [Double]) -> [Double] {
+            let p = pointTransform(CGPoint(x: a[0], y: a[1]))
+            return [Double(p.x), Double(p.y)]
+        }
+        for h in handles {
+            if var model = parametricShapes[h] {
+                model.base = model.base.map(tf)
+                parametricShapes[h] = model
+            }
+            if var pen = penPaths[h] {
+                pen.anchors = pen.anchors.map { a in
+                    var na = a
+                    na.point = tf(a.point)
+                    if let hi = a.handleIn { na.handleIn = tf(hi) }
+                    if let ho = a.handleOut { na.handleOut = tf(ho) }
+                    return na
+                }
+                penPaths[h] = pen
+            }
+        }
+        for idx in measurements.indices {
+            guard let handle = measurements[idx].entityHandle, handles.contains(handle) else { continue }
+            var m = measurements[idx]
+            m.start = pointTransform(m.start)
+            m.end = pointTransform(m.end)
+            if let p1 = m.rectP1 { m.rectP1 = pointTransform(p1) }
+            if let p2 = m.rectP2 { m.rectP2 = pointTransform(p2) }
+            // A driven dimension defines geometry from its value, so leave that
+            // value alone; a measuring dimension should report its new span.
+            if !m.driven {
+                switch m.dimensionType {
+                case "width"?:  m.distanceMm = Double(abs(m.end.x - m.start.x))
+                case "height"?: m.distanceMm = Double(abs(m.end.y - m.start.y))
+                default:        m.distanceMm = Double(hypot(m.end.x - m.start.x, m.end.y - m.start.y))
+                }
+            }
+            measurements[idx] = m
+        }
+    }
+
     func translateSelected(dx: CGFloat, dy: CGFloat) {
         guard currentFilePath != nil, !selectedHandles.isEmpty else { return }
         saveToHistory()
@@ -6792,6 +6924,17 @@ class AppState {
             if var model = self.parametricShapes[h] {
                 model.base = model.base.map { [$0[0] + dxDouble, $0[1] + dyDouble] }
                 self.parametricShapes[h] = model
+            }
+            // Pen paths travel too, so a re-edit doesn't snap them back.
+            if var pen = self.penPaths[h] {
+                func t(_ a: [Double]) -> [Double] { [a[0] + dxDouble, a[1] + dyDouble] }
+                pen.anchors = pen.anchors.map { a in
+                    var na = a; na.point = t(a.point)
+                    if let hi = a.handleIn { na.handleIn = t(hi) }
+                    if let ho = a.handleOut { na.handleOut = t(ho) }
+                    return na
+                }
+                self.penPaths[h] = pen
             }
         }
 
@@ -6878,8 +7021,21 @@ class AppState {
                 }
                 self.parametricShapes[h] = model
             }
+            // Pen paths travel too, so a re-edit doesn't snap them back.
+            if var pen = self.penPaths[h] {
+                func t(_ a: [Double]) -> [Double] {
+                    let p = rotPt(CGPoint(x: a[0], y: a[1])); return [Double(p.x), Double(p.y)]
+                }
+                pen.anchors = pen.anchors.map { a in
+                    var na = a; na.point = t(a.point)
+                    if let hi = a.handleIn { na.handleIn = t(hi) }
+                    if let ho = a.handleOut { na.handleOut = t(ho) }
+                    return na
+                }
+                self.penPaths[h] = pen
+            }
         }
-        
+
         self.hasUnsavedChanges = true
         logEntries.append(LogEntry(action: "Rotate Entities", details: "Rotated selected entities by angle: \(angleDegrees) around center: \(center)"))
         
@@ -6918,6 +7074,12 @@ class AppState {
         isProcessing = true
 
         let handlesSnapshot = Array(selectedHandles)
+        // Capture the selection's bbox center now — Python reflects about it, so
+        // we mirror the attached editable models (parametric bases, pen paths,
+        // dimension lines) about the same point after reload. Matches the
+        // engine's convention: "horizontal" flips left/right (across the vertical
+        // centerline → x), "vertical" flips top/bottom (→ y).
+        let reflectCenter = selectionBBox.map { CGPoint(x: $0.midX, y: $0.midY) }
         Task {
             do {
                 let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
@@ -6939,6 +7101,13 @@ class AppState {
                     }
                     self.currentFilePath = activeDxfURL
                     self.reloadDXF()
+                    if let c = reflectCenter {
+                        self.transformAttachedModels(handles: Set(handlesSnapshot)) { p in
+                            axis == "horizontal"
+                                ? CGPoint(x: 2 * c.x - p.x, y: p.y)
+                                : CGPoint(x: p.x, y: 2 * c.y - p.y)
+                        }
+                    }
                     self.logEntries.append(LogEntry(action: "Reflect", details: "Reflected selected entities (\(axis))"))
                 }
             } catch {

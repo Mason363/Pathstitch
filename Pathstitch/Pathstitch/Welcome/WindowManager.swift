@@ -615,15 +615,6 @@ struct TitleBarView: View {
                         .buttonStyle(PlainButtonStyle())
                         .help(state.gridVisible ? "Grid: Visible" : "Grid: Hidden")
 
-                        Button(action: { state.autocropBackgroundlessImage.toggle() }) {
-                            Image(systemName: "crop")
-                                .foregroundColor(state.autocropBackgroundlessImage ? Color.accent : Color.text_secondary)
-                                .font(.system(size: 11))
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                        .help("Crop Transparent Margins: \(state.autocropBackgroundlessImage ? "On" : "Off")")
-
-
                         Button(action: { state.isLogTrayExpanded.toggle() }) {
                             Image(systemName: state.isLogTrayExpanded ? "terminal.fill" : "terminal")
                                 .foregroundColor(state.isLogTrayExpanded ? Color.accent : Color.text_secondary)
