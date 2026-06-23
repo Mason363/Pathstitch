@@ -556,6 +556,19 @@ public func stchEmbeddedDXF(url: URL) -> [PreviewEntity] {
 
 // MARK: - Rendering
 
+/// Robust [min, max] using the 2nd–98th percentile, so a handful of outlier
+/// coordinates (stray origin / registration points common in CAD DXF exports)
+/// don't dominate the framing. Falls back to the true range below 12 samples.
+private func dxfRobustBounds(_ values: [Double]) -> (Double, Double) {
+    guard values.count >= 12 else {
+        return (values.min() ?? 0, values.max() ?? 1)
+    }
+    let sorted = values.sorted()
+    let lo = sorted[Int(0.02 * Double(sorted.count - 1))]
+    let hi = sorted[Int(0.98 * Double(sorted.count - 1))]
+    return hi > lo ? (lo, hi) : (sorted.first!, sorted.last!)
+}
+
 /// Renders a supported file (`.stch` or `.dxf`) to a framed black-on-white bitmap.
 /// For `.stch`, returns the embedded preview verbatim when present (it is already
 /// framed); otherwise falls back to rendering the embedded/standalone DXF.
@@ -587,12 +600,8 @@ public func renderEntitiesToImage(_ entities: [PreviewEntity], size: CGSize) -> 
 
     guard !entities.isEmpty else { return ctx.makeImage() }
 
-    var minX = Double.infinity, minY = Double.infinity
-    var maxX = -Double.infinity, maxY = -Double.infinity
-    func acc(_ x: CGFloat, _ y: CGFloat) {
-        minX = min(minX, Double(x)); maxX = max(maxX, Double(x))
-        minY = min(minY, Double(y)); maxY = max(maxY, Double(y))
-    }
+    var xs: [Double] = [], ys: [Double] = []
+    func acc(_ x: CGFloat, _ y: CGFloat) { xs.append(Double(x)); ys.append(Double(y)) }
     for e in entities {
         switch e {
         case .line(let s, let en): acc(s.x, s.y); acc(en.x, en.y)
@@ -601,7 +610,14 @@ public func renderEntitiesToImage(_ entities: [PreviewEntity], size: CGSize) -> 
         case .polyline(let pts, _): for p in pts { acc(p.x, p.y) }
         }
     }
-    guard minX.isFinite, maxX >= minX, maxY >= minY else { return ctx.makeImage() }
+    guard !xs.isEmpty else { return ctx.makeImage() }
+
+    // Frame on robust (2nd–98th percentile) bounds so a stray origin/registration
+    // point far from the art doesn't inflate the bbox and shrink the real
+    // geometry into a corner of the thumbnail.
+    let (minX, maxX) = dxfRobustBounds(xs)
+    let (minY, maxY) = dxfRobustBounds(ys)
+    guard maxX >= minX, maxY >= minY else { return ctx.makeImage() }
 
     let bw = max(maxX - minX, 1e-6)
     let bh = max(maxY - minY, 1e-6)
