@@ -145,6 +145,33 @@ private struct GeneralPrefsTab: View {
                     Button("Reset Toolbar") { ToolbarLayout.shared.resetToDefaults() }
                 }
             }
+
+            Section("Onboarding") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Guided Tutorial")
+                        Text("Replay the short first-run walkthrough in the current window.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button("Replay Tutorial") {
+                        NotificationCenter.default.post(name: .pathstitchReplayTutorial, object: nil)
+                    }
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Mode Intros")
+                        Text("Show the one-time \u{201C}what you can do here\u{201D} popup again for each mode.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button("Reset Intros") {
+                        NotificationCenter.default.post(name: .pathstitchResetIntros, object: nil)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding(20)

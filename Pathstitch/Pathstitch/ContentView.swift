@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 struct ModeButton: View {
     let mode: AppMode
@@ -315,6 +316,9 @@ struct ContentView: View {
                 PSDImportDialog(state: state, psd: psd)
             }
         }
+        // First-run guided tutorial + per-mode intros (batch 4), bundled into one
+        // modifier so the (already large) body stays type-checkable.
+        .modifier(OnboardingModifier(state: state))
         // Only reveal the loading overlay if work outlasts a short delay, so the
         // now-fast worker ops never flash a loader (§7).
         .task(id: state.isProcessing) {
@@ -4542,5 +4546,265 @@ struct ExportOptionsPanel: View {
             .padding(16)
         }
         .frame(width: 460, height: 430)
+    }
+}
+
+// MARK: - Onboarding (batch 4): first-run tutorial + per-mode intros
+
+extension Notification.Name {
+    /// Posted from Settings ▸ General to replay the guided tutorial.
+    static let pathstitchReplayTutorial = Notification.Name("PathstitchReplayTutorial")
+    /// Posted from Settings ▸ General to re-arm the per-mode intro popups.
+    static let pathstitchResetIntros = Notification.Name("PathstitchResetIntros")
+}
+
+/// Bundles the first-run tutorial + per-mode intro overlays and their triggers
+/// into one modifier. Keeping this out of `ContentView.body` keeps that (very
+/// large) expression within the Swift type-checker's budget.
+struct OnboardingModifier: ViewModifier {
+    var state: AppState
+
+    @AppStorage("onboarding.tutorialDone") private var tutorialDone = false
+    @AppStorage("onboarding.seenIntro.twoD") private var seenIntro2D = false
+    @AppStorage("onboarding.seenIntro.threeD") private var seenIntro3D = false
+    @AppStorage("onboarding.seenIntro.batch") private var seenIntroBatch = false
+    @State private var tutorialStep: Int? = nil
+    @State private var modeIntro: AppMode? = nil
+    @State private var modeIntroDontShowAgain = true
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if let step = tutorialStep {
+                    TutorialOverlay(
+                        step: Binding(get: { step }, set: { tutorialStep = $0 }),
+                        onFinish: {
+                            tutorialStep = nil
+                            tutorialDone = true
+                            maybeShowModeIntro(state.activeMode)
+                        }
+                    )
+                }
+            }
+            .overlay {
+                if let mode = modeIntro {
+                    ModeIntroCard(
+                        mode: mode,
+                        dontShowAgain: $modeIntroDontShowAgain,
+                        onOK: {
+                            if modeIntroDontShowAgain { markIntroSeen(mode) }
+                            modeIntro = nil
+                            modeIntroDontShowAgain = true
+                        }
+                    )
+                }
+            }
+            .onAppear { startOnboardingIfNeeded() }
+            .onChange(of: state.activeMode) { _, newMode in maybeShowModeIntro(newMode) }
+            .onReceive(NotificationCenter.default.publisher(for: .pathstitchReplayTutorial)) { _ in
+                modeIntro = nil
+                tutorialStep = 0
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .pathstitchResetIntros)) { _ in
+                seenIntro2D = false; seenIntro3D = false; seenIntroBatch = false
+            }
+    }
+
+    private func startOnboardingIfNeeded() {
+        if !tutorialDone {
+            tutorialStep = 0
+            seenIntro2D = true   // the tutorial already covers 2D
+        } else {
+            maybeShowModeIntro(state.activeMode)
+        }
+    }
+
+    private func maybeShowModeIntro(_ mode: AppMode) {
+        guard tutorialStep == nil, modeIntro == nil else { return }
+        switch mode {
+        case .twoD:   if !seenIntro2D    { modeIntro = .twoD }
+        case .threeD: if !seenIntro3D    { modeIntro = .threeD }
+        case .batch:  if !seenIntroBatch { modeIntro = .batch }
+        }
+    }
+
+    private func markIntroSeen(_ mode: AppMode) {
+        switch mode {
+        case .twoD:   seenIntro2D = true
+        case .threeD: seenIntro3D = true
+        case .batch:  seenIntroBatch = true
+        }
+    }
+}
+
+/// One step of the first-run guided tutorial.
+struct TutorialStep {
+    let title: String
+    let body: String
+    /// A short directional cue toward the relevant UI region (nil for none).
+    let hint: String?
+}
+
+let pathstitchTutorialSteps: [TutorialStep] = [
+    .init(title: "Welcome to Pathstitch",
+          body: "Let's make your first part in about a minute. Pathstitch turns drawings and 3D models into clean patterns that are ready to cut, score, or stitch.",
+          hint: nil),
+    .init(title: "1 · Draw a rectangle",
+          body: "Pick the Rectangle tool from the toolbar on the left, then drag on the canvas. Shapes stay fully editable — you can tweak size and corners any time.",
+          hint: "← Tools live in the left sidebar"),
+    .init(title: "2 · Add a circle",
+          body: "Grab the Circle tool and drag out a circle beside your rectangle. Use the Scale tool or type exact values to size things precisely.",
+          hint: "← Circle tool"),
+    .init(title: "3 · Round a corner with Fillet",
+          body: "Select Fillet, click a corner of the rectangle, then drag the orange arrow (or type a radius). Chamfer works the same way for an angled cut.",
+          hint: "← Fillet / Chamfer"),
+    .init(title: "4 · Layers organize your cuts",
+          body: "The Layers panel on the right groups geometry — for example separate cut, score, and engrave layers — so each exports the way your machine expects.",
+          hint: "Layers panel →"),
+    .init(title: "You're ready!",
+          body: "That's the whole loop: draw → edit → organize → export. You can replay this tour anytime from Settings ▸ General ▸ Replay Tutorial.",
+          hint: nil),
+]
+
+/// The first-run guided tutorial: a compact, non-blocking floating card stepped
+/// with Back / Skip / Next. It dims the canvas only lightly so the user can still
+/// see (and try) what each step describes.
+struct TutorialOverlay: View {
+    @Binding var step: Int
+    let onFinish: () -> Void
+
+    private var current: TutorialStep { pathstitchTutorialSteps[min(max(step, 0), pathstitchTutorialSteps.count - 1)] }
+    private var isLast: Bool { step >= pathstitchTutorialSteps.count - 1 }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.12).ignoresSafeArea().allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Getting Started")
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.accent)
+                    Spacer()
+                    Button("Skip") { onFinish() }
+                        .buttonStyle(PlainButtonStyle())
+                        .foregroundColor(Color.text_muted)
+                        .font(PlasticityFont.label)
+                }
+                .padding(.bottom, 8)
+
+                Text(current.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(Color.text_primary)
+                    .padding(.bottom, 4)
+                Text(current.body)
+                    .font(PlasticityFont.body)
+                    .foregroundColor(Color.text_secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let hint = current.hint {
+                    Text(hint)
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.accent)
+                        .padding(.top, 8)
+                }
+
+                HStack(spacing: 8) {
+                    // Step progress dots.
+                    HStack(spacing: 5) {
+                        ForEach(0..<pathstitchTutorialSteps.count, id: \.self) { i in
+                            Circle()
+                                .fill(i == step ? Color.accent : Color.text_muted.opacity(0.4))
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    Spacer()
+                    if step > 0 {
+                        Button("Back") { step -= 1 }
+                            .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                    }
+                    Button(isLast ? "Done" : "Next") {
+                        if isLast { onFinish() } else { step += 1 }
+                    }
+                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                    .keyboardShortcut(.defaultAction)
+                }
+                .padding(.top, 16)
+            }
+            .padding(18)
+            .frame(width: 420)
+            .background(Color.bg_panel)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.border_strong, lineWidth: 1))
+            .shadow(color: .black.opacity(0.4), radius: 24, y: 8)
+            .padding(.bottom, 80)
+        }
+    }
+}
+
+/// One-time "what you can do here" card shown the first time each mode is opened.
+/// Short, focused, with a default-on "Don't show again" checkbox and an OK button.
+struct ModeIntroCard: View {
+    let mode: AppMode
+    @Binding var dontShowAgain: Bool
+    let onOK: () -> Void
+
+    private var info: (icon: String, title: String, bullets: [String]) {
+        switch mode {
+        case .twoD:
+            return ("square.on.circle", "2D Design",
+                    ["Draw and edit shapes with the tools on the left — rectangles, circles, lines, text, and the pen.",
+                     "Fillet/chamfer corners, offset profiles, add sewing holes, and pattern geometry.",
+                     "Organize cuts with the Layers panel, then export to DXF or SVG."])
+        case .threeD:
+            return ("cube", "3D Import & Unfold",
+                    ["Drop in one or more STEP files — they load into a single workspace and space themselves apart.",
+                     "Use Move and Plane from the left tool strip; pick faces, then unfold to flat patterns.",
+                     "Send the resulting flat net back to 2D to finish and export."])
+        case .batch:
+            return ("square.grid.2x2", "Batch",
+                    ["Drop in many files at once to process them together with shared settings.",
+                     "Great for running the same export or operation across a whole folder of parts."])
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.28).ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: info.icon)
+                        .font(.system(size: 18))
+                        .foregroundColor(Color.accent)
+                    Text(info.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(Color.text_primary)
+                }
+                ForEach(Array(info.bullets.enumerated()), id: \.offset) { _, b in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle().fill(Color.accent).frame(width: 5, height: 5).padding(.top, 6)
+                        Text(b)
+                            .font(PlasticityFont.body)
+                            .foregroundColor(Color.text_secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Divider().padding(.vertical, 2)
+                HStack {
+                    Toggle(isOn: $dontShowAgain) { Text("Don't show again").font(PlasticityFont.label) }
+                        .toggleStyle(.checkbox)
+                        .foregroundColor(Color.text_secondary)
+                    Spacer()
+                    Button("OK") { onOK() }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(width: 440)
+            .background(Color.bg_panel)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.border_strong, lineWidth: 1))
+            .shadow(color: .black.opacity(0.45), radius: 28, y: 10)
+        }
     }
 }
