@@ -3494,6 +3494,9 @@ extension ContentView {
                 jigExportSection
             } else if state.currentTool == .select {
                 selectionSection
+                if !state.selectedHandles.isEmpty {
+                    leatherFillSection
+                }
                 textPropertiesSection
                 dimensionEditorSection
                 // Editing an existing converted-line group inline (MAS-58).
@@ -3663,6 +3666,33 @@ extension ContentView {
             Text("\(state.selectedHandles.count) region(s) selected")
                 .font(.system(size: 9)).foregroundColor(Color.text_secondary)
             toolButtons(ok: "Export STL…") { state.exportJig(exitAfterApply: true) }
+        }
+    }
+
+    /// Leather Simulator — assign a preview-only material fill to the selection.
+    private var leatherFillSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            toolHeader("square.fill.on.square.fill", "LEATHER")
+            Text("Preview fill for closed shapes (visual only — export stays vector).")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            HStack(spacing: 6) {
+                ForEach(AppState.leatherSwatches, id: \.id) { sw in
+                    Button { state.setLeatherFill(sw.id) } label: {
+                        Circle()
+                            .fill(AppState.leatherSwatchColor(sw.id) ?? Color.gray)
+                            .frame(width: 22, height: 22)
+                            .overlay(Circle().stroke(Color.border_strong, lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .help(sw.name)
+                }
+                Button { state.setLeatherFill(nil) } label: {
+                    Image(systemName: "xmark.circle")
+                        .foregroundColor(Color.text_secondary)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .help("Clear leather fill")
+            }
         }
     }
 

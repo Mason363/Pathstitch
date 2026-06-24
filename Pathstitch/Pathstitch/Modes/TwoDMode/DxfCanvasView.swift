@@ -4789,7 +4789,8 @@ struct DxfCanvasView: View {
                 }
                 // Filled region (MAS-146): paint a translucent interior in the
                 // layer colour beneath the outline, even-odd so holes show through.
-                if ent.filled == true {
+                let leatherId = state.leatherFills[ent.handle]
+                if ent.filled == true || leatherId != nil {
                     var fillPath = SwiftUI.Path()
                     let loops = ent.fillLoops ?? [vertices]
                     for loop in loops where loop.count >= 3 {
@@ -4800,7 +4801,11 @@ struct DxfCanvasView: View {
                         }
                         fillPath.closeSubpath()
                     }
-                    context.fill(fillPath, with: .color(baseColor.opacity(0.28)), style: FillStyle(eoFill: true))
+                    // Leather Simulator: a leather swatch paints the region in the
+                    // material colour; otherwise the plain translucent layer fill.
+                    let fillColor = leatherId.flatMap { AppState.leatherSwatchColor($0) }?.opacity(0.85)
+                        ?? baseColor.opacity(0.28)
+                    context.fill(fillPath, with: .color(fillColor), style: FillStyle(eoFill: true))
                 }
                 context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
             }

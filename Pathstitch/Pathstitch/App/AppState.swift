@@ -1147,6 +1147,34 @@ class AppState {
     var showStitchSimulation: Bool = false
     var stitchSimArrows: Bool = true
 
+    // Leather Simulator — a per-entity, preview-only material fill (handle → swatch
+    // id). Renders the closed region with a leather colour; export stays vector.
+    var leatherFills: [String: String] = [:]
+
+    /// Assign (or clear with nil) a leather swatch on the current selection.
+    func setLeatherFill(_ swatch: String?) {
+        for h in selectedHandles {
+            if let s = swatch { leatherFills[h] = s } else { leatherFills[h] = nil }
+        }
+    }
+
+    /// Display colour for a leather swatch id (preview only).
+    static func leatherSwatchColor(_ id: String) -> Color? {
+        switch id {
+        case "vegtan": return Color(red: 0.83, green: 0.69, blue: 0.49)
+        case "brown":  return Color(red: 0.55, green: 0.36, blue: 0.20)
+        case "black":  return Color(red: 0.16, green: 0.14, blue: 0.13)
+        case "suede":  return Color(red: 0.62, green: 0.52, blue: 0.42)
+        case "oxblood":return Color(red: 0.40, green: 0.12, blue: 0.13)
+        default: return nil
+        }
+    }
+
+    static let leatherSwatches: [(id: String, name: String)] = [
+        ("vegtan", "Veg-tan"), ("brown", "Brown"), ("black", "Black"),
+        ("suede", "Suede"), ("oxblood", "Oxblood")
+    ]
+
     var consolidateSvgStrokes: Bool = true
     // SVGs import as cuttable outlines of this width (mm). 0 = raw centerlines.
     var svgImportThickness: Double = 3.0
