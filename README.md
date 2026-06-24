@@ -25,14 +25,15 @@ https://github.com/user-attachments/assets/50c6973c-2bd9-470b-b031-fa0a991badef
 ## Download
 
 **[⬇ Download the latest release](https://github.com/Mason363/pathstitch/releases/latest)** — grab
-`Pathstitch-x.y.z.dmg`, drag it into Applications, and you're running. No Python, no setup; the geometry
-engine ships inside the app.
+`Pathstitch-x.y.z.dmg`, drag it into Applications, and you're running.
 
 - **Requires:** an Apple‑Silicon Mac (M1 or newer) on **macOS 14 (Sonoma)+**.
-- **Free, and you don't need an Apple Developer account to run it.** The app is **ad‑hoc signed, not
+- **This app is not Apple Notarized:** The app is **ad‑hoc signed, not
   Apple‑notarized** (notarization needs a paid $99/yr Apple Developer ID, which this project doesn't have
   yet), so the very first launch needs a **one‑time** Gatekeeper approval — a 15‑second, two‑click bypass.
-  See **[Installing](#installing-the-app)**. After that first approval it opens normally forever.
+  See **[Installing](#installing-the-app)**. After that first approval it opens normally forever. 
+
+Is it safe? Yes, completely. The app is 100% open-source, so the entire source code is public and auditable. The only reason it isn’t officially 'notarized' is because Apple charges a $99/year fee to maintain a developer account, which this free project doesn't have yet.
 
 ---
 
@@ -40,8 +41,7 @@ engine ships inside the app.
 
 ### Draw
 Line, circle, rectangle, polygon, text, and an Illustrator‑style **pen** tool, all with point/edge/grid **snapping** and
-**on‑creation dimensions** — type a width, `Tab`, type a height, `Enter`, done. No modal dialogs, no hunting through panels: the number you want is already
-under your cursor.
+**on‑creation dimensions** — type a width, `Tab`, type a height, `Enter`, done. No hunting through panels.
 
 > [VIDEO: 8–12s loop — drawing one rectangle by typing exact dimensions (e.g. 80 `Tab` 50 `Enter`), then a circle snapping to its corner. Keep keystrokes visible on screen so people see the type-a-number-and-go flow. Silent loop, no narration needed.]
 
@@ -96,8 +96,6 @@ https://github.com/user-attachments/assets/903794b1-4d92-4840-8783-a3f5c49ae1bd
 ---
 
 ## Feature list
-
-### Available now
 
 **Draw**
 - **Line / Circle / Rectangle** — core primitives with live dimensions.
@@ -168,15 +166,6 @@ Single-key, Fusion/Photoshop-style defaults (all rebindable in Preferences → S
 
 Tools without a default key (Scale, Polygon, Text, Mirror, Patterning, Paper Folding) are reachable from the toolbar or the search palette, and can be bound in Preferences.
 
-### Coming soon
-
-- **Angular dimensions** — angle between two lines.
-- **Dimension associativity** — edit a master value, dependents follow.
-- **Scale-on-first-dimension** — proportional whole-sketch scaling.
-- **Pattern/mirror handles** — draggable gizmos, instance suppression, associative links.
-- **Sewing v2 (phases 2-4)** — flip-match symmetry, registration keyholes, differential pitch, saved profiles.
-- **Unwrapping (Phases 3-4)** — advanced connected net flattening and nesting.
-
 ---
 
 ## Under the hood
@@ -206,7 +195,7 @@ For a packaged build, a trimmed copy of the Python environment and the engine ar
 
 ## Build from source
 
-You only need this if you want to develop Pathstitch; end users just download the `.dmg`.
+You only need this if you want to develop Pathstitch; users just download the `.dmg`.
 
 **Requirements**
 
@@ -338,7 +327,7 @@ pathstitch/
 
 ## Status & roadmap
 
-Pathstitch is an actively developed **1.0**. The 2D pipeline (draw → edit → stitch → export) is the mature
+Pathstitch is an actively developed **1.1**. The 2D pipeline (draw → edit → stitch → export) is the mature
 core; 3D STEP import + unfolding works for developable surfaces and is expanding. Currently **Apple‑Silicon
 only** — an Intel/universal build is possible by repackaging the backend on an Intel Mac.
 
