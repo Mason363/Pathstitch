@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "irons": [
+    { "id": "diamond-2.0",  "name": "Diamond 2.0 mm",  "shape": "diamond", "pitch": 2.0,  "bladeCount": 6, "slitLength": 1.6, "slitWidth": 0.6, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "diamond-2.7",  "name": "Diamond 2.7 mm",  "shape": "diamond", "pitch": 2.7,  "bladeCount": 6, "slitLength": 2.0, "slitWidth": 0.7, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "diamond-3.0",  "name": "Diamond 3.0 mm",  "shape": "diamond", "pitch": 3.0,  "bladeCount": 6, "slitLength": 2.2, "slitWidth": 0.8, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "diamond-3.38", "name": "Diamond 3.38 mm", "shape": "diamond", "pitch": 3.38, "bladeCount": 6, "slitLength": 2.4, "slitWidth": 0.85, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "diamond-3.85", "name": "Diamond 3.85 mm", "shape": "diamond", "pitch": 3.85, "bladeCount": 6, "slitLength": 2.7, "slitWidth": 0.9, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "diamond-4.0",  "name": "Diamond 4.0 mm",  "shape": "diamond", "pitch": 4.0,  "bladeCount": 6, "slitLength": 2.8, "slitWidth": 0.95, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "diamond-5.0",  "name": "Diamond 5.0 mm",  "shape": "diamond", "pitch": 5.0,  "bladeCount": 4, "slitLength": 3.4, "slitWidth": 1.1, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "french-3.0",   "name": "French 3.0 mm",   "shape": "french",  "pitch": 3.0,  "bladeCount": 6, "slitLength": 2.2, "slitWidth": 0.7, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "french-4.0",   "name": "French 4.0 mm",   "shape": "french",  "pitch": 4.0,  "bladeCount": 5, "slitLength": 3.0, "slitWidth": 0.8, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "french-5.0",   "name": "French 5.0 mm",   "shape": "french",  "pitch": 5.0,  "bladeCount": 4, "slitLength": 3.8, "slitWidth": 0.9, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "round-1.0",    "name": "Round punch 1.0 mm", "shape": "round", "pitch": 4.0, "bladeCount": 1, "slitLength": 1.0, "slitWidth": 1.0, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "round-1.5",    "name": "Round punch 1.5 mm", "shape": "round", "pitch": 4.0, "bladeCount": 1, "slitLength": 1.5, "slitWidth": 1.5, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "round-2.0",    "name": "Round punch 2.0 mm", "shape": "round", "pitch": 5.0, "bladeCount": 1, "slitLength": 2.0, "slitWidth": 2.0, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "flat-3.0",     "name": "Lacing flat 3.0 mm", "shape": "flat",  "pitch": 4.0, "bladeCount": 4, "slitLength": 2.4, "slitWidth": 0.5, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "flat-4.0",     "name": "Lacing flat 4.0 mm", "shape": "flat",  "pitch": 5.0, "bladeCount": 4, "slitLength": 3.2, "slitWidth": 0.6, "angle": 0.0, "inverted": false, "builtin": true },
+    { "id": "flat-5.0",     "name": "Lacing flat 5.0 mm", "shape": "flat",  "pitch": 6.0, "bladeCount": 3, "slitLength": 4.0, "slitWidth": 0.7, "angle": 0.0, "inverted": false, "builtin": true }
+  ]
+}

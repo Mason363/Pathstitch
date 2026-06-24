@@ -2362,6 +2362,23 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     corner_angle_threshold = float(args.get("corner_angle_threshold", 45.0))
     spacing_target = max(1e-3, hole_spacing)
 
+    # Pricking-iron shape (Pricking Iron Toolbox). Each stitch is emitted as a real,
+    # closed cut-path oriented to the local stitch-line tangent + the iron's own
+    # angle, so diamond / French / flat slits export to DXF/SVG/laser exactly as the
+    # iron would punch them. "round" keeps the legacy drilled circle.
+    #   hole_shape : diamond | french | flat | oval | round
+    #   slit_length: long axis (mm), along the tangent before the iron angle is added
+    #   slit_width : short axis (mm)
+    #   slit_angle : iron rotation (deg) relative to the local tangent
+    #   inverted   : mirror the slant (flips the sign of slit_angle) — left vs right iron
+    hole_shape = str(args.get("hole_shape", "round")).lower()
+    if hole_shape not in ("diamond", "french", "flat", "oval", "round"):
+        hole_shape = "round"
+    slit_length = float(args.get("slit_length", hole_diameter * 1.8))
+    slit_width = float(args.get("slit_width", hole_diameter * 0.7))
+    slit_angle = float(args.get("slit_angle", 0.0))
+    slant_sign = -1.0 if bool(args.get("inverted", False)) else 1.0
+
     if not input_path or not os.path.exists(input_path):
         return {"status": "error", "message": f"Input file not found: {input_path}"}
     if not output_path:
@@ -2472,7 +2489,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
 
-    hole_centers: List[Tuple[float, float]] = []
+    hole_centers: List[Tuple[float, float, float]] = []  # (x, y, tangent_deg)
     hole_radius = hole_diameter / 2.0
 
     # ---- Obstacle filter -----------------------------------------------------
@@ -2547,7 +2564,18 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         L = line.length
         if L < 1e-6:
             return []
-        out: List[Tuple[float, float]] = []
+        out: List[Tuple[float, float, float]] = []
+
+        def emit(d: float) -> None:
+            """Append one hole at arc-distance `d`, carrying the local tangent angle
+            (deg) so shaped slits can be oriented to the stitch line."""
+            dd = (d % L) if is_loop else min(L, max(0.0, d))
+            pt = line.interpolate(dd)
+            eps = min(0.5, max(1e-3, L * 1e-3))
+            a_pt = line.interpolate((dd - eps) % L if is_loop else max(0.0, dd - eps))
+            b_pt = line.interpolate((dd + eps) % L if is_loop else min(L, dd + eps))
+            ang = math.degrees(math.atan2(b_pt.y - a_pt.y, b_pt.x - a_pt.x))
+            out.append((pt.x, pt.y, ang))
 
         # Count mode places EXACTLY hole_count evenly-spaced holes along the whole
         # contour. It deliberately ignores corner snapping (which subdivides the
@@ -2559,17 +2587,14 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
             if is_loop:
                 step = L / n
                 for i in range(n):
-                    pt = line.interpolate(((i + phase) * step) % L)
-                    out.append((pt.x, pt.y))
+                    emit((i + phase) * step)
             elif n == 1:
-                pt = line.interpolate(0.0)
-                out.append((pt.x, pt.y))
+                emit(0.0)
             else:
                 # Open run: spread n holes end to end, a hole on each endpoint.
                 step = L / (n - 1)
                 for i in range(n):
-                    pt = line.interpolate(min(L, i * step))
-                    out.append((pt.x, pt.y))
+                    emit(i * step)
             return out
 
         stops: List[float] = []
@@ -2598,20 +2623,15 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 # (Count mode never reaches here — it returns an exact count above.)
                 n = max(1, int(round(run / spacing_target)))
                 for k in range(n):
-                    d = a + run * (k / n)
-                    pt = line.interpolate(d % L if is_loop else min(L, d))
-                    out.append((pt.x, pt.y))
+                    emit(a + run * (k / n))
             if not is_loop:
-                pt = line.interpolate(L)
-                out.append((pt.x, pt.y))
+                emit(L)
         else:
             N = _even_count(L)
             step = L / N
             if is_loop:
                 for i in range(N):
-                    d = (i * step + phase * step) % L
-                    pt = line.interpolate(d)
-                    out.append((pt.x, pt.y))
+                    emit(i * step + phase * step)
             else:
                 start = phase * step
                 i = 0
@@ -2619,8 +2639,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                     d = start + i * step
                     if d > L + 1e-6:
                         break
-                    pt = line.interpolate(min(L, max(0.0, d)))
-                    out.append((pt.x, pt.y))
+                    emit(d)
                     i += 1
         return out
 
@@ -2672,13 +2691,13 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 geo = get_offset_geometry(path, eff_off, s, join_style=join_style)
                 for line in _iter_offset_lines(geo):
                     is_loop = bool(getattr(line, "is_closed", False)) or is_closed
-                    for (px, py) in sample_offset_line(line, is_loop, phase, corner_pts):
+                    for (px, py, pang) in sample_offset_line(line, is_loop, phase, corner_pts):
                         p_pt = ShapelyPoint(px, py)
                         if blocked_by_obstacle(p_pt, og_is_contour):
                             continue
                         if not any(math.hypot(px - hc[0], py - hc[1]) < 0.05
                                    for hc in hole_centers):
-                            hole_centers.append((px, py))
+                            hole_centers.append((px, py, pang))
 
     # ---- Proximity merge -----------------------------------------------------
     # Remove holes closer than the proximity distance. A saddle stitch's two rows
@@ -2724,7 +2743,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     if keepout_geoms:
         kept = []
         for hc in hole_centers:
-            p_pt = ShapelyPoint(hc)
+            p_pt = ShapelyPoint(hc[0], hc[1])
             blocked = False
             for kg in keepout_geoms:
                 if kg.distance(p_pt) < avoidance_radius:
@@ -2744,11 +2763,70 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 kept.append(hc)
         hole_centers = kept
 
-    for cx, cy in hole_centers:
-        msp.add_circle(center=(cx, cy), radius=hole_radius, dxfattribs={"layer": "SEWING_HOLES"})
+    _emit_iron_slits(msp, hole_centers, hole_shape, hole_radius,
+                     slit_length, slit_width, slit_angle, slant_sign)
 
     doc.saveas(output_path)
     return {"status": "ok", "data": {"hole_count": len(hole_centers), "suppressed_by_keepout": suppressed_by_keepout}}
+
+
+def _slit_local_points(shape: str, slit_length: float, slit_width: float) -> List[Tuple[float, float]]:
+    """Vertices of one iron slit in its local frame (u = long axis, v = short axis),
+    centred on the origin. Returns a closed ring of (u, v) points. `oval`/`round`
+    are emitted as native curve entities elsewhere and never reach here."""
+    half_l = max(1e-4, slit_length / 2.0)
+    half_w = max(1e-4, slit_width / 2.0)
+    if shape == "diamond":
+        return [(half_l, 0.0), (0.0, half_w), (-half_l, 0.0), (0.0, -half_w)]
+    if shape == "flat":
+        return [(half_l, half_w), (-half_l, half_w), (-half_l, -half_w), (half_l, -half_w)]
+    if shape == "french":
+        # Capsule / stadium: straight flanks + semicircular caps of radius half_w.
+        cap = max(0.0, half_l - half_w)
+        pts: List[Tuple[float, float]] = []
+        steps = 8
+        # right cap, sweeping -90°..+90°
+        for i in range(steps + 1):
+            a = math.radians(-90.0 + 180.0 * i / steps)
+            pts.append((cap + half_w * math.cos(a), half_w * math.sin(a)))
+        # left cap, sweeping +90°..+270°
+        for i in range(steps + 1):
+            a = math.radians(90.0 + 180.0 * i / steps)
+            pts.append((-cap + half_w * math.cos(a), half_w * math.sin(a)))
+        return pts
+    # default rectangle
+    return [(half_l, half_w), (-half_l, half_w), (-half_l, -half_w), (half_l, -half_w)]
+
+
+def _emit_iron_slits(msp, hole_centers, shape: str, hole_radius: float,
+                     slit_length: float, slit_width: float, slit_angle: float,
+                     slant_sign: float) -> None:
+    """Stamp every hole as a real, closed cut-path on the SEWING_HOLES layer,
+    oriented to the stored local tangent plus the iron's own angle. `round` keeps
+    the legacy circle; `oval` is a native ellipse; the rest are closed polylines."""
+    attribs = {"layer": "SEWING_HOLES"}
+    if shape == "round":
+        for cx, cy, _ang in hole_centers:
+            msp.add_circle(center=(cx, cy), radius=hole_radius, dxfattribs=attribs)
+        return
+    if shape == "oval":
+        half_l = max(1e-4, slit_length / 2.0)
+        ratio = min(1.0, max(1e-3, slit_width / max(1e-4, slit_length)))
+        for cx, cy, ang in hole_centers:
+            th = math.radians(ang + slit_angle * slant_sign)
+            major = (half_l * math.cos(th), half_l * math.sin(th))
+            try:
+                msp.add_ellipse(center=(cx, cy), major_axis=major, ratio=ratio,
+                                dxfattribs=attribs)
+            except Exception:
+                msp.add_circle(center=(cx, cy), radius=half_l, dxfattribs=attribs)
+        return
+    local = _slit_local_points(shape, slit_length, slit_width)
+    for cx, cy, ang in hole_centers:
+        th = math.radians(ang + slit_angle * slant_sign)
+        ct, st = math.cos(th), math.sin(th)
+        ring = [(cx + u * ct - v * st, cy + u * st + v * ct) for (u, v) in local]
+        msp.add_lwpolyline(ring, close=True, dxfattribs=attribs)
 
 def op_cleanup(args: Dict[str, Any]) -> Dict[str, Any]:
     """Join/cleanup — bridge hanging endpoints with straight lines (MAS-130).
@@ -5904,6 +5982,335 @@ def op_convert_to_stroke(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Convert to stroke failed: {str(e)}"}
 
 
+def _entity_length(ent) -> float:
+    """Flattened arc-length of any drawable entity, in mm."""
+    try:
+        p = make_path(ent)
+        verts = [(v.x, v.y) for v in p.flattening(distance=0.05)]
+        return sum(math.hypot(verts[i + 1][0] - verts[i][0],
+                              verts[i + 1][1] - verts[i][1])
+                   for i in range(len(verts) - 1))
+    except Exception:
+        return 0.0
+
+
+def op_box_stitch(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Box Stitch Helper: re-prick two mating panels (handle_a, handle_b) with an
+    EQUAL number of stitch holes so their seams line up. The pitch on each panel is
+    flexed slightly to land the agreed count. All iron / offset / shape args are
+    forwarded to op_add_holes, so the shaped slits are identical on both panels.
+
+    strategy: 'average' (default) | 'a' | 'b' | 'custom' (uses `count`)."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handle_a = args.get("handle_a")
+    handle_b = args.get("handle_b")
+    strategy = str(args.get("strategy", "average")).lower()
+    pitch = float(args.get("hole_spacing", 4.0))
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handle_a or not handle_b:
+        return {"status": "error", "message": "Select both panels (A and B) to box-stitch."}
+
+    try:
+        doc = ezdxf.readfile(input_path)
+        ent_a = doc.entitydb[handle_a]
+        ent_b = doc.entitydb[handle_b]
+    except KeyError:
+        return {"status": "error", "message": "One of the selected panels was not found."}
+
+    len_a = _entity_length(ent_a)
+    len_b = _entity_length(ent_b)
+    if len_a <= 0 or len_b <= 0:
+        return {"status": "error", "message": "Could not measure one of the panels."}
+
+    pitch = max(1e-3, pitch)
+    na = max(2, int(round(len_a / pitch)))
+    nb = max(2, int(round(len_b / pitch)))
+    if strategy == "a":
+        count = na
+    elif strategy == "b":
+        count = nb
+    elif strategy == "custom":
+        count = max(2, int(args.get("count", max(na, nb))))
+    else:  # average
+        count = max(2, int(round((na + nb) / 2.0)))
+
+    # Forward every shaped-slit / offset arg to op_add_holes, overriding only the
+    # distribution so both panels get exactly `count` holes. Chain input→output so
+    # the second pricking sees the first panel's holes.
+    base = dict(args)
+    base.pop("handle_a", None)
+    base.pop("handle_b", None)
+    base.pop("strategy", None)
+    base["distribution"] = "count"
+    base["hole_count"] = count
+
+    a_args = dict(base, input=input_path, output=output_path, handles=[handle_a])
+    r1 = op_add_holes(a_args)
+    if r1.get("status") != "ok":
+        return r1
+    b_args = dict(base, input=output_path, output=output_path, handles=[handle_b])
+    r2 = op_add_holes(b_args)
+    if r2.get("status") != "ok":
+        return r2
+
+    return {"status": "ok", "data": {
+        "count": count, "len_a": len_a, "len_b": len_b,
+        "pitch_a": len_a / count, "pitch_b": len_b / count}}
+
+
+def op_mandala(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Mandala / radial symmetry: replicate the selected seed geometry `segments`
+    times around a centre (cx, cy). With `mirror` on, each wedge also gets a
+    reflected copy → full dihedral (kaleidoscope) symmetry."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", [])
+    segments = max(2, int(args.get("segments", 8)))
+    cx = float(args.get("cx", 0.0))
+    cy = float(args.get("cy", 0.0))
+    mirror = bool(args.get("mirror", False))
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handles:
+        return {"status": "error", "message": "Draw something in one wedge first, then Mandala it."}
+
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        step = 2.0 * math.pi / segments
+        new_handles: List[str] = []
+
+        # Optional reflected seed (across the horizontal line through the centre).
+        reflect_m = (Matrix44.translate(-cx, -cy, 0.0)
+                     @ Matrix44.scale(1.0, -1.0, 1.0)
+                     @ Matrix44.translate(cx, cy, 0.0))
+        mirror_handles: List[str] = []
+        if mirror:
+            for h in handles:
+                try:
+                    ne = doc.entitydb[h].copy()
+                    ne.transform(reflect_m)
+                    msp.add_entity(ne)
+                    mirror_handles.append(ne.dxf.handle)
+                    new_handles.append(ne.dxf.handle)
+                except KeyError:
+                    pass
+
+        sources = list(handles) + mirror_handles
+        for i in range(1, segments):
+            rot = (Matrix44.translate(-cx, -cy, 0.0)
+                   @ Matrix44.z_rotate(step * i)
+                   @ Matrix44.translate(cx, cy, 0.0))
+            for h in sources:
+                try:
+                    ne = doc.entitydb[h].copy()
+                    ne.transform(rot)
+                    msp.add_entity(ne)
+                    new_handles.append(ne.dxf.handle)
+                except KeyError:
+                    pass
+
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_entities": new_handles,
+                                         "segments": segments, "mirror": mirror}}
+    except Exception as e:
+        return {"status": "error", "message": f"Mandala failed: {str(e)}"}
+
+
+def _comb_profile(p1, p2, n_fingers, depth, start_tab, tab_shrink, outward):
+    """Square-wave (box-joint) profile from p1 to p2. `tab_shrink` narrows every
+    raised tab by that amount (split each side) so a mating edge fits with kerf
+    clearance. Returns a list of (x, y) vertices for an open LWPOLYLINE."""
+    x1, y1 = p1
+    x2, y2 = p2
+    L = math.hypot(x2 - x1, y2 - y1)
+    if L < 1e-6 or n_fingers < 1:
+        return [tuple(p1), tuple(p2)]
+    dx, dy = (x2 - x1) / L, (y2 - y1) / L          # along edge
+    sgn = 1.0 if outward else -1.0
+    nx, ny = -dy * sgn, dx * sgn                    # outward normal
+    w = L / n_fingers
+    half_shrink = max(0.0, tab_shrink) / 2.0
+
+    def P(along, lift):
+        return (x1 + dx * along + nx * lift, y1 + dy * along + ny * lift)
+
+    pts = [P(0.0, 0.0)]
+    for i in range(n_fingers):
+        a0, a1 = i * w, (i + 1) * w
+        is_tab = ((i % 2 == 0) == start_tab)
+        if is_tab:
+            s0, s1 = a0 + half_shrink, a1 - half_shrink
+            if s1 < s0:                              # tab narrower than kerf → pin
+                s0 = s1 = (a0 + a1) / 2.0
+            pts.extend([P(s0, 0.0), P(s0, depth), P(s1, depth), P(s1, 0.0)])
+        else:
+            pts.append(P(a1, 0.0))                   # stay on the base line
+    pts.append(P(L, 0.0))
+    # drop consecutive duplicates
+    out = [pts[0]]
+    for p in pts[1:]:
+        if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) > 1e-7:
+            out.append(p)
+    return out
+
+
+def op_box_joint(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Box Joint Maker: emit an interlocking finger-joint profile along the edge
+    p1→p2. If `mate` is true and p3/p4 are given, the complementary profile is
+    emitted on that edge (tabs↔slots) with `kerf` clearance so the two interlock.
+    Profiles are open LWPOLYLINEs on the BOX_JOINT layer."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    p1 = args.get("p1")
+    p2 = args.get("p2")
+    depth = float(args.get("depth", 5.0))
+    kerf = float(args.get("kerf", 0.2))
+    start_tab = bool(args.get("start_tab", True))
+    outward = bool(args.get("outward", True))
+    mate = bool(args.get("mate", False))
+    p3 = args.get("p3")
+    p4 = args.get("p4")
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not p1 or not p2:
+        return {"status": "error", "message": "Pick an edge (two points) to fingerise."}
+
+    L = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+    if L < 1e-6:
+        return {"status": "error", "message": "Edge has zero length."}
+    if "finger_count" in args and args.get("finger_count"):
+        n_fingers = max(1, int(args["finger_count"]))
+    else:
+        fw = max(1e-3, float(args.get("finger_width", 8.0)))
+        n_fingers = max(1, int(round(L / fw)))
+
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        if "BOX_JOINT" not in doc.layers:
+            doc.layers.new("BOX_JOINT", dxfattribs={"color": 5})
+
+        new_handles = []
+        prof = _comb_profile(p1, p2, n_fingers, depth, start_tab, 0.0, outward)
+        e1 = msp.add_lwpolyline(prof, dxfattribs={"layer": "BOX_JOINT"})
+        new_handles.append(e1.dxf.handle)
+
+        if mate and p3 and p4:
+            # Mating edge: flip tab/slot phase and shrink tabs by kerf for fit.
+            prof2 = _comb_profile(p3, p4, n_fingers, depth, not start_tab, kerf, outward)
+            e2 = msp.add_lwpolyline(prof2, dxfattribs={"layer": "BOX_JOINT"})
+            new_handles.append(e2.dxf.handle)
+
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_entities": new_handles,
+                                         "fingers": n_fingers}}
+    except Exception as e:
+        return {"status": "error", "message": f"Box joint failed: {str(e)}"}
+
+
+def op_golden(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Golden-ratio design guides on the GUIDES layer.
+      kind='spiral'    : the true golden (logarithmic) spiral, fit to bbox.
+      kind='rectangle' : a φ rectangle plus its recursive square subdivision.
+      kind='centerline': a construction line between p1 and p2.
+    bbox = [x, y, w, h]. PHI = 1.6180339887."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    kind = str(args.get("kind", "spiral")).lower()
+    PHI = (1.0 + 5.0 ** 0.5) / 2.0
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+
+    try:
+        doc = ezdxf.readfile(input_path)
+        msp = doc.modelspace()
+        if "GUIDES" not in doc.layers:
+            doc.layers.new("GUIDES", dxfattribs={"color": 8})
+        attr = {"layer": "GUIDES"}
+        new_handles = []
+
+        if kind == "centerline":
+            p1 = args.get("p1"); p2 = args.get("p2")
+            if not p1 or not p2:
+                return {"status": "error", "message": "Centre line needs two points."}
+            e = msp.add_line(p1, p2, dxfattribs=attr)
+            new_handles.append(e.dxf.handle)
+            doc.saveas(output_path)
+            return {"status": "ok", "data": {"new_entities": new_handles}}
+
+        bbox = args.get("bbox")
+        if not bbox or len(bbox) != 4:
+            return {"status": "error", "message": "Drag a bounding box for the guide."}
+        bx, by, bw, bh = [float(v) for v in bbox]
+        bw = bw if abs(bw) > 1e-6 else 1.0
+        bh = bh if abs(bh) > 1e-6 else 1.0
+
+        if kind == "rectangle":
+            # Snap to a φ rectangle keeping the longer side, then peel squares.
+            if abs(bw) >= abs(bh):
+                w = abs(bh) * PHI * (1 if bw >= 0 else -1)
+                h = bh
+            else:
+                h = abs(bw) * PHI * (1 if bh >= 0 else -1)
+                w = bw
+            rect = [(bx, by), (bx + w, by), (bx + w, by + h), (bx, by + h)]
+            e = msp.add_lwpolyline(rect, close=True, dxfattribs=attr)
+            new_handles.append(e.dxf.handle)
+            # recursive square subdivision lines
+            x, y, rw, rh = bx, by, w, h
+            for _ in range(8):
+                if abs(rw) < 1e-3 or abs(rh) < 1e-3:
+                    break
+                if abs(rw) >= abs(rh):
+                    s = rh
+                    e = msp.add_line((x + s, y), (x + s, y + rh), dxfattribs=attr)
+                    x += s; rw -= s
+                else:
+                    s = rw
+                    e = msp.add_line((x, y + s), (x + rw, y + s), dxfattribs=attr)
+                    y += s; rh -= s
+                new_handles.append(e.dxf.handle)
+            doc.saveas(output_path)
+            return {"status": "ok", "data": {"new_entities": new_handles}}
+
+        # default: true golden spiral as a finely-sampled polyline, fit to bbox.
+        b = math.log(PHI) / (math.pi / 2.0)   # grows by φ every quarter turn
+        turns = float(args.get("turns", 3.0))
+        theta_max = turns * 2.0 * math.pi
+        n = max(64, int(turns * 90))
+        raw = []
+        for i in range(n + 1):
+            th = theta_max * i / n
+            r = math.exp(b * th)
+            raw.append((r * math.cos(th), r * math.sin(th)))
+        xs = [p[0] for p in raw]; ys = [p[1] for p in raw]
+        minx, maxx = min(xs), max(xs); miny, maxy = min(ys), max(ys)
+        sx = bw / (maxx - minx if maxx > minx else 1.0)
+        sy = bh / (maxy - miny if maxy > miny else 1.0)
+        pts = [(bx + (x - minx) * sx, by + (y - miny) * sy) for x, y in raw]
+        e = msp.add_lwpolyline(pts, dxfattribs=attr)
+        new_handles.append(e.dxf.handle)
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"new_entities": new_handles}}
+    except Exception as e:
+        return {"status": "error", "message": f"Golden guide failed: {str(e)}"}
+
+
 OPERATIONS = {
     "list_entities": op_list_entities,
     "offset_lines": op_offset_lines,
@@ -5954,6 +6361,10 @@ OPERATIONS = {
     "explode_compound": op_explode_compound,
     "convert_to_fill": op_convert_to_fill,
     "convert_to_stroke": op_convert_to_stroke,
+    "box_stitch": op_box_stitch,
+    "mandala": op_mandala,
+    "box_joint": op_box_joint,
+    "golden": op_golden,
 }
 
 
