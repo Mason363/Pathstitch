@@ -16,8 +16,6 @@ cut‑ready DXF/SVG/PDF — or import a 3D `.step` model and **unfold it into fl
 and sew. It's a fast, native SwiftUI app backed by a real geometry kernel (`ezdxf`, `shapely`, OpenCASCADE),
 not a web wrapper.
 
-https://github.com/user-attachments/assets/50c6973c-2bd9-470b-b031-fa0a991badef
-
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 52 39 PM" src="https://github.com/user-attachments/assets/63cfbd20-b581-47fe-a3eb-1ff0c9cac5cb" />
 
 ---
@@ -43,7 +41,7 @@ Is it safe? Yes, completely. The app is 100% open-source, so the entire source c
 Line, circle, rectangle, polygon, text, and an Illustrator‑style **pen** tool, all with point/edge/grid **snapping** and
 **on‑creation dimensions** — type a width, `Tab`, type a height, `Enter`, done. No hunting through panels.
 
-> [VIDEO: 8–12s loop — drawing one rectangle by typing exact dimensions (e.g. 80 `Tab` 50 `Enter`), then a circle snapping to its corner. Keep keystrokes visible on screen so people see the type-a-number-and-go flow. Silent loop, no narration needed.]
+https://github.com/user-attachments/assets/50c6973c-2bd9-470b-b031-fa0a991badef
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 53 33 PM" src="https://github.com/user-attachments/assets/e4abe9a9-303a-477e-a92a-b73f2b6d0251" />
 
