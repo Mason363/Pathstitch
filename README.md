@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/d9a70b49-feea-481b-a810-f7070c761132
   **patterning** (grid, circular, or along a path), and **paper folding** (crease lines + glue tabs) for
   assembling 3D objects from flat stock.
 
-[Video 3]
+https://github.com/user-attachments/assets/3a78569e-ba0d-49fa-87fd-ac4246746713
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 5 03 09 PM" src="https://github.com/user-attachments/assets/5959eb5d-2da1-4abb-9f9f-e1c15734566c" />
 
@@ -78,7 +78,9 @@ Import `.step` / `.stp`, inspect it in a Three.js viewport, and **unfold develop
 nets** ready for the 2D tools — the thing most pattern tools simply can't do. Drag in several models at once
 and they auto‑arrange; take a cross‑section from any plane to sketch against.
 
-[Video 4]
+
+https://github.com/user-attachments/assets/08f13caf-7b4b-474f-868d-88ccc729f6be
+
 
 <img width="1312" height="912" alt="Screenshot 2026-06-15 at 5 05 53 PM" src="https://github.com/user-attachments/assets/802bf6e9-4b0f-4159-962b-fa0768eef29b" />
 
@@ -89,7 +91,7 @@ DXF, SVG, PDF, and PNG export; native `.stch` project files; and **Finder QuickL
 for DXF and STEP — press Space on a file and see the real geometry, not a generic icon. Plus the niceties:
 customizable keybinds, light/dark themes, a `⌘K` command palette, and a rearrangeable toolbar.
 
-[Video 5]
+https://github.com/user-attachments/assets/903794b1-4d92-4840-8783-a3f5c49ae1bd
 
 ---
 
