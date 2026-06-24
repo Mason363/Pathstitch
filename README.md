@@ -16,9 +16,9 @@ cut‑ready DXF/SVG/PDF — or import a 3D `.step` model and **unfold it into fl
 and sew. It's a fast, native SwiftUI app backed by a real geometry kernel (`ezdxf`, `shapely`, OpenCASCADE),
 not a web wrapper.
 
-<img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 52 39 PM" src="https://github.com/user-attachments/assets/63cfbd20-b581-47fe-a3eb-1ff0c9cac5cb" />
+https://github.com/user-attachments/assets/50c6973c-2bd9-470b-b031-fa0a991badef
 
-> [VIDEO: 25–35s hero overview — a fast highlight reel cut from the section demos below. Blank canvas → sketch a rectangle with live dimensions → round a corner with the fillet drag → drop in a saddle-stitch line → import a STEP and unfold it → export a DXF. The goal is "look how much this one app does, and how fast," not a tutorial. This is the one clip most visitors will actually watch, so make the first 3 seconds land.]
+<img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 52 39 PM" src="https://github.com/user-attachments/assets/63cfbd20-b581-47fe-a3eb-1ff0c9cac5cb" />
 
 ---
 
@@ -57,7 +57,7 @@ under your cursor.
   its individual edges.
 - Move/rotate gizmo, point‑to‑point move, scale, mirror, reflect, duplicate.
 
-> [VIDEO: 10–15s — the fillet tool is the showpiece. Drag a single corner's radius up and down so the rounding updates live, then grab a second corner so two fillets grow until they meet. End by re-selecting an already-filleted corner to show it's still editable. This clip should make the "parametric, forever-editable" claim obvious without words.]
+https://github.com/user-attachments/assets/d9a70b49-feea-481b-a810-f7070c761132
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 4 54 20 PM" src="https://github.com/user-attachments/assets/85944b0c-71b1-4632-8773-ce5b9ddc906c" />
 
@@ -69,7 +69,7 @@ under your cursor.
   **patterning** (grid, circular, or along a path), and **paper folding** (crease lines + glue tabs) for
   assembling 3D objects from flat stock.
 
-> [VIDEO: 8–12s — click along an edge to lay down a saddle-stitch hole line, then tweak the spacing field and watch the holes re-flow evenly around a corner. The "it spaces itself perfectly around corners" moment is what leatherworkers care about, so make sure a corner is in frame.]
+[Video 3]
 
 <img width="1313" height="913" alt="Screenshot 2026-06-15 at 5 03 09 PM" src="https://github.com/user-attachments/assets/5959eb5d-2da1-4abb-9f9f-e1c15734566c" />
 
@@ -78,7 +78,7 @@ Import `.step` / `.stp`, inspect it in a Three.js viewport, and **unfold develop
 nets** ready for the 2D tools — the thing most pattern tools simply can't do. Drag in several models at once
 and they auto‑arrange; take a cross‑section from any plane to sketch against.
 
-> [VIDEO: 12–18s — the headline feature. Orbit an imported STEP model in 3D, hit unfold, and watch the curved part flatten into 2D panels you could cut. Then cut to those panels living in the 2D editor with stitch holes on them. This is the "wait, it does *that*?" clip — worth making it the most polished of the set.]
+[Video 4]
 
 <img width="1312" height="912" alt="Screenshot 2026-06-15 at 5 05 53 PM" src="https://github.com/user-attachments/assets/802bf6e9-4b0f-4159-962b-fa0768eef29b" />
 
@@ -89,9 +89,7 @@ DXF, SVG, PDF, and PNG export; native `.stch` project files; and **Finder QuickL
 for DXF and STEP — press Space on a file and see the real geometry, not a generic icon. Plus the niceties:
 customizable keybinds, light/dark themes, a `⌘K` command palette, and a rearrangeable toolbar.
 
-> [VIDEO: 6–10s — in Finder, arrow through a folder of `.dxf` and `.step` files pressing Space on each so the QuickLook preview renders the actual part. Short and satisfying; shows the macOS-native integration most CAD tools don't bother with.]
-
-> [IMAGE: a Finder window in icon/gallery view showing a folder of Pathstitch files where the thumbnails are real previews of each pattern/part — a clean, single still that demonstrates the thumbnail extension at a glance.]
+[Video 5]
 
 ---
 
