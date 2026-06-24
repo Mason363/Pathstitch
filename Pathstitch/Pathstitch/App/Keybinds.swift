@@ -158,6 +158,18 @@ enum AppCommands {
               defaultCombo: KeyCombo(key: "")) { $0.currentTool = .paperFolding },
         .init(id: "tool.patterning", title: "Patterning Tool", icon: "square.grid.3x3", category: "Tools",
               defaultCombo: KeyCombo(key: "")) { $0.currentTool = .patterning },
+        .init(id: "tool.templateInsert", title: "Insert Template", icon: "square.on.square.dashed", category: "Tools",
+              defaultCombo: KeyCombo(key: "")) { $0.currentTool = .templateInsert },
+        .init(id: "tool.boxStitch", title: "Box Stitch Helper", icon: "rectangle.connected.to.line.below", category: "Tools",
+              defaultCombo: KeyCombo(key: "")) { $0.currentTool = .boxStitch },
+        .init(id: "tool.mandala", title: "Mandala", icon: "circle.hexagongrid", category: "Tools",
+              defaultCombo: KeyCombo(key: "")) { $0.currentTool = .mandala },
+        .init(id: "tool.boxJoint", title: "Box Joint", icon: "puzzlepiece", category: "Tools",
+              defaultCombo: KeyCombo(key: "")) { $0.currentTool = .boxJoint },
+        .init(id: "tool.goldenGuide", title: "Golden Ratio Guide", icon: "spiral", category: "Tools",
+              defaultCombo: KeyCombo(key: "")) { $0.currentTool = .goldenGuide },
+        .init(id: "tool.jigExport", title: "3D Pattern / Jig (STL)", icon: "cube.transparent", category: "Tools",
+              defaultCombo: KeyCombo(key: "")) { $0.currentTool = .jigExport },
 
         // — Edit —
         .init(id: "edit.undo", title: "Undo", icon: "arrow.uturn.backward", category: "Edit",

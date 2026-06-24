@@ -270,6 +270,31 @@ struct DxfCanvasView: View {
                         state.commitPatterningAndExit()
                         return
                     }
+                    // LeatherCraft-parity tools: Enter runs the tool's apply action.
+                    if state.currentTool == .boxStitch {
+                        state.applyBoxStitch(exitAfterApply: true)
+                        return
+                    }
+                    if state.currentTool == .mandala {
+                        state.applyMandala(exitAfterApply: true)
+                        return
+                    }
+                    if state.currentTool == .boxJoint {
+                        state.applyBoxJoint(exitAfterApply: true)
+                        return
+                    }
+                    if state.currentTool == .goldenGuide {
+                        state.applyGolden(exitAfterApply: true)
+                        return
+                    }
+                    if state.currentTool == .jigExport {
+                        state.exportJig(exitAfterApply: true)
+                        return
+                    }
+                    if state.currentTool == .templateInsert {
+                        state.currentTool = .select
+                        return
+                    }
                     // Return/Enter finishes the in-progress shape at the cursor.
                     if state.currentTool == .pen {
                         finishPenPath()
@@ -5721,7 +5746,7 @@ extension View {
                 if isHovered { NSCursor.openHand.set() }
                 else { NSCursor.arrow.set() }
             }
-        case .select, .move, .offset, .addThickness, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning:
+        case .select, .move, .offset, .addThickness, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning, .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
             return self.onHover { isHovered in
                 if isHovered { NSCursor.crosshair.set() }
                 else { NSCursor.arrow.set() }

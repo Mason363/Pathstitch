@@ -16,6 +16,7 @@ Operations:
                         corner jig) over extrude_to_stl.
 """
 import os
+import math
 import struct
 from typing import Dict, List, Any, Tuple
 
@@ -186,7 +187,100 @@ def op_jig_from_panels(args: Dict[str, Any]) -> Dict[str, Any]:
     return res
 
 
+def op_extrude_handles_to_stl(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Read a DXF, build panels from the selected closed `handles`, and extrude to
+    STL. In `stitch_template` mode, any SEWING_HOLES entities whose centre lies
+    inside a panel become through-holes (a printable pricking guide).
+
+    args: input (dxf), handles, output (stl), mode, thickness/plate_thickness."""
+    import os as _os
+    input_path = args.get("input")
+    handles = args.get("handles", [])
+    output = args.get("output")
+    mode = str(args.get("mode", "solid")).lower()
+
+    if not input_path or not _os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not handles:
+        return {"status": "error", "message": "Select one or more closed regions."}
+    if not output:
+        return {"status": "error", "message": "Output path must be specified."}
+
+    try:
+        import ezdxf
+        from ezdxf.path import make_path
+    except Exception as e:
+        return {"status": "error", "message": f"ezdxf unavailable: {e}"}
+
+    doc = ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+
+    def loop_of(ent):
+        try:
+            p = make_path(ent)
+            pts = [[v.x, v.y] for v in p.flattening(distance=0.2)]
+            return pts if len(pts) >= 3 else None
+        except Exception:
+            return None
+
+    panels: List[Dict[str, Any]] = []
+    panel_loops = []
+    for h in handles:
+        try:
+            ent = doc.entitydb[h]
+        except KeyError:
+            continue
+        outer = loop_of(ent)
+        if outer:
+            panels.append({"outer": outer, "holes": []})
+            panel_loops.append(outer)
+
+    if not panels:
+        return {"status": "error", "message": "No valid closed regions in the selection."}
+
+    if mode == "stitch_template":
+        # bucket each SEWING_HOLES entity into the panel that contains its centroid
+        def centroid(pts):
+            n = len(pts)
+            return (sum(p[0] for p in pts) / n, sum(p[1] for p in pts) / n)
+
+        def inside(pt, loop):
+            # ray casting
+            x, y = pt
+            inside = False
+            n = len(loop)
+            j = n - 1
+            for i in range(n):
+                xi, yi = loop[i]; xj, yj = loop[j]
+                if ((yi > y) != (yj > y)) and \
+                   (x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi):
+                    inside = not inside
+                j = i
+            return inside
+
+        for ent in msp:
+            if ent.dxf.layer != "SEWING_HOLES":
+                continue
+            hole = loop_of(ent) if ent.dxftype() != "CIRCLE" else None
+            if ent.dxftype() == "CIRCLE":
+                cx, cy, r = ent.dxf.center.x, ent.dxf.center.y, ent.dxf.radius
+                hole = [[cx + r * math.cos(a), cy + r * math.sin(a)]
+                        for a in [i * 2.0 * math.pi / 16 for i in range(16)]]
+            if not hole:
+                continue
+            c = centroid(hole)
+            for idx, lp in enumerate(panel_loops):
+                if inside(c, lp):
+                    panels[idx]["holes"].append(hole)
+                    break
+
+    call = dict(args)
+    call["panels"] = panels
+    return op_jig_from_panels(call)
+
+
 OPERATIONS = {
     "extrude_to_stl": op_extrude_to_stl,
     "jig_from_panels": op_jig_from_panels,
+    "extrude_handles_to_stl": op_extrude_handles_to_stl,
 }

@@ -58,6 +58,13 @@ enum TwoDTool: String, CaseIterable {
     case trim = "Trim"
     case paperFolding = "Paper Folding"
     case patterning = "Patterning"
+    // LeatherCraft-parity tools.
+    case templateInsert = "Templates"
+    case boxStitch = "Box Stitch"
+    case mandala = "Mandala"
+    case boxJoint = "Box Joint"
+    case goldenGuide = "Golden Ratio"
+    case jigExport = "3D Pattern / Jig"
 
     /// SF Symbol fallback. The Fillet/Chamfer tools draw a custom corner glyph in
     /// the toolbar (see ToolButton), since SF Symbols has no true fillet/chamfer.
@@ -86,6 +93,12 @@ enum TwoDTool: String, CaseIterable {
         case .trim: return "scissors.badge.ellipsis"
         case .paperFolding: return "scissors"
         case .patterning: return "square.grid.3x3"
+        case .templateInsert: return "square.on.square.dashed"
+        case .boxStitch: return "rectangle.connected.to.line.below"
+        case .mandala: return "circle.hexagongrid"
+        case .boxJoint: return "puzzlepiece"
+        case .goldenGuide: return "spiral"
+        case .jigExport: return "cube.transparent"
         }
     }
 
@@ -98,7 +111,8 @@ enum TwoDTool: String, CaseIterable {
     var confirmsOnEnter: Bool {
         switch self {
         case .sketchLine, .pen, .offset, .fillet, .chamfer,
-             .addHoles, .addThickness, .cleanup, .scale, .mirror, .patterning:
+             .addHoles, .addThickness, .cleanup, .scale, .mirror, .patterning,
+             .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
             return true
         default:
             return false
@@ -132,6 +146,12 @@ enum TwoDTool: String, CaseIterable {
         case .trim: return "tool.trim"
         case .paperFolding: return "tool.paperFolding"
         case .patterning: return "tool.patterning"
+        case .templateInsert: return "tool.templateInsert"
+        case .boxStitch: return "tool.boxStitch"
+        case .mandala: return "tool.mandala"
+        case .boxJoint: return "tool.boxJoint"
+        case .goldenGuide: return "tool.goldenGuide"
+        case .jigExport: return "tool.jigExport"
         }
     }
 
@@ -1106,6 +1126,21 @@ class AppState {
     // Pitch mode: "fixed" | "variable" | "hybrid" (drives distribution / variable
     // spacing; the engine math is shared with the existing distribution args).
     var holePitchMode: String = "fixed"
+
+    // — LeatherCraft-parity tool parameters —
+    var boxStitchStrategy: String = "average"     // average | a | b
+    var mandalaSegments: Int = 8
+    var mandalaMirror: Bool = false
+    var boxJointLength: Double = 60.0
+    var boxJointFingerWidth: Double = 8.0
+    var boxJointDepth: Double = 5.0
+    var boxJointKerf: Double = 0.2
+    var boxJointMate: Bool = true
+    var goldenKind: String = "spiral"             // spiral | rectangle | centerline
+    var goldenWidth: Double = 100.0
+    var goldenHeight: Double = 60.0
+    var jigMode: String = "solid"                 // solid | stitch_template | corner_jig
+    var jigThickness: Double = 3.0
 
     var consolidateSvgStrokes: Bool = true
     // SVGs import as cuttable outlines of this width (mm). 0 = raw centerlines.
@@ -5200,6 +5235,224 @@ class AppState {
         return url
     }
     
+    /// Insert a real-world template (centred at the model origin) on a dedicated
+    /// `TEMPLATE` layer. Rect/rounded → rectangle op; circle → circle op; polygon
+    /// (e.g. 12-sided £1 coin) → a closed path of computed vertices.
+    func insertTemplate(_ t: DesignTemplate) {
+        saveToHistory()
+        let activeDxfURL = ensureActiveDXFFileExists()
+        isProcessing = true
+
+        // Build the op payload centred on (0,0).
+        var type = "rectangle"
+        var params: [String: Any] = [:]
+        switch t.shape {
+        case "circle":
+            let r = (t.diameter ?? 10.0) / 2.0
+            type = "circle"
+            params = ["center": [0.0, 0.0], "radius": r]
+        case "polygon":
+            let r = (t.diameter ?? 20.0) / 2.0
+            let n = max(3, t.sides ?? 6)
+            var pts: [[Double]] = []
+            for i in 0..<n {
+                // first vertex at the top, vertices on the circumscribed circle
+                let a = Double.pi / 2.0 + 2.0 * Double.pi * Double(i) / Double(n)
+                pts.append([r * cos(a), r * sin(a)])
+            }
+            type = "path"
+            params = ["points": pts, "closed": true]
+        default: // rect / roundedRect
+            let w = (t.width ?? 50.0) / 2.0
+            let h = (t.height ?? 30.0) / 2.0
+            type = "rectangle"
+            params = ["p1": [-w, -h], "p2": [w, h],
+                      "fillet_radius": (t.shape == "roundedRect" ? (t.radius ?? 0.0) : 0.0)]
+        }
+
+        let payload = params
+        let opType = type
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "add_entity",
+                    args: [
+                        "input": activeDxfURL.path,
+                        "output": activeDxfURL.path,
+                        "type": opType,
+                        "params": payload,
+                        "layer": "TEMPLATE"
+                    ]
+                )
+                await MainActor.run {
+                    self.reloadDXF()
+                    self.isProcessing = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isProcessing = false
+                }
+            }
+        }
+    }
+
+    /// Box Stitch Helper — re-prick the two selected panels with equal hole counts.
+    func applyBoxStitch(exitAfterApply: Bool = false) {
+        let handles = Array(selectedHandles)
+        guard handles.count == 2 else {
+            errorMessage = "Select exactly two panels (paths) to box-stitch."
+            return
+        }
+        saveToHistory()
+        guard let url = currentFilePath else { return }
+        isProcessing = true
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        var args = sewingHoleArgs(input: url.path, output: activeDxfURL.path, handles: [])
+        args["handle_a"] = handles[0]
+        args["handle_b"] = handles[1]
+        args["strategy"] = boxStitchStrategy
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "box_stitch", args: args)
+                await MainActor.run {
+                    self.currentFilePath = activeDxfURL
+                    self.selectedHandles.removeAll()
+                    self.reloadDXF()
+                    if exitAfterApply { self.currentTool = .select }
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
+    /// Mandala — replicate the selected seed around the model origin.
+    func applyMandala(exitAfterApply: Bool = false) {
+        let handles = Array(selectedHandles)
+        guard !handles.isEmpty else {
+            errorMessage = "Select the seed geometry to mandala."
+            return
+        }
+        saveToHistory()
+        guard let url = currentFilePath else { return }
+        isProcessing = true
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        let segs = mandalaSegments, mirror = mandalaMirror
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "mandala", args: [
+                    "input": url.path, "output": activeDxfURL.path, "handles": handles,
+                    "segments": segs, "cx": 0.0, "cy": 0.0, "mirror": mirror
+                ])
+                await MainActor.run {
+                    self.currentFilePath = activeDxfURL
+                    self.reloadDXF()
+                    if exitAfterApply { self.currentTool = .select }
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
+    /// Box Joint — emit a finger-joint profile (and its mate) along an edge centred
+    /// at the origin, sized by the panel parameters.
+    func applyBoxJoint(exitAfterApply: Bool = false) {
+        saveToHistory()
+        let activeDxfURL = ensureActiveDXFFileExists()
+        isProcessing = true
+        let half = boxJointLength / 2.0
+        var args: [String: Any] = [
+            "input": activeDxfURL.path, "output": activeDxfURL.path,
+            "p1": [-half, 0.0], "p2": [half, 0.0],
+            "finger_width": boxJointFingerWidth, "depth": boxJointDepth,
+            "kerf": boxJointKerf, "start_tab": true, "mate": boxJointMate
+        ]
+        if boxJointMate {
+            let gap = boxJointDepth + 10.0
+            args["p3"] = [-half, gap]; args["p4"] = [half, gap]
+        }
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "box_joint", args: args)
+                await MainActor.run {
+                    self.reloadDXF()
+                    self.isProcessing = false
+                    if exitAfterApply { self.currentTool = .select }
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
+    /// Golden Ratio guide — spiral / phi rectangle / centre line, centred at origin.
+    func applyGolden(exitAfterApply: Bool = false) {
+        saveToHistory()
+        let activeDxfURL = ensureActiveDXFFileExists()
+        isProcessing = true
+        let w = goldenWidth, h = goldenHeight, kind = goldenKind
+        var args: [String: Any] = [
+            "input": activeDxfURL.path, "output": activeDxfURL.path, "kind": kind
+        ]
+        if kind == "centerline" {
+            args["p1"] = [0.0, -h / 2.0]; args["p2"] = [0.0, h / 2.0]
+        } else {
+            args["bbox"] = [-w / 2.0, -h / 2.0, w, h]
+        }
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "golden", args: args)
+                await MainActor.run {
+                    self.reloadDXF()
+                    self.isProcessing = false
+                    if exitAfterApply { self.currentTool = .select }
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
+    /// 3D Pattern / Jig — extrude the selected closed regions to a binary STL.
+    func exportJig(exitAfterApply: Bool = false) {
+        let handles = Array(selectedHandles)
+        guard !handles.isEmpty else {
+            errorMessage = "Select one or more closed regions to make a 3D pattern."
+            return
+        }
+        guard let url = currentFilePath else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "stl") ?? .data]
+        panel.nameFieldStringValue = "pathstitch_jig.stl"
+        guard panel.runModal() == .OK, let outURL = panel.url else { return }
+
+        isProcessing = true
+        let mode = jigMode, thickness = jigThickness
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(module: "jig_ops", op: "extrude_handles_to_stl", args: [
+                    "input": url.path, "handles": handles, "output": outURL.path,
+                    "mode": mode, "thickness": thickness
+                ])
+                await MainActor.run {
+                    self.isProcessing = false
+                    if exitAfterApply { self.currentTool = .select }
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
     func addSketchedEntity(type: String, params: [String: Any]) async -> String? {
         saveToHistory()
         let activeDxfURL = ensureActiveDXFFileExists()

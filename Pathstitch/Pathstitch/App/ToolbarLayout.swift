@@ -69,9 +69,15 @@ enum ToolbarRegistry {
         .init(id: "sketchText",      title: "Text",      icon: "character.cursor.ibeam", shapesOrigin: true, kind: .tool(.sketchText)),
         .init(id: "sketchPolygon",   title: "Polygon",   icon: "hexagon",                shapesOrigin: true, kind: .tool(.sketchPolygon)),
         .init(id: "pen",             title: "Pen",       icon: "pencil.tip",             shapesOrigin: true, kind: .tool(.pen)),
+        .init(id: "templateInsert",  title: "Templates", icon: "square.on.square.dashed", shapesOrigin: true, kind: .tool(.templateInsert)),
         // — Utilities flyout ("Other Tools" •••) —
         .init(id: "mirror",    title: "Mirror",    icon: "flip.horizontal",                                          shapesOrigin: false, kind: .tool(.mirror)),
         .init(id: "convert",   title: "Convert",   icon: "scribble",                                                 shapesOrigin: false, kind: .tool(.convertLines)),
+        .init(id: "boxStitch", title: "Box Stitch", icon: "rectangle.connected.to.line.below",                       shapesOrigin: false, kind: .tool(.boxStitch)),
+        .init(id: "mandala",   title: "Mandala",   icon: "circle.hexagongrid",                                       shapesOrigin: false, kind: .tool(.mandala)),
+        .init(id: "boxJoint",  title: "Box Joint", icon: "puzzlepiece",                                              shapesOrigin: false, kind: .tool(.boxJoint)),
+        .init(id: "goldenGuide", title: "Golden Ratio", icon: "spiral",                                              shapesOrigin: false, kind: .tool(.goldenGuide)),
+        .init(id: "jigExport", title: "3D Jig",    icon: "cube.transparent",                                         shapesOrigin: false, kind: .tool(.jigExport)),
         .init(id: "flipH",     title: "Flip H",    icon: "arrow.left.and.right.righttriangle.left.righttriangle.right", shapesOrigin: false, kind: .flipH),
         .init(id: "flipV",     title: "Flip V",    icon: "arrow.up.and.down.righttriangle.up.righttriangle.down",      shapesOrigin: false, kind: .flipV),
         .init(id: "duplicate", title: "Duplicate", icon: "plus.square.on.square",                                     shapesOrigin: false, kind: .duplicate),
@@ -82,8 +88,8 @@ enum ToolbarRegistry {
     static func def(_ id: String) -> ToolbarItemDef? { byId[id] }
 
     static let defaultMain   = ["select", "move", "pan", "scale", "offset", "addThickness", "addHoles", "cleanup", "trim", "measure", "dimension", "fillet", "chamfer", "patterning", "paperFolding"]
-    static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchPolygon", "sketchText", "pen"]
-    static let defaultExtra  = ["mirror", "convert", "flipH", "flipV", "duplicate"]
+    static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchPolygon", "sketchText", "pen", "templateInsert"]
+    static let defaultExtra  = ["mirror", "convert", "boxStitch", "mandala", "boxJoint", "goldenGuide", "jigExport", "flipH", "flipV", "duplicate"]
 }
 
 /// Persisted, user-rearrangeable toolbar layout (MAS-99). Holds the ordered item

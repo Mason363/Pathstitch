@@ -3059,7 +3059,8 @@ extension ContentView {
         case .offset, .addThickness, .cleanup, .addHoles, .sketchRectangle, .sketchText,
              .sketchLine, .sketchCircle, .fillet, .chamfer, .paperFolding,
              .patterning, .move, .convertLines, .mirror, .select, .dimension, .scale,
-             .sketchPolygon:
+             .sketchPolygon, .templateInsert, .boxStitch, .mandala, .boxJoint,
+             .goldenGuide, .jigExport:
             return true
         default:
             return false
@@ -3475,6 +3476,18 @@ extension ContentView {
                 polygonToolSection
             } else if state.currentTool == .mirror {
                 mirrorSection
+            } else if state.currentTool == .templateInsert {
+                templateInsertSection
+            } else if state.currentTool == .boxStitch {
+                boxStitchSection
+            } else if state.currentTool == .mandala {
+                mandalaSection
+            } else if state.currentTool == .boxJoint {
+                boxJointSection
+            } else if state.currentTool == .goldenGuide {
+                goldenGuideSection
+            } else if state.currentTool == .jigExport {
+                jigExportSection
             } else if state.currentTool == .select {
                 selectionSection
                 textPropertiesSection
@@ -3484,6 +3497,168 @@ extension ContentView {
                     convertLinesSection
                 }
             }
+        }
+    }
+
+    // MARK: - LeatherCraft-parity tool panels
+
+    private func toolHeader(_ icon: String, _ title: String) -> some View {
+        HStack {
+            Image(systemName: icon).foregroundColor(Color.accent)
+            Text(title).font(PlasticityFont.header).foregroundColor(Color.text_primary).tracking(0.5)
+            Spacer()
+        }
+    }
+
+    private func numberField(_ label: String, _ binding: Binding<Double>) -> some View {
+        HStack {
+            Text(label).font(PlasticityFont.label).foregroundColor(Color.text_primary)
+            Spacer()
+            TextField("", value: binding, format: .number)
+                .textFieldStyle(PlainTextFieldStyle()).padding(4).frame(width: 72)
+                .background(Color.bg_input).cornerRadius(4)
+                .foregroundColor(Color.text_primary)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+        }
+    }
+
+    private func toolButtons(ok: String, okAction: @escaping () -> Void) -> some View {
+        HStack {
+            Button(ok) { okAction() }
+                .buttonStyle(.borderedProminent)
+            Button("Cancel") { state.currentTool = .select }
+                .buttonStyle(.bordered)
+            Spacer()
+        }
+    }
+
+    /// Insert Template — searchable, categorised gallery. Tap a card to drop it on
+    /// the TEMPLATE layer at the origin.
+    private var templateInsertSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolHeader("square.on.square.dashed", "TEMPLATES")
+            Text("Tap a template to insert it (centred at the origin) on the TEMPLATE layer.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            ForEach(TemplateStore.shared.categories, id: \.self) { cat in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(cat.uppercased())
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(Color.text_secondary)
+                    ForEach(TemplateStore.shared.templates(in: cat)) { t in
+                        Button { state.insertTemplate(t) } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(t.name).font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                                    Text(t.dimensionLabel).font(.system(size: 9)).foregroundColor(Color.text_secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "plus.circle").foregroundColor(Color.accent)
+                            }
+                            .padding(6)
+                            .background(Color.bg_input)
+                            .cornerRadius(5)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .help(t.note ?? "")
+                    }
+                }
+            }
+            Divider()
+            Button("Done") { state.currentTool = .select }.buttonStyle(.bordered)
+        }
+    }
+
+    /// Box Stitch Helper — equalise hole counts across the two selected panels.
+    private var boxStitchSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolHeader("rectangle.connected.to.line.below", "BOX STITCH")
+            Text("Select two mating paths, then re-prick both with an equal hole count so the seams line up. Uses the active pricking iron.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            HStack {
+                Text("Match").font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                Spacer()
+                Picker("", selection: $state.boxStitchStrategy) {
+                    Text("Average").tag("average")
+                    Text("Match A").tag("a")
+                    Text("Match B").tag("b")
+                }.labelsHidden().frame(width: 150)
+            }
+            Text("\(state.selectedHandles.count) selected (need 2)")
+                .font(.system(size: 9)).foregroundColor(Color.text_secondary)
+            toolButtons(ok: "Re-prick Both") { state.applyBoxStitch(exitAfterApply: true) }
+        }
+    }
+
+    /// Mandala — radial / dihedral symmetry of the selected seed.
+    private var mandalaSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolHeader("circle.hexagongrid", "MANDALA")
+            Text("Replicates the selected seed around the origin. Mirror adds reflected copies (kaleidoscope).")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            Stepper("Segments: \(state.mandalaSegments)", value: $state.mandalaSegments, in: 2...64)
+                .font(PlasticityFont.label)
+            Toggle("Mirror (dihedral)", isOn: $state.mandalaMirror).font(PlasticityFont.label)
+            Text("\(state.selectedHandles.count) seed object(s) selected")
+                .font(.system(size: 9)).foregroundColor(Color.text_secondary)
+            toolButtons(ok: "Bake") { state.applyMandala(exitAfterApply: true) }
+        }
+    }
+
+    /// Box Joint Maker — interlocking finger joint + mate, sized numerically.
+    private var boxJointSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolHeader("puzzlepiece", "BOX JOINT")
+            Text("Emits a finger-joint edge (and its mate) at the origin. Move/rotate it onto your panels.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            numberField("Edge length (mm)", $state.boxJointLength)
+            numberField("Finger width (mm)", $state.boxJointFingerWidth)
+            numberField("Depth (mm)", $state.boxJointDepth)
+            numberField("Kerf (mm)", $state.boxJointKerf)
+            Toggle("Generate mating edge", isOn: $state.boxJointMate).font(PlasticityFont.label)
+            toolButtons(ok: "Create") { state.applyBoxJoint(exitAfterApply: true) }
+        }
+    }
+
+    /// Golden Ratio guides — spiral / phi rectangle / centre line.
+    private var goldenGuideSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolHeader("spiral", "GOLDEN RATIO")
+            Picker("", selection: $state.goldenKind) {
+                Text("Spiral").tag("spiral")
+                Text("Rectangle").tag("rectangle")
+                Text("Centre Line").tag("centerline")
+            }.pickerStyle(SegmentedPickerStyle()).labelsHidden()
+            Text("Drawn on the GUIDES layer, centred at the origin.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            numberField("Width (mm)", $state.goldenWidth)
+            if state.goldenKind != "centerline" {
+                numberField("Height (mm)", $state.goldenHeight)
+            } else {
+                numberField("Length (mm)", $state.goldenHeight)
+            }
+            toolButtons(ok: "Create") { state.applyGolden(exitAfterApply: true) }
+        }
+    }
+
+    /// 3D Pattern / Jig — extrude selected closed regions to a binary STL.
+    private var jigExportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolHeader("cube.transparent", "3D PATTERN / JIG")
+            Text("Extrude the selected closed regions to a 3D-printable STL.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            HStack {
+                Text("Mode").font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                Spacer()
+                Picker("", selection: $state.jigMode) {
+                    Text("Solid pattern").tag("solid")
+                    Text("Stitch template").tag("stitch_template")
+                    Text("Corner jig").tag("corner_jig")
+                }.labelsHidden().frame(width: 150)
+            }
+            numberField("Thickness (mm)", $state.jigThickness)
+            Text("\(state.selectedHandles.count) region(s) selected")
+                .font(.system(size: 9)).foregroundColor(Color.text_secondary)
+            toolButtons(ok: "Export STL…") { state.exportJig(exitAfterApply: true) }
         }
     }
 
