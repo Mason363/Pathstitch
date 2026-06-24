@@ -1358,6 +1358,126 @@ extension ContentView {
         }
     }
 
+    /// A small preview of one iron's slit shape, drawn in the chip / picker.
+    @ViewBuilder
+    private func ironSlitGlyph(shape: String) -> some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let cx = w / 2, cy = h / 2
+            Path { p in
+                switch shape {
+                case "diamond":
+                    p.move(to: CGPoint(x: cx, y: cy - h * 0.32))
+                    p.addLine(to: CGPoint(x: cx + w * 0.16, y: cy))
+                    p.addLine(to: CGPoint(x: cx, y: cy + h * 0.32))
+                    p.addLine(to: CGPoint(x: cx - w * 0.16, y: cy))
+                    p.closeSubpath()
+                case "flat":
+                    p.addRect(CGRect(x: cx - w * 0.10, y: cy - h * 0.32,
+                                     width: w * 0.20, height: h * 0.64))
+                case "french", "oval":
+                    p.addEllipse(in: CGRect(x: cx - w * 0.12, y: cy - h * 0.32,
+                                            width: w * 0.24, height: h * 0.64))
+                default: // round
+                    p.addEllipse(in: CGRect(x: cx - w * 0.16, y: cy - h * 0.16,
+                                            width: w * 0.32, height: h * 0.32))
+                }
+            }
+            .fill(Color.accent)
+        }
+    }
+
+    /// Horizontal gallery of pricking irons + the live slit shape controls.
+    private var prickingIronPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("PRICKING IRON")
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+                .tracking(0.5)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(PrickingIronStore.shared.all) { iron in
+                        let selected = state.prickingIronId == iron.id
+                        VStack(spacing: 3) {
+                            ironSlitGlyph(shape: iron.shape)
+                                .frame(width: 34, height: 30)
+                            Text(iron.name)
+                                .font(.system(size: 8))
+                                .lineLimit(1)
+                                .foregroundColor(Color.text_secondary)
+                                .frame(width: 52)
+                        }
+                        .padding(4)
+                        .background(selected ? Color.accent.opacity(0.18) : Color.bg_input)
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(selected ? Color.accent : Color.border_strong, lineWidth: 1))
+                        .onTapGesture { state.applyPrickingIron(iron) }
+                        .help("\(iron.name) — \(iron.shape), pitch \(String(format: "%.2f", iron.pitch)) mm")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            HStack {
+                Text("Shape")
+                    .font(PlasticityFont.label)
+                    .foregroundColor(Color.text_primary)
+                Spacer()
+                Picker("", selection: $state.holeShape) {
+                    Text("Round").tag("round")
+                    Text("Diamond").tag("diamond")
+                    Text("French").tag("french")
+                    Text("Flat").tag("flat")
+                    Text("Oval").tag("oval")
+                }
+                .labelsHidden()
+                .frame(width: 150)
+                .help("Slit cross-section punched at each stitch")
+            }
+
+            if state.holeShape != "round" {
+                HStack {
+                    Text("Slit L×W (mm)")
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.text_primary)
+                    Spacer()
+                    TextField("L", value: $state.holeSlitLength, format: .number)
+                        .textFieldStyle(PlainTextFieldStyle()).padding(4).frame(width: 48)
+                        .background(Color.bg_input).cornerRadius(4)
+                        .foregroundColor(Color.text_primary)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                    TextField("W", value: $state.holeSlitWidth, format: .number)
+                        .textFieldStyle(PlainTextFieldStyle()).padding(4).frame(width: 48)
+                        .background(Color.bg_input).cornerRadius(4)
+                        .foregroundColor(Color.text_primary)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                }
+                HStack {
+                    Text("Angle / Invert")
+                        .font(PlasticityFont.label)
+                        .foregroundColor(Color.text_primary)
+                    Spacer()
+                    TextField("°", value: $state.holeSlitAngle, format: .number)
+                        .textFieldStyle(PlainTextFieldStyle()).padding(4).frame(width: 48)
+                        .background(Color.bg_input).cornerRadius(4)
+                        .foregroundColor(Color.text_primary)
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+                    Toggle("", isOn: $state.holeInverted)
+                        .labelsHidden()
+                        .help("Mirror the slant (left vs right iron)")
+                }
+            }
+
+            Divider().padding(.vertical, 2)
+        }
+        .onChange(of: state.holeShape) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeSlitLength) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeSlitWidth) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeSlitAngle) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeInverted) { _ in state.updateLivePreview() }
+    }
+
     @ViewBuilder
     private var holesSewingSection: some View {
         if state.currentTool == .select || state.currentTool == .addHoles {
@@ -1371,6 +1491,8 @@ extension ContentView {
                         .tracking(0.5)
                     Spacer()
                 }
+
+                prickingIronPicker
 
                 VStack(alignment: .leading, spacing: 8) {
                         HStack {

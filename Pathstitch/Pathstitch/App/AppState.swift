@@ -1094,6 +1094,19 @@ class AppState {
     var holeEnableAvoidance: Bool = false
     var holeAvoidanceRadius: Double = 3.0
 
+    // Pricking Iron Toolbox — the active iron decides the slit SHAPE that each
+    // stitch is punched as (real closed cut-paths in DXF), oriented to the stitch
+    // line. "round" keeps the legacy drilled circle.
+    var prickingIronId: String = "round-1.0"
+    var holeShape: String = "round"          // diamond | french | flat | oval | round
+    var holeSlitLength: Double = 1.8         // long axis (mm)
+    var holeSlitWidth: Double = 0.7          // short axis (mm)
+    var holeSlitAngle: Double = 0.0          // iron rotation vs local tangent (deg)
+    var holeInverted: Bool = false           // mirror the slant (left/right iron)
+    // Pitch mode: "fixed" | "variable" | "hybrid" (drives distribution / variable
+    // spacing; the engine math is shared with the existing distribution args).
+    var holePitchMode: String = "fixed"
+
     var consolidateSvgStrokes: Bool = true
     // SVGs import as cuttable outlines of this width (mm). 0 = raw centerlines.
     var svgImportThickness: Double = 3.0
@@ -4845,8 +4858,28 @@ class AppState {
             "variable_spacing_max": holeVariableSpacingMax,
             "enable_avoidance": holeEnableAvoidance,
             "avoidance_radius": holeAvoidanceRadius,
-            "keepout_handles": Array(sewingKeepoutHandles)
+            "keepout_handles": Array(sewingKeepoutHandles),
+            "hole_shape": holeShape,
+            "slit_length": holeSlitLength,
+            "slit_width": holeSlitWidth,
+            "slit_angle": holeSlitAngle,
+            "inverted": holeInverted
         ]
+    }
+
+    /// Adopt an iron from the Pricking Iron Toolbox: copy its shape, slit size,
+    /// angle and pitch into the live sewing parameters.
+    func applyPrickingIron(_ iron: PrickingIron) {
+        prickingIronId = iron.id
+        holeShape = iron.shape
+        holeSlitLength = iron.slitLength
+        holeSlitWidth = iron.slitWidth
+        holeSlitAngle = iron.angle
+        holeInverted = iron.inverted
+        holeSpacing = iron.pitch
+        if iron.shape == "round" {
+            holeDiameter = iron.slitLength
+        }
     }
 
     func applySewingHoles(exitAfterApply: Bool = false) {
