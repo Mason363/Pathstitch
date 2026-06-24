@@ -884,28 +884,20 @@ def op_combine_steps(args: Dict[str, Any]) -> Dict[str, Any]:
         existing_bodies = get_solid_bodies(load_step_shape(input_path))
         incoming_bodies = get_solid_bodies(load_step_shape(incoming_path))
 
-        # Preserve true coordinates everywhere (MAS-140): the viewport no longer
-        # redistributes bodies, so a dragged-in model must be placed beside the
-        # existing geometry here — but ONLY when they would actually overlap.
-        # Non-overlapping models keep their authored positions exactly.
+        # Place the incoming model beside the existing geometry, every time, so
+        # repeated imports lay out as a tidy, non-overlapping row instead of
+        # stacking at the same origin (the "spacing gets disturbed" report).
+        # The shift is a single rigid translation of the whole incoming group, so
+        # a multi-body file keeps its internal arrangement; the EXISTING bodies are
+        # never moved, so already-placed models stay exactly where they are.
         GAP = 20.0
         ex_boxes = [b for b in (_bbox(s) for s in existing_bodies) if b]
         in_boxes = [b for b in (_bbox(s) for s in incoming_bodies) if b]
         if ex_boxes and in_boxes:
             ex_xmax = max(b[3] for b in ex_boxes)
-            ex_xmin = min(b[0] for b in ex_boxes)
-            ex_ymin, ex_ymax = min(b[1] for b in ex_boxes), max(b[4] for b in ex_boxes)
-            ex_zmin, ex_zmax = min(b[2] for b in ex_boxes), max(b[5] for b in ex_boxes)
             in_xmin = min(b[0] for b in in_boxes)
-            in_xmax = max(b[3] for b in in_boxes)
-            in_ymin, in_ymax = min(b[1] for b in in_boxes), max(b[4] for b in in_boxes)
-            in_zmin, in_zmax = min(b[2] for b in in_boxes), max(b[5] for b in in_boxes)
-            overlaps = (in_xmin <= ex_xmax and in_xmax >= ex_xmin and
-                        in_ymin <= ex_ymax and in_ymax >= ex_ymin and
-                        in_zmin <= ex_zmax and in_zmax >= ex_zmin)
-            if overlaps:
-                dx = (ex_xmax + GAP) - in_xmin
-                incoming_bodies = [_translate_shape(b, dx, 0.0, 0.0) for b in incoming_bodies]
+            dx = (ex_xmax + GAP) - in_xmin
+            incoming_bodies = [_translate_shape(b, dx, 0.0, 0.0) for b in incoming_bodies]
 
         builder = BRep_Builder()
         compound = TopoDS_Compound()

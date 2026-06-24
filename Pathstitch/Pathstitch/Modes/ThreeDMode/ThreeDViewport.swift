@@ -47,6 +47,36 @@ struct Body3D: Identifiable, Codable, Hashable {
     }
 }
 
+/// WKWebView that forwards dropped file URLs to a handler instead of letting
+/// WebKit navigate to them. Without this the 3D viewport (a web view) swallows
+/// every file drop after the first model loads, so you could only ever import
+/// one STEP — dropping more onto the model did nothing. Now drops on the
+/// viewport append into the same 3D workspace, side by side.
+final class DropForwardingWebView: WKWebView {
+    var onFileDrop: (([URL]) -> Void)?
+
+    private func fileURLs(_ sender: NSDraggingInfo) -> [URL] {
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: opts) as? [URL]) ?? []
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(sender).isEmpty ? super.draggingEntered(sender) : .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(sender).isEmpty ? super.draggingUpdated(sender) : .copy
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        fileURLs(sender).isEmpty ? super.prepareForDragOperation(sender) : true
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = fileURLs(sender)
+        guard !urls.isEmpty else { return super.performDragOperation(sender) }
+        onFileDrop?(urls)
+        return true
+    }
+}
+
 struct ThreeDViewport: NSViewRepresentable {
     let selectedFaces3D: Set<SelectedFace>
     let stepJsonContent: String?
@@ -86,9 +116,15 @@ struct ThreeDViewport: NSViewRepresentable {
         contentController.add(context.coordinator, name: "pathstitch")
         config.userContentController = contentController
         
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = DropForwardingWebView(frame: .zero, configuration: config)
+        // Forward file drops onto the 3D viewport into the import pipeline, which
+        // appends STEP models into this same workspace (single or several at once).
+        webView.registerForDraggedTypes([.fileURL])
+        webView.onFileDrop = { [weak state] urls in
+            DispatchQueue.main.async { state?.importFiles(urls) }
+        }
         context.coordinator.webView = webView
-        
+
         // Development live-loading check
         let devHtmlURL = URL(fileURLWithPath: "/Users/chen/Documents/Assets/Pathstitch/Pathstitch/Pathstitch/Modes/ThreeDMode/viewport3d.html")
         if let htmlContent = try? String(contentsOf: devHtmlURL, encoding: .utf8) {
