@@ -28,6 +28,7 @@ struct ConstructModeView: View {
                     selFoldToken: state.constructSelFoldToken,
                     artworkToken: state.constructArtworkToken,
                     artworkCmdToken: state.constructArtworkCmdToken,
+                    stitchPinToken: state.constructStitchPinToken,
                     snapActive: state.snapActive,
                     homeToken: state.triggerConstructHomeToken,
                     state: state
@@ -472,6 +473,14 @@ struct ConstructModeView: View {
                 }
                 .buttonStyle(.plain).foregroundColor(.accent)
                 .disabled(state.lastFoldSides == nil)
+                Text("Drag the blue endpoint handles in 3D to move this crease.")
+                    .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
+                    .fixedSize(horizontal: false, vertical: true)
+                Button { state.deleteSelectedFold() } label: {
+                    HStack { Image(systemName: "trash"); Text("Delete crease") }.font(PlasticityFont.label)
+                }
+                .buttonStyle(.plain).foregroundColor(.text_secondary)
+                .disabled(state.lastFoldSeg == nil)
             }
             Button { state.setConstructTool(.crease) } label: {
                 HStack { Image(systemName: ConstructTool.crease.icon); Text("Add fold (Crease tool)") }
@@ -690,6 +699,34 @@ struct ConstructModeView: View {
             .pickerStyle(.segmented).controlSize(.small).labelsHidden()
             Text(seam.mode.blurb)
                 .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
+
+            // Alignment pins (Fusion-Loft) + reverse. Add pins to lock which holes
+            // line up; the matcher fills the rest between them.
+            let pinning = state.activeSeamForPins == seam.id && state.stitchPinMode
+            HStack(spacing: 8) {
+                Button { state.setStitchPinMode(seam.id, !pinning) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: pinning ? "pin.fill" : "pin")
+                        Text(pinning ? "Pinning… click hole A then B" : "Add pins (\((seam.anchors ?? []).count))")
+                    }.font(PlasticityFont.label)
+                }
+                .buttonStyle(.plain).foregroundColor(pinning ? .accent : .text_primary)
+                Spacer()
+                if !(seam.anchors ?? []).isEmpty {
+                    Button { state.clearStitchAnchors(seam.id) } label: {
+                        Image(systemName: "pin.slash").font(.system(size: 11))
+                    }.buttonStyle(.plain).foregroundColor(.text_secondary).help("Clear pins")
+                }
+                Button { state.reverseSeam(seam.id) } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 11))
+                        .foregroundColor((seam.flip ?? false) ? .accent : .text_secondary)
+                }.buttonStyle(.plain).help("Reverse seam direction")
+            }
+            if pinning {
+                Text("Click a hole on one row, then its partner on the other. The seam re-matches around your pins.")
+                    .font(PlasticityFont.label).foregroundColor(.accent)
+            }
         }
         .padding(7)
         .background(Color.bg_selected.opacity(0.5))

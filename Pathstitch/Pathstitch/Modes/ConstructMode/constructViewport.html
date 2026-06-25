@@ -256,7 +256,11 @@ const COL_GROUND=0x6b8caf, COL_FLAP=0xb98a5e, COL_FOLD=0xff7a1a, COL_WIRE=0x0000
 // up cyan when their chain is picked — visible on any leather colour. The chain
 // line links a run of holes so the seam reads even before it's stitched.
 const COL_HOLE=0xff8c2b, COL_HOLE_SEL=0x35c1ff, COL_THREAD=0xf0e2c0, COL_CHAIN=0xffb066;
-const _SPHERE=new THREE.SphereGeometry(1,10,8);   // unit sphere, scaled per hole
+const _SPHERE=new THREE.SphereGeometry(1,10,8);   // unit sphere (snap / crease marks)
+// Unit cylinder along +Y for hole markers: scaled to the hole radius + the leather
+// thickness and oriented to each hole's surface normal, so a punched hole reads on
+// BOTH faces (the sphere sat on one surface and hid under the leather from the other).
+const _HOLECYL=new THREE.CylinderGeometry(1,1,1,12);
 const _IDENT=new THREE.Matrix4();
 
 function clearPanels(){
@@ -427,11 +431,11 @@ function buildHoleChains(chains){
   // marker radius from a typical pitch — bigger than before so the holes are
   // unmistakable (users reported not being able to see them at all).
   let pitch=0; let np=0; for(const c of chains){ if(c.pitch){ pitch+=c.pitch; np++; } }
-  pitch = np? pitch/np : 4; const rad=Math.max(1.1, Math.min(pitch*0.34, 3.2));
+  pitch = np? pitch/np : 4; const rad=Math.max(0.8, Math.min(pitch*0.26, 2.4));
   // Unlit (MeshBasic) + base white so the per-instance colour reads true and the
   // markers stay bright regardless of scene lighting / leather colour.
   const mat=new THREE.MeshBasicMaterial({color:0xffffff});
-  holeMesh=new THREE.InstancedMesh(_SPHERE, mat, total);
+  holeMesh=new THREE.InstancedMesh(_HOLECYL, mat, total);
   holeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   holeMesh.userData.rad=rad;
   let s=0;
@@ -871,15 +875,35 @@ function recomputePose(){
   }
 }
 
+// Surface normal at a hole = its triangle's (folded) normal — used to stand the
+// through-hole marker up through the leather.
+function holeNormal(chain, k){
+  const h=chain.holes[k]; const p=PANEL_BY_ID[chain.panelId]; if(!p) return [0,1,0];
+  const t=p.triangles[h.tri]; if(!t) return [0,1,0];
+  const n=cross(sub(p.X[t[1]],p.X[t[0]]), sub(p.X[t[2]],p.X[t[0]]));
+  const l=len(n); return l<1e-9 ? [0,1,0] : [n[0]/l,n[1]/l,n[2]/l];
+}
 // ---- hole markers + thread (ride the live folded mesh) ---------------------
+const _UPY=new THREE.Vector3(0,1,0);
 function updateHoleInstances(){
   if(!holeMesh) return;
-  const rad=holeMesh.userData.rad, m=new THREE.Matrix4(), col=new THREE.Color();
+  const rad=holeMesh.userData.rad, col=new THREE.Color();
+  const nv=new THREE.Vector3(), q=new THREE.Quaternion(), pos=new THREE.Vector3(),
+        scl=new THREE.Vector3(), m=new THREE.Matrix4();
+  const tlen=Math.max(0.8, THICKNESS)+1.4;   // span the leather + poke both faces
   for(let i=0;i<HOLE_SLOTS.length;i++){
     const slot=HOLE_SLOTS[i], c=CHAIN_BY_ID[slot.chainId]; if(!c) continue;
-    const w=holeWorld(c, slot.k);
-    m.makeScale(rad,rad,rad); m.setPosition(w[0],w[1],w[2]); holeMesh.setMatrixAt(i, m);
-    col.setHex(slot.chainId===SELECTED_CHAIN ? COL_HOLE_SEL : COL_HOLE); holeMesh.setColorAt(i, col);
+    const w=holeWorld(c, slot.k), n=holeNormal(c, slot.k);
+    nv.set(n[0],n[1],n[2]); if(nv.lengthSq()<1e-9) nv.set(0,1,0); nv.normalize();
+    q.setFromUnitVectors(_UPY, nv);
+    // centre on the mid-thickness so the cylinder pokes equally out of both faces
+    pos.set(w[0]-nv.x*THICKNESS*0.5, w[1]-nv.y*THICKNESS*0.5, w[2]-nv.z*THICKNESS*0.5);
+    const isAnchor=ANCHOR_SET.has(slot.chainId+":"+slot.k);
+    const r2=isAnchor?rad*1.8:rad;
+    scl.set(r2, tlen+(isAnchor?1.2:0), r2);
+    m.compose(pos, q, scl); holeMesh.setMatrixAt(i, m);
+    col.setHex(isAnchor ? COL_ANCHOR : (slot.chainId===SELECTED_CHAIN ? COL_HOLE_SEL : COL_HOLE));
+    holeMesh.setColorAt(i, col);
   }
   holeMesh.instanceMatrix.needsUpdate=true;
   if(holeMesh.instanceColor) holeMesh.instanceColor.needsUpdate=true;
@@ -969,6 +993,22 @@ function updateThread(){
     const mat=new THREE.LineBasicMaterial({color:COL_THREAD, linewidth:2});
     mat.depthTest=false;  // keep the seam visible even where it hugs the surface
     const seg=new THREE.LineSegments(g, mat); seg.renderOrder=3; threadGroup.add(seg);
+  }
+  // Alignment-pin links: a bold magenta tie between each locked hole pair, so the
+  // user can see exactly which holes they've pinned together.
+  const an=[];
+  for(const seam of SEAMS){
+    const ca=CHAIN_BY_ID[seam.chainA], cb=CHAIN_BY_ID[seam.chainB]; if(!ca||!cb) continue;
+    for(const a of (seam.anchors||[])){
+      if(a[0]>=ca.holes.length || a[1]>=cb.holes.length) continue;
+      const A=holeWorld(ca,a[0]), B=holeWorld(cb,a[1]);
+      an.push(A[0],A[1],A[2], B[0],B[1],B[2]);
+    }
+  }
+  if(an.length){
+    const g=new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(an,3));
+    const mat=new THREE.LineBasicMaterial({color:COL_ANCHOR, linewidth:3}); mat.depthTest=false;
+    const seg=new THREE.LineSegments(g, mat); seg.renderOrder=4; threadGroup.add(seg);
   }
 }
 
@@ -1277,6 +1317,7 @@ window.setConstructTool=function(t){
   if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); hideSnapIndicator(); }   // abandon a half-drawn crease
   if(TOOL!=="move") detachGizmo();   // hide the transform gizmo outside the Move tool
   if(typeof clearHover==="function") clearHover();   // drop stale hover highlight
+  if(typeof updateFoldHi==="function") updateFoldHi();   // show/hide crease endpoint handles
   if(PANELS.length) reportStretch();
 };
 // Per-panel base region ("which side stays flat"): re-root each panel's fold tree
@@ -1330,8 +1371,14 @@ window.setConstructSeams=function(jsonStr){
   GLUES=c.glues||[];
   SHOW_THREAD=c.showThread!==false;
   SELECTED_CHAIN=(c.selectedChain==null?-1:c.selectedChain);
+  // Index the alignment pins so anchor holes light up + draw the pin links.
+  ANCHOR_SET=new Set();
+  for(const s of SEAMS){ for(const an of (s.anchors||[])){ ANCHOR_SET.add(s.chainA+":"+an[0]); ANCHOR_SET.add(s.chainB+":"+an[1]); } }
   needsPose=true;
 };
+let STITCH_PIN=false, ANCHOR_SET=new Set();
+const COL_ANCHOR=0xff3df2;   // magenta = a locked alignment pin
+window.setConstructStitchPin=function(on){ STITCH_PIN=!!on; };
 window.setConstructStamps=function(jsonStr){
   let s; try{ s=JSON.parse(jsonStr); }catch(e){ return; }
   STAMPS=Array.isArray(s)?s:[];
@@ -1402,8 +1449,11 @@ function chainPolyWorld(cid){ const c=CHAIN_BY_ID[cid]; if(!c) return null;
 // On selecting a fold we tint its two regions: GREEN = stays flat (base), ORANGE
 // = folds up. Removes the "which way will it go" guesswork; a Swift "Flip" button
 // re-roots to the other side (we post each side's representative 2D point).
-let SEL_FOLD=null, foldHi=[];
-function clearFoldHi(){ for(const m of foldHi){ scene.remove(m); m.geometry.dispose(); m.material.dispose(); } foldHi=[]; }
+let SEL_FOLD=null, foldHi=[], foldHandles=[];
+function clearFoldHi(){
+  for(const m of foldHi){ scene.remove(m); m.geometry.dispose(); m.material.dispose(); } foldHi=[];
+  for(const m of foldHandles){ scene.remove(m); m.material.dispose(); } foldHandles=[];   // _SPHERE geo is shared
+}
 function regionsOfFold(panel, foldId){
   const T=panel.tree; let childR=-1;
   for(let r=0;r<T.region.length;r++){ if(T.parentFold[r]===foldId){ childR=r; break; } }
@@ -1427,41 +1477,60 @@ function updateFoldHi(){
   const baseM=regionFaceMesh(p, rr.base, 0x39d27a), moveM=regionFaceMesh(p, rr.move, 0xff9a3c);
   if(baseM){ scene.add(baseM); foldHi.push(baseM); }
   if(moveM){ scene.add(moveM); foldHi.push(moveM); }
+  // Draggable endpoint handles (Fold / Select tools) so the crease can be moved in 3D.
+  if(TOOL==="fold" || TOOL==="select"){
+    const ax=collectFoldAxis(p, SEL_FOLD.foldId);
+    if(ax){ SEL_FOLD.ax=ax; SEL_FOLD.a2d=p.v2d[ax[0]].slice(); SEL_FOLD.b2d=p.v2d[ax[1]].slice();
+      [p.X[ax[0]], p.X[ax[1]]].forEach((w,i)=>{
+        const m=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:0x35c1ff}));
+        m.scale.setScalar(3.4); m.position.set(w[0],w[1],w[2]); m.renderOrder=8; m.userData.foldEnd=i;
+        scene.add(m); foldHandles.push(m);
+      }); }
+  }
 }
 window.setConstructSelectedFold=function(jsonStr){
   let d; try{ d=(typeof jsonStr==="string")?JSON.parse(jsonStr):jsonStr; }catch(e){ d=null; }
   SEL_FOLD=(d&&d.panelId!=null&&d.foldId!=null)?{panelId:d.panelId, foldId:d.foldId}:null;
   if(SEL_FOLD){ const p=PANEL_BY_ID[SEL_FOLD.panelId];
-    if(p&&p.tree){ const rr=regionsOfFold(p, SEL_FOLD.foldId);
-      if(rr) post({op:"foldSides", panelId:p.id, base:region2DCentroid(p,rr.base), move:region2DCentroid(p,rr.move)}); } }
+    if(p&&p.tree){ const rr=regionsOfFold(p, SEL_FOLD.foldId); const ax=collectFoldAxis(p, SEL_FOLD.foldId);
+      const seg = ax ? [p.v2d[ax[0]].slice(), p.v2d[ax[1]].slice()] : null;
+      if(rr) post({op:"foldSides", panelId:p.id, base:region2DCentroid(p,rr.base), move:region2DCentroid(p,rr.move), seg:seg}); } }
   updateFoldHi();
 };
 
 // ---- artwork placement mode (drop an image → bird's-eye → click a body → drag)
 let ARTWORK_MODE=false, ARTWORK_URL=null, ARTWORK_PANEL=-1, ART_IMG={}, DECAL_XF={};
 let artDragging=false;
-function getDecalXf(pid){ const x=DECAL_XF[pid]||{}; return {ox:+x.ox||0, oy:+x.oy||0, scale:x.scale>0?+x.scale:1, rot:+x.rot||0, mirror:x.mirror?1:0}; }
+function getDecalXf(pid){ const x=DECAL_XF[pid]||{}; return {ox:+x.ox||0, oy:+x.oy||0, scale:x.scale>0?+x.scale:1, rot:+x.rot||0, mirror:x.mirror?1:0, side:x.side?1:0}; }
 function applyAndPostDecal(pid, xf, persist){
   const p=PANEL_BY_ID[pid]; if(!p||DECALS[pid]===undefined&&!ARTWORK_URL) return;
   DECAL_XF[pid]=xf;
   applyDecalToPanel(p, DECALS[pid]||ARTWORK_URL, xf);
-  if(persist) post({op:"decalFrame", panelId:pid, ox:xf.ox, oy:xf.oy, scale:xf.scale, rot:xf.rot, mirror:xf.mirror});
+  if(persist) post({op:"decalFrame", panelId:pid, ox:xf.ox, oy:xf.oy, scale:xf.scale, rot:xf.rot, mirror:xf.mirror, side:xf.side||0});
 }
-function birdsEye(){
+// Does a panel's +normal point up? (net y of its face normals). Used so dropped art
+// defaults to the TOP face and the camera frames the face the art sits on.
+function panelFacesUp(p){ let ny=0; for(const t of p.triangles){ ny += cross(sub(p.X[t[1]],p.X[t[0]]), sub(p.X[t[2]],p.X[t[0]]))[1]; } return ny>=0; }
+function artOnUpFace(p, side){ return panelFacesUp(p) ? (side===0) : (side===1); }
+function birdsEye(fromBottom){
   const box=new THREE.Box3().setFromObject(root); if(!isFinite(box.min.x)) return;
   const c=box.getCenter(new THREE.Vector3()), s=box.getSize(new THREE.Vector3());
   const r=Math.max(s.x,s.z,1)*0.5, dist=r/Math.tan(camera.fov*Math.PI/360)*2.0;
-  controls.target.copy(c); camera.position.set(c.x, c.y+dist, c.z+0.001);
+  controls.target.copy(c); camera.position.set(c.x, c.y+(fromBottom?-dist:dist), c.z+0.001);
   camera.near=Math.max(r*0.01,0.1); camera.far=r*100; camera.updateProjectionMatrix();
 }
-// Place / re-activate the clicked body, dropping the artwork on it centred.
+function setArtworkCam(p, side){ birdsEye(p? !artOnUpFace(p, side) : false); }   // look at the face the art is on
+// Place / re-activate the clicked body, dropping the artwork on its TOP face centred.
 function artworkPickPanel(pid){
   ARTWORK_PANEL=pid; const p=PANEL_BY_ID[pid]; if(!p) return;
   if(DECALS[pid]===undefined){
-    const xf={ox:0,oy:0,scale:1,rot:0,mirror:0}; DECAL_XF[pid]=xf;
+    const side = panelFacesUp(p) ? 0 : 1;   // whichever face points up
+    const xf={ox:0,oy:0,scale:1,rot:0,mirror:0,side:side}; DECAL_XF[pid]=xf;
     applyDecalToPanel(p, ARTWORK_URL, xf);
-    post({op:"decalApplied", panelId:pid, dataURL:ARTWORK_URL});   // Swift persists + frames
-  }
+    post({op:"decalApplied", panelId:pid, dataURL:ARTWORK_URL});   // Swift persists the entry
+    post({op:"decalFrame", panelId:pid, ox:0,oy:0,scale:1,rot:0,mirror:0, side:side});  // …with the chosen face
+    setArtworkCam(p, side);
+  } else { setArtworkCam(p, getDecalXf(pid).side); }
 }
 // Move the artwork so its centre sits at a clicked/dragged panel point.
 function artworkMoveTo(hit){
@@ -1490,6 +1559,7 @@ window.flipActiveDecal=function(){
 window.flipDecalFace=function(){
   const pid=ARTWORK_PANEL; if(pid<0) return; const xf=getDecalXf(pid); xf.side=xf.side?0:1;
   applyAndPostDecal(pid, xf, true);
+  setArtworkCam(PANEL_BY_ID[pid], xf.side);   // camera follows to the face the art is now on
 };
 window.setConstructArtworkMode=function(on, dataURL){
   ARTWORK_MODE=!!on;
@@ -1514,19 +1584,33 @@ window.recenterCamera=function(){
 const ray=new THREE.Raycaster(); ray.params.Line.threshold=3.0;
 const mouse=new THREE.Vector2();
 function setMouse(cx,cy){ mouse.x=(cx/window.innerWidth)*2-1; mouse.y=-(cy/window.innerHeight)*2+1; }
-let downXY=null, artDrag=false;
+let downXY=null, artDrag=false, foldDrag=null;
 renderer.domElement.addEventListener("pointerdown",e=>{
   if(e.button!==0) return;
-  downXY=[e.clientX,e.clientY]; artDrag=false;
+  downXY=[e.clientX,e.clientY]; artDrag=false; foldDrag=null;
   // artwork: grab the art on the active body to drag it
   if(ARTWORK_MODE && ARTWORK_PANEL>=0){
     const p=PANEL_BY_ID[ARTWORK_PANEL];
     if(p){ setMouse(e.clientX,e.clientY); ray.setFromCamera(mouse,camera);
       if(ray.intersectObject(p.mesh,false)[0]){ artDrag=true; controls.enabled=false; } }
+    return;
+  }
+  // crease editing: grab a selected fold's endpoint handle to reposition it
+  if(SEL_FOLD && foldHandles.length && (TOOL==="fold"||TOOL==="select")){
+    setMouse(e.clientX,e.clientY); ray.setFromCamera(mouse,camera);
+    const h=ray.intersectObjects(foldHandles,false)[0];
+    if(h){ foldDrag={end:h.object.userData.foldEnd, p2d:null}; controls.enabled=false; }
   }
 });
 renderer.domElement.addEventListener("pointermove",e=>{
   const cx=e.clientX, cy=e.clientY;
+  // dragging a crease endpoint handle → follow the cursor on its panel
+  if(foldDrag){ const p=PANEL_BY_ID[SEL_FOLD.panelId];
+    if(p){ setMouse(cx,cy); ray.setFromCamera(mouse,camera); const hit=ray.intersectObject(p.mesh,false)[0];
+      if(hit){ foldDrag.p2d=hitTo2D(p,hit.face,hit.point); const m=foldHandles[foldDrag.end]; if(m) m.position.copy(hit.point);
+        const other=foldHandles[foldDrag.end?0:1];
+        if(other) showCreasePreview([other.position.x,other.position.y,other.position.z],[hit.point.x,hit.point.y,hit.point.z]); } }
+    return; }
   // crease keeps its dedicated osnap behaviour (constant indicator + rubber-band)
   if(TOOL==="crease"){
     mouse.x=(cx/window.innerWidth)*2-1; mouse.y=-(cy/window.innerHeight)*2+1; ray.setFromCamera(mouse,camera);
@@ -1563,6 +1647,13 @@ renderer.domElement.addEventListener("pointermove",e=>{
 });
 renderer.domElement.addEventListener("pointerup",e=>{
   if(e.button!==0) return;
+  // finish a crease-endpoint drag → write the moved fold line back to the 2D sketch
+  if(foldDrag){ const fd=foldDrag; foldDrag=null; controls.enabled=true; clearCreasePreview(); downXY=null;
+    if(fd.p2d && SEL_FOLD && SEL_FOLD.a2d && SEL_FOLD.b2d){
+      const newSeg=[SEL_FOLD.a2d.slice(), SEL_FOLD.b2d.slice()]; newSeg[fd.end]=fd.p2d;
+      post({op:"editFold", panelId:SEL_FOLD.panelId, oldSeg:[SEL_FOLD.a2d, SEL_FOLD.b2d], newSeg:newSeg});
+    }
+    return; }
   const wasArt=artDrag; artDrag=false; controls.enabled=true;
   if(!downXY) return;
   const moved=Math.hypot(e.clientX-downXY[0], e.clientY-downXY[1]); downXY=null;
@@ -1582,6 +1673,21 @@ renderer.domElement.addEventListener("pointerup",e=>{
     return;
   }
   if(TOOL==="stitch"){
+    if(STITCH_PIN){
+      // Pin mode: pick the exact hole the user clicked (instance), on either chain.
+      setMouse(e.clientX,e.clientY); ray.setFromCamera(mouse,camera);
+      if(holeMesh){ const hit=ray.intersectObject(holeMesh,false)[0];
+        if(hit && hit.instanceId!=null){ const slot=HOLE_SLOTS[hit.instanceId];
+          if(slot){ post({op:"anchorHole", chainId:slot.chainId, k:slot.k}); return; } } }
+      // fallback: nearest hole on the panel under the cursor
+      const ph=panelHitAt(e.clientX,e.clientY);
+      if(ph){ const pid=ph.object.userData.panelId, hp=[ph.point.x,ph.point.y,ph.point.z];
+        let best=null,bd=1e18;
+        for(const c of CHAINS){ if(c.panelId!==pid) continue;
+          for(let k=0;k<c.holes.length;k++){ const d=len(sub(holeWorld(c,k),hp)); if(d<bd){ bd=d; best={chainId:c.id,k:k}; } } }
+        if(best) post({op:"anchorHole", chainId:best.chainId, k:best.k}); }
+      return;
+    }
     const cid=chainNearestAt(panelHitAt(e.clientX,e.clientY));
     if(cid>=0) post({op:"selectChain", chainId:cid});
     return;

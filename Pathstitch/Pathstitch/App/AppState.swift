@@ -1111,6 +1111,12 @@ class AppState {
     // Distance between the two staggered rows of a saddle stitch (only used when
     // holePattern == "saddle"). Separate from the legacy single-pattern spacing.
     var holeSaddleSpacing: Double = 3.0
+    // Chain selection (default on): on = holes run around the whole connected
+    // perimeter of the selected lines; off = holes only on each selected line, with
+    // per-end insets so the user controls how far the end holes sit from each tip.
+    var holeChainSelection: Bool = true
+    var holeStartInset: Double = 0.0
+    var holeEndInset: Double = 0.0
     // Corner treatment of the offset stitch line: false = sharp (mitre, default),
     // true = filleted (rounded) corners on the offset.
     var holeOffsetCornerFillet: Bool = false
@@ -1986,6 +1992,14 @@ class AppState {
     var selectedChainForStitch: Int? = nil     // first chain picked while creating a seam
     var constructShowThread: Bool = true       // render the stitching thread
 
+    // Loft-style alignment pins: while a seam is in "add pin" mode, clicking holes in
+    // 3D pins hole↔hole pairs. `pendingAnchorHole` holds the first half (chainId,k)
+    // until its partner on the other chain is clicked.
+    var activeSeamForPins: UUID? = nil
+    var stitchPinMode: Bool = false
+    var constructStitchPinToken: Int = 0
+    var pendingAnchorHole: (chainId: Int, k: Int)? = nil
+
     // Panel whose freshly-added crease should be auto-selected after the rebuild
     // (so the new fold's angle slider is highlighted as confirmation).
     var pendingCreaseSelectPanel: Int? = nil
@@ -2084,6 +2098,7 @@ class AppState {
     // reported representative 2D points for each side, so Flip can re-root.
     var constructSelFoldToken: Int = 0
     var lastFoldSides: (panelId: Int, base: [Double], move: [Double])? = nil
+    var lastFoldSeg: [[Double]]? = nil   // selected fold's 2D segment (for delete/edit)
 
     // Artwork placement mode: a dropped image enters a bird's-eye mode where the
     // user clicks a body, then moves / scales / rotates / mirrors / flips-face the
@@ -5114,6 +5129,9 @@ class AppState {
             "side": holeSide,
             "row_spacing": holeRowSpacing,
             "saddle_spacing": holeSaddleSpacing,
+            "chain_selection": holeChainSelection,
+            "start_inset": holeStartInset,
+            "end_inset": holeEndInset,
             "offset_corner_fillet": holeOffsetCornerFillet,
             "enable_variable_spacing": holeEnableVariableSpacing,
             "enable_proximity_filter": holeEnableProximityFilter,

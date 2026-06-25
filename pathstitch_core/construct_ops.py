@@ -502,13 +502,28 @@ def _pairs_for(pa: List[float], pb: List[float]) -> Tuple[List[Tuple[int, int]],
     return sorted(pairs), cost
 
 
+def _seg_pairs(a0: int, a1: int, b0: int, b1: int) -> List[Tuple[int, int]]:
+    """Proportionally pair A-indices a0..a1 to B-indices b0..b1 (inclusive). Used to
+    fill the run *between* two alignment anchors so the anchors map exactly and the
+    holes in between follow at even index fractions — the Fusion-Loft behaviour."""
+    out: List[Tuple[int, int]] = []
+    da = a1 - a0
+    for i in range(a0, a1 + 1):
+        t = 0.0 if da == 0 else (i - a0) / da
+        out.append((i, b0 + int(round(t * (b1 - b0)))))
+    return out
+
+
 def op_match_chains(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Auto-matches two hole chains for stitching.
+    """Matches two hole chains for stitching.
 
     args: chainA / chainB = [[x,y], ...] ordered hole centers; closedA/closedB.
-    Returns matched index pairs, the two seam lengths, the perimeter mismatch
-    ratio, whether B was reversed to line up, and the recommended policy
-    (`even` if lengths agree, else `ease` = gather the longer onto the shorter).
+    Optional `anchors` = [[aIdx, bIdx], ...] user alignment pins (Fusion-Loft style):
+    the chains are split at the pins and each run between is filled proportionally, so
+    every pin maps exactly. Optional `flip` forces chain B reversed. With no anchors it
+    falls back to automatic arc-length pairing (auto-detecting reversal).
+    Returns matched index pairs, the two seam lengths, the perimeter mismatch ratio,
+    whether B was reversed, and the recommended policy.
     """
     A = [(float(p[0]), float(p[1])) for p in args.get("chainA", [])]
     B = [(float(p[0]), float(p[1])) for p in args.get("chainB", [])]
@@ -516,23 +531,56 @@ def op_match_chains(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": "Each chain needs at least 2 holes."}
     closedA = bool(args.get("closedA", False))
     closedB = bool(args.get("closedB", False))
+    anchors_in = args.get("anchors") or []
+    flip = bool(args.get("flip", False))
+    nA, nB = len(A), len(B)
 
     pa, lenA = _arc_params(A, closedA)
-    pb_fwd, lenB = _arc_params(B, closedB)
-    fwd, cfwd = _pairs_for(pa, pb_fwd)
-    pb_rev, _ = _arc_params(B[::-1], closedB)
-    rev, crev = _pairs_for(pa, pb_rev)
-
-    if crev < cfwd:
-        m = len(B)
-        pairs = sorted({(i, m - 1 - j) for (i, j) in rev})
-        reversed_ = True
-    else:
-        pairs = fwd
-        reversed_ = False
-
+    _, lenB = _arc_params(B, closedB)
     mismatch = abs(lenA - lenB) / max(lenA, lenB, 1e-9)
     policy = "even" if mismatch < 0.12 else "ease"
+
+    def bunmap(bw: int) -> int:        # work index → original B index
+        return (nB - 1 - bw) if flip else bw
+
+    if anchors_in:
+        # Anchors in work order (B reversed if flipped), unique by A index, sorted.
+        seen = set(); ank: List[Tuple[int, int]] = []
+        for a, b in anchors_in:
+            ai = int(a) % nA; bi = int(b) % nB
+            bw = (nB - 1 - bi) if flip else bi
+            if ai in seen:
+                continue
+            seen.add(ai); ank.append((ai, bw))
+        ank.sort(key=lambda t: t[0])
+        segs: List[Tuple[int, int, int, int]] = []
+        pa0, pb0 = 0, 0
+        for a, b in ank:
+            segs.append((pa0, a, pb0, b)); pa0, pb0 = a, b
+        segs.append((pa0, nA - 1, pb0, nB - 1))
+        pw: List[Tuple[int, int]] = []
+        for a0, a1, b0, b1 in segs:
+            sp = _seg_pairs(a0, a1, b0, b1)
+            if pw and sp and pw[-1] == sp[0]:
+                sp = sp[1:]                       # drop the shared anchor duplicate
+            pw += sp
+        pairs = sorted({(i, bunmap(bw)) for (i, bw) in pw})
+        reversed_ = flip
+    elif flip:
+        pb_rev, _ = _arc_params(B[::-1], closedB)
+        rev, _ = _pairs_for(pa, pb_rev)
+        pairs = sorted({(i, nB - 1 - j) for (i, j) in rev})
+        reversed_ = True
+    else:
+        pb_fwd, _ = _arc_params(B, closedB)
+        fwd, cfwd = _pairs_for(pa, pb_fwd)
+        pb_rev, _ = _arc_params(B[::-1], closedB)
+        rev, crev = _pairs_for(pa, pb_rev)
+        if crev < cfwd:
+            pairs = sorted({(i, nB - 1 - j) for (i, j) in rev}); reversed_ = True
+        else:
+            pairs = fwd; reversed_ = False
+
     return {"status": "ok", "data": {
         "pairs": [[i, j] for (i, j) in pairs],
         "lenA": lenA, "lenB": lenB,

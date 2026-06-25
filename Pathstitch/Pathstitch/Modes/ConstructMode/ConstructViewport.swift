@@ -29,6 +29,7 @@ struct ConstructViewport: NSViewRepresentable {
     let selFoldToken: Int      // selected-fold side highlight
     let artworkToken: Int      // artwork placement mode on/off
     let artworkCmdToken: Int   // transient artwork command (fill / flip / mirror)
+    let stitchPinToken: Int    // alignment-pin mode on/off
     let snapActive: Bool   // mirrors the 2D snap toggle so changes re-push live
     let homeToken: Int
     var state: AppState
@@ -84,6 +85,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushSelFold()
         context.coordinator.pushArtwork()
         context.coordinator.pushArtworkCmd()
+        context.coordinator.pushStitchPin()
         context.coordinator.pushHome()
     }
 
@@ -109,6 +111,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastSelFoldToken = -1
         private var lastArtworkToken = -1
         private var lastArtworkCmdToken = -1
+        private var lastStitchPinToken = -1
         private var lastSnap: Bool? = nil
         private var lastHomeToken = -1
 
@@ -157,6 +160,8 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushTexture()
                     self.pushSelFold()
                     self.pushArtwork()
+                    self.lastStitchPinToken = -1
+                    self.pushStitchPin()
                 }
             case "selectFold":
                 let panelId = json["panelId"] as? Int ?? 0
@@ -208,12 +213,26 @@ struct ConstructViewport: NSViewRepresentable {
                         self.state.pickChainForStitch(chainId)
                     }
                 }
+            case "anchorHole":
+                let chainId = json["chainId"] as? Int ?? -1
+                let k = json["k"] as? Int ?? -1
+                DispatchQueue.main.async {
+                    if chainId >= 0 && k >= 0 { self.state.addAnchorHole(chainId: chainId, k: k) }
+                }
             case "foldSides":
                 let panelId = json["panelId"] as? Int ?? -1
                 let base = json["base"] as? [Double] ?? []
                 let move = json["move"] as? [Double] ?? []
+                let seg = json["seg"] as? [[Double]]
                 DispatchQueue.main.async {
-                    if panelId >= 0 { self.state.setFoldSides(panelId: panelId, base: base, move: move) }
+                    if panelId >= 0 { self.state.setFoldSides(panelId: panelId, base: base, move: move, seg: seg) }
+                }
+            case "editFold":
+                let panelId = json["panelId"] as? Int ?? -1
+                let oldSeg = json["oldSeg"] as? [[Double]] ?? []
+                let newSeg = json["newSeg"] as? [[Double]]
+                DispatchQueue.main.async {
+                    if panelId >= 0, oldSeg.count == 2 { self.state.editFoldLine(oldSeg: oldSeg, newSeg: newSeg) }
                 }
             case "decalFrame":
                 let panelId = json["panelId"] as? Int ?? -1
@@ -387,6 +406,13 @@ struct ConstructViewport: NSViewRepresentable {
             let on = state.constructArtworkMode
             let esc = Self.escape(state.pendingArtworkURL ?? "")
             webView.evaluateJavaScript("setConstructArtworkMode(\(on), \"\(esc)\");", completionHandler: nil)
+        }
+
+        func pushStitchPin() {
+            guard ready, let webView = webView else { return }
+            guard lastStitchPinToken != state.constructStitchPinToken else { return }
+            lastStitchPinToken = state.constructStitchPinToken
+            webView.evaluateJavaScript("setConstructStitchPin(\(state.stitchPinMode));", completionHandler: nil)
         }
 
         func pushArtworkCmd() {

@@ -595,9 +595,44 @@ extension AppState {
         return s
     }
 
-    /// Stores the viewport's reported region centroids for the selected fold's sides.
-    func setFoldSides(panelId: Int, base: [Double], move: [Double]) {
+    /// Stores the viewport's reported region centroids + 2D segment for the selected fold.
+    func setFoldSides(panelId: Int, base: [Double], move: [Double], seg: [[Double]]? = nil) {
         lastFoldSides = (panelId, base, move)
+        lastFoldSeg = (seg?.count == 2) ? seg : nil
+    }
+
+    /// Repositions (newSeg) or deletes (newSeg = nil) the FOLD-layer LINE matching
+    /// `oldSeg` in the 2D sketch, then rebuilds — crease drag / delete from 3D.
+    func editFoldLine(oldSeg: [[Double]], newSeg: [[Double]]?) {
+        guard oldSeg.count == 2 else { return }
+        saveToHistory()                       // 2D history owns this geometry edit
+        let url = ensureActiveDXFFileExists()
+        isBuildingConstructModel = true
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                var args: [String: Any] = ["input": url.path, "output": url.path, "old_seg": oldSeg]
+                if let ns = newSeg, ns.count == 2 { args["new_seg"] = ns }
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "edit_fold_line", args: args)
+                await MainActor.run {
+                    self.reloadDXF()
+                    self.buildConstructModel()
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isBuildingConstructModel = false
+                }
+            }
+        }
+    }
+
+    /// Deletes the currently selected fold's line from the 2D sketch (3D Delete).
+    func deleteSelectedFold() {
+        guard let seg = lastFoldSeg, seg.count == 2 else { return }
+        editFoldLine(oldSeg: seg, newSeg: nil)
+        selectedFoldId = nil
+        lastFoldSeg = nil
     }
 
     /// Flip which side of the selected fold stays flat: re-root the panel at the side
@@ -826,11 +861,14 @@ extension AppState {
 
         let ptsA = ca.holes.map { [$0.x, $0.y] }
         let ptsB = cb.holes.map { [$0.x, $0.y] }
+        let anchors = seam.anchors ?? []
+        let flip = seam.flip ?? false
         do {
             let res = try await PythonBridge.shared.run(
                 module: "construct_ops", op: "match_chains",
                 args: ["chainA": ptsA, "chainB": ptsB,
-                       "closedA": ca.closed, "closedB": cb.closed])
+                       "closedA": ca.closed, "closedB": cb.closed,
+                       "anchors": anchors, "flip": flip])
             guard let data = res["data"] as? [String: Any] else { return }
             let pairs = (data["pairs"] as? [[Int]]) ?? []
             let lenA = (data["lenA"] as? Double) ?? 0
@@ -897,12 +935,72 @@ extension AppState {
         constructSeamStateToken += 1
     }
 
+    // MARK: - Loft-style alignment pins + seam reverse
+
+    /// Enters / leaves "add pin" mode for a seam: while on, clicking holes in 3D pins
+    /// a hole↔hole pair (first click on one chain, second on the other).
+    func setStitchPinMode(_ seamId: StitchSeam.ID?, _ on: Bool) {
+        activeSeamForPins = on ? seamId : nil
+        stitchPinMode = on && seamId != nil
+        pendingAnchorHole = nil
+        if stitchPinMode, constructTool != .stitch { setConstructTool(.stitch) }
+        constructStitchPinToken += 1
+        constructSeamStateToken += 1
+    }
+
+    /// A hole picked in 3D while pinning. The first goes pending; its partner on the
+    /// *other* chain forms an alignment pin → re-match honoring it.
+    func addAnchorHole(chainId: Int, k: Int) {
+        guard stitchPinMode, let sid = activeSeamForPins,
+              let si = constructSeams.firstIndex(where: { $0.id == sid }) else { return }
+        let seam = constructSeams[si]
+        guard chainId == seam.chainA || chainId == seam.chainB else { return }
+        guard let first = pendingAnchorHole else { pendingAnchorHole = (chainId, k); return }
+        if first.chainId == chainId { pendingAnchorHole = (chainId, k); return }  // same chain → replace
+        let aIdx = (first.chainId == seam.chainA) ? first.k : k
+        let bIdx = (first.chainId == seam.chainA) ? k : first.k
+        pushConstructUndo()
+        var anchors = constructSeams[si].anchors ?? []
+        anchors.removeAll { ($0.first ?? -1) == aIdx }   // one pin per A hole
+        anchors.append([aIdx, bIdx])
+        constructSeams[si].anchors = anchors
+        pendingAnchorHole = nil
+        hasUnsavedChanges = true
+        rematchSeam(sid)
+    }
+
+    /// Clears all alignment pins on a seam (back to auto matching).
+    func clearStitchAnchors(_ seamId: StitchSeam.ID) {
+        guard let si = constructSeams.firstIndex(where: { $0.id == seamId }),
+              !(constructSeams[si].anchors ?? []).isEmpty else { return }
+        pushConstructUndo()
+        constructSeams[si].anchors = []
+        pendingAnchorHole = nil
+        hasUnsavedChanges = true
+        rematchSeam(seamId)
+    }
+
+    /// Reverses a seam's correspondence direction (flip chain B).
+    func reverseSeam(_ seamId: StitchSeam.ID) {
+        guard let si = constructSeams.firstIndex(where: { $0.id == seamId }) else { return }
+        pushConstructUndo()
+        constructSeams[si].flip = !(constructSeams[si].flip ?? false)
+        hasUnsavedChanges = true
+        rematchSeam(seamId)
+    }
+
+    /// Count of pins on a seam (for the inspector label).
+    func seamAnchorCount(_ seamId: StitchSeam.ID) -> Int {
+        (constructSeams.first { $0.id == seamId }?.anchors ?? []).count
+    }
+
     /// Serialized seams + thread flag for the viewport bridge. The viewport looks
     /// up each chain by id from the model it already holds.
     var constructSeamsJSON: String {
         let seams = constructSeams.map { s -> [String: Any] in
             ["id": s.id.uuidString, "chainA": s.chainA, "chainB": s.chainB,
-             "mode": s.mode.rawValue, "pairs": s.pairs, "reversed": s.reversed]
+             "mode": s.mode.rawValue, "pairs": s.pairs, "reversed": s.reversed,
+             "anchors": s.anchors ?? []]
         }
         let glues = constructGlues.map { g -> [String: Any] in
             var o: [String: Any] = ["panelA": g.panelA, "panelB": g.panelB, "mode": g.mode]

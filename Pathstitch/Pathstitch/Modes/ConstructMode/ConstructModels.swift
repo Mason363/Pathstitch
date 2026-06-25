@@ -127,6 +127,11 @@ struct StitchSeam: Codable, Identifiable, Hashable {
     var lenB: Double = 0
     var mismatch: Double = 0    // 0…1 perimeter mismatch (>0.12 surfaces a warning)
     var reversed: Bool = false  // B was wound the other way and auto-flipped
+    // Fusion-Loft alignment pins: user-locked [aHoleIndex, bHoleIndex] pairs the
+    // matcher must honor; runs between pins are filled proportionally. `flip` forces
+    // chain B reversed. Optional so older `.stch` seams still decode.
+    var anchors: [[Int]]? = nil
+    var flip: Bool? = nil
     // Live fit, reported by the viewport after seating (recomputed each pose).
     var holesA: Int = 0
     var holesB: Int = 0

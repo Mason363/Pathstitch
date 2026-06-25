@@ -384,6 +384,9 @@ struct ContentView: View {
         .onChange(of: state.holeSide) { _ in state.updateLivePreview() }
         .onChange(of: state.holeRowSpacing) { _ in state.updateLivePreview() }
         .onChange(of: state.holeSaddleSpacing) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeChainSelection) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeStartInset) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeEndInset) { _ in state.updateLivePreview() }
         .onChange(of: state.holeOffsetCornerFillet) { _ in state.updateLivePreview() }
         .onChange(of: state.holeEnableVariableSpacing) { _ in
             // Entering Variable mode: target the band's lower bound so the spacing
@@ -1655,6 +1658,31 @@ extension ContentView {
                             .font(PlasticityFont.label)
                             .foregroundColor(Color.text_primary)
                             .help("Place a stitch on — or as near as possible to — every corner sharper than ~45°, flexing the spacing between holes so one lands on each corner. On by default.")
+
+                        Toggle("Chain selection (whole edge)", isOn: $state.holeChainSelection)
+                            .toggleStyle(.checkbox)
+                            .font(PlasticityFont.label)
+                            .foregroundColor(Color.text_primary)
+                            .help("On: the selected connected lines are joined into one perimeter and holes run all the way around. Off: holes are placed only on each line you selected, so you can stitch a single edge.")
+
+                        if !state.holeChainSelection {
+                            HStack {
+                                Text("Start inset (mm)")
+                                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                                Spacer()
+                                TextField("Start", value: $state.holeStartInset, format: .number)
+                                    .frame(width: 60).textFieldStyle(.roundedBorder)
+                            }
+                            .help("How far the FIRST hole sits in from the line's start point.")
+                            HStack {
+                                Text("End inset (mm)")
+                                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                                Spacer()
+                                TextField("End", value: $state.holeEndInset, format: .number)
+                                    .frame(width: 60).textFieldStyle(.roundedBorder)
+                            }
+                            .help("How far the LAST hole sits in from the line's end point.")
+                        }
 
                         HStack {
                             Text("Offset Corners")

@@ -2379,6 +2379,15 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     corner_angle_threshold = float(args.get("corner_angle_threshold", 45.0))
     spacing_target = max(1e-3, hole_spacing)
 
+    # Chain selection (default on): on = merge the selected connected lines into one
+    # continuous perimeter chain (holes run across the joints). Off = each selected
+    # line is its own open path, so holes land only on the line(s) the user picked.
+    chain_selection = bool(args.get("chain_selection", True))
+    # Per-end insets (mm): on an OPEN path the first/last hole are held this far in
+    # from the start / end. Ignored on closed loops (no endpoints).
+    start_inset = max(0.0, float(args.get("start_inset", 0.0) or 0.0))
+    end_inset = max(0.0, float(args.get("end_inset", 0.0) or 0.0))
+
     # Pricking-iron shape (Pricking Iron Toolbox). Each stitch is emitted as a real,
     # closed cut-path oriented to the local stitch-line tangent + the iron's own
     # angle, so diamond / French / flat slits export to DXF/SVG/laser exactly as the
@@ -2470,14 +2479,18 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     if not geoms:
         return {"status": "error", "message": "No valid geometry found to apply sewing holes."}
 
-    snapped = snap_endpoints(geoms)
-    merged = linemerge(snapped)
-
     paths: List[LineString] = []
-    if isinstance(merged, MultiLineString):
-        paths.extend(merged.geoms)
-    elif isinstance(merged, LineString):
-        paths.append(merged)
+    if chain_selection:
+        snapped = snap_endpoints(geoms)
+        merged = linemerge(snapped)
+        if isinstance(merged, MultiLineString):
+            paths.extend(merged.geoms)
+        elif isinstance(merged, LineString):
+            paths.append(merged)
+    else:
+        # Single-line mode: each selected line is its own path, holes only on it (no
+        # snap/merge across joints), so per-end insets apply to the picked line's ends.
+        paths.extend(geoms)
 
     # Drop redundant near-collinear vertices before the hot loop. Arc length is
     # preserved within 0.03 mm, so hole placement is unchanged, but interpolate /
@@ -2582,6 +2595,11 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
         if L < 1e-6:
             return []
         out: List[Tuple[float, float, float]] = []
+        # Working window: open paths honour the per-end insets; loops use the whole
+        # length (no endpoints). lo/hi/WL are the placement range.
+        lo = 0.0 if is_loop else min(max(0.0, start_inset), L)
+        hi = L if is_loop else max(lo, L - end_inset)
+        WL = hi - lo
 
         def emit(d: float) -> None:
             """Append one hole at arc-distance `d`, carrying the local tangent angle
@@ -2606,12 +2624,12 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 for i in range(n):
                     emit((i + phase) * step)
             elif n == 1:
-                emit(0.0)
+                emit((lo + hi) / 2.0)
             else:
-                # Open run: spread n holes end to end, a hole on each endpoint.
-                step = L / (n - 1)
+                # Open run: spread n holes end to end within the inset window.
+                step = WL / (n - 1)
                 for i in range(n):
-                    emit(i * step)
+                    emit(lo + i * step)
             return out
 
         stops: List[float] = []
@@ -2621,8 +2639,9 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                     s = line.project(ShapelyPoint(cx, cy))
                 except Exception:
                     continue
-                if -1e-9 <= s <= L + 1e-9:
-                    stops.append(min(L, max(0.0, s)))
+                # On open paths keep only corners inside the inset window.
+                if (is_loop and -1e-9 <= s <= L + 1e-9) or (lo - 1e-9 <= s <= hi + 1e-9):
+                    stops.append(min(hi, max(lo, s)) if not is_loop else min(L, max(0.0, s)))
             stops = sorted(set(round(s, 5) for s in stops))
 
         if corner_holes and stops:
@@ -2630,7 +2649,7 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 runs = [(s, ((stops[(i + 1) % len(stops)] - s) % L) or L)
                         for i, s in enumerate(stops)]
             else:
-                edges = sorted(set([0.0] + stops + [L]))
+                edges = sorted(set([lo] + stops + [hi]))
                 runs = [(edges[i], edges[i + 1] - edges[i]) for i in range(len(edges) - 1)]
             for a, run in runs:
                 if run < 1e-6:
@@ -2642,19 +2661,19 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                 for k in range(n):
                     emit(a + run * (k / n))
             if not is_loop:
-                emit(L)
+                emit(hi)
         else:
-            N = _even_count(L)
-            step = L / N
+            N = _even_count(WL if not is_loop else L)
+            step = (WL if not is_loop else L) / N
             if is_loop:
                 for i in range(N):
                     emit(i * step + phase * step)
             else:
-                start = phase * step
+                start = lo + phase * step
                 i = 0
                 while True:
                     d = start + i * step
-                    if d > L + 1e-6:
+                    if d > hi + 1e-6:
                         break
                     emit(d)
                     i += 1
@@ -2844,6 +2863,58 @@ def _emit_iron_slits(msp, hole_centers, shape: str, hole_radius: float,
         ct, st = math.cos(th), math.sin(th)
         ring = [(cx + u * ct - v * st, cy + u * st + v * ct) for (u, v) in local]
         msp.add_lwpolyline(ring, close=True, dxfattribs=attribs)
+
+
+_FOLD_LINE_LAYERS = {"FOLD", "FOLDS", "CREASE", "CREASES", "FOLD_LINES"}
+
+
+def op_edit_fold_line(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Repositions or deletes the FOLD-layer LINE that matches `old_seg` (its two
+    endpoints, either orientation, within `tol`). With `new_seg` it rewrites the
+    endpoints (drag-to-reposition a crease in 3D); without it the line is deleted.
+    Matched by geometry so no handle plumbing is needed between 3D and 2D."""
+    input_path = args.get("input"); output_path = args.get("output")
+    old_seg = args.get("old_seg"); new_seg = args.get("new_seg")
+    tol = float(args.get("tol", 1.5))
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not old_seg or len(old_seg) != 2:
+        return {"status": "error", "message": "old_seg must be two points."}
+    ox0, oy0 = float(old_seg[0][0]), float(old_seg[0][1])
+    ox1, oy1 = float(old_seg[1][0]), float(old_seg[1][1])
+
+    doc = ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+
+    def near(ax, ay, bx, by):
+        return math.hypot(ax - bx, ay - by) <= tol
+
+    target = None
+    for e in msp.query("LINE"):
+        if str(e.dxf.layer).upper() not in _FOLD_LINE_LAYERS:
+            continue
+        sx, sy = e.dxf.start.x, e.dxf.start.y
+        ex, ey = e.dxf.end.x, e.dxf.end.y
+        if (near(sx, sy, ox0, oy0) and near(ex, ey, ox1, oy1)) or \
+           (near(sx, sy, ox1, oy1) and near(ex, ey, ox0, oy0)):
+            target = e
+            break
+    if target is None:
+        return {"status": "error", "message": "No matching fold line found."}
+
+    if new_seg and len(new_seg) == 2:
+        target.dxf.start = (float(new_seg[0][0]), float(new_seg[0][1]), 0.0)
+        target.dxf.end = (float(new_seg[1][0]), float(new_seg[1][1]), 0.0)
+        deleted = False
+    else:
+        msp.delete_entity(target)
+        deleted = True
+
+    doc.saveas(output_path)
+    return {"status": "ok", "data": {"edited": True, "deleted": deleted}}
+
 
 def op_cleanup(args: Dict[str, Any]) -> Dict[str, Any]:
     """Join/cleanup — bridge hanging endpoints with straight lines (MAS-130).
@@ -6346,6 +6417,7 @@ OPERATIONS = {
     "offset_lines": op_offset_lines,
     "add_thickness": op_add_thickness,
     "add_holes": op_add_holes,
+    "edit_fold_line": op_edit_fold_line,
     "cleanup": op_cleanup,
     "export_svg": op_export_svg,
     "chain_select": op_chain_select,
