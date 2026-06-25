@@ -506,6 +506,21 @@ function measureSeam(seam, fixed, fIdxKey, moving, mIdxKey, pairs){
   return {id:(seam&&seam.id)||"", maxGap:mx, meanGap:n?sum/n:0,
           nA:fixed.holes.length, nB:moving.holes.length};
 }
+// Finished size (folded bbox) + flat leather area → Swift, for the readouts panel.
+let lastReadoutJSON="";
+function postReadouts(){
+  if(!PANELS.length){ return; }
+  let mnx=1e18,mny=1e18,mnz=1e18,mxx=-1e18,mxy=-1e18,mxz=-1e18, area=0;
+  for(const p of PANELS){
+    for(const v of p.X){ if(v[0]<mnx)mnx=v[0]; if(v[1]<mny)mny=v[1]; if(v[2]<mnz)mnz=v[2]; if(v[0]>mxx)mxx=v[0]; if(v[1]>mxy)mxy=v[1]; if(v[2]>mxz)mxz=v[2]; }
+    for(const t of p.triangles){ const A=p.v2d[t[0]],B=p.v2d[t[1]],C=p.v2d[t[2]];
+      area += Math.abs((B[0]-A[0])*(C[1]-A[1])-(C[0]-A[0])*(B[1]-A[1]))*0.5; }
+  }
+  const r={ w:+(mxx-mnx).toFixed(1), h:+(mxy-mny).toFixed(1), d:+(mxz-mnz).toFixed(1),
+            area:+area.toFixed(0), panels:PANELS.length };
+  const j=JSON.stringify(r);
+  if(j!==lastReadoutJSON){ lastReadoutJSON=j; post({op:"readouts", r:r}); }
+}
 // Push per-seam fit (gap after seating + hole counts) to Swift, only when it
 // actually moves — this is the data behind the inspector's fit verdict.
 let lastSeamFitJSON="";
@@ -695,6 +710,7 @@ function recomputePose(){
   updateThread();
   reportStretch();
   postSeamFit();
+  postReadouts();
   // Keep the gizmo on its panel as the pose changes (but never while dragging it).
   if(gizmoPanel && gizmoPanel.seatCentroid && !tcontrols.dragging){
     const c=gizmoPanel.seatCentroid, xf=gizmoPanel.userXf;

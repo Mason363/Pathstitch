@@ -233,6 +233,7 @@ struct ConstructModeView: View {
                     seamSection
                     glueSection
                     materialSection
+                    readoutsSection
                     stretchSection
                 }
                 .padding(14)
@@ -616,6 +617,48 @@ struct ConstructModeView: View {
             Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range,
                    onEditingChanged: { began in if began { state.pushConstructUndo() } })
                 .controlSize(.small)
+        }
+    }
+
+    // MARK: Readouts + health — the numbers a maker actually checks
+
+    private var readoutsSection: some View {
+        let h = state.assemblyHealth
+        return VStack(alignment: .leading, spacing: 4) {
+            sectionHeader("Assembly")
+            readoutRow("Finished size", String(format: "%.0f × %.0f × %.0f mm",
+                state.constructFinishedW, state.constructFinishedH, state.constructFinishedD))
+            readoutRow("Leather area", String(format: "%.1f cm²", state.constructLeatherAreaMm2 / 100.0))
+            readoutRow("Seam length", String(format: "%.0f mm", state.constructSeamLengthMm))
+            readoutRow("Stitches", "\(state.constructStitchCount)")
+            readoutRow("Panels", "\(state.constructReadoutPanels)")
+
+            Divider().background(Color.border_subtle).padding(.vertical, 2)
+            if h.ok && h.openChains == 0 {
+                Label("Everything connected, seams fit", systemImage: "checkmark.seal.fill")
+                    .font(PlasticityFont.label).foregroundColor(.green)
+            } else {
+                if h.floating > 0 {
+                    Label("\(h.floating) panel\(h.floating == 1 ? "" : "s") not attached to the base", systemImage: "exclamationmark.triangle.fill")
+                        .font(PlasticityFont.label).foregroundColor(.orange)
+                }
+                if h.mismatched > 0 {
+                    Label("\(h.mismatched) seam\(h.mismatched == 1 ? "" : "s") don't fit", systemImage: "exclamationmark.triangle.fill")
+                        .font(PlasticityFont.label).foregroundColor(.orange)
+                }
+                if h.openChains > 0 {
+                    Label("\(h.openChains) hole chain\(h.openChains == 1 ? "" : "s") unstitched", systemImage: "circle.dashed")
+                        .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                }
+            }
+        }
+    }
+
+    private func readoutRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(PlasticityFont.label).foregroundColor(.text_secondary)
+            Spacer()
+            Text(value).font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_primary)
         }
     }
 

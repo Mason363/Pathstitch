@@ -389,6 +389,38 @@ extension AppState {
         constructTransformModeToken += 1
     }
 
+    // MARK: - Assembly readouts + health (item 8: make it genuinely useful)
+
+    /// Total stitched-seam length (mm), averaging each seam's two chains.
+    var constructSeamLengthMm: Double {
+        constructSeams.reduce(0) { $0 + ($1.lenA + $1.lenB) * 0.5 }
+    }
+    /// Total stitches across all seams (hole pairs ≈ stitch passes).
+    var constructStitchCount: Int {
+        constructSeams.reduce(0) { $0 + max($1.holesA, $1.holesB) }
+    }
+    /// Assembly health: panels not connected to ground (by fold/seam/glue), hole
+    /// chains left unstitched, and seams that don't fit. `ok` when nothing's wrong.
+    var assemblyHealth: (floating: Int, openChains: Int, mismatched: Int, ok: Bool) {
+        let ids = Set(constructPanelHandles.keys)
+        guard !ids.isEmpty else { return (0, 0, 0, true) }
+        var adj: [Int: Set<Int>] = [:]
+        for s in constructSeams {
+            let pa = constructHoleChains.first { $0.id == s.chainA }?.panelId
+            let pb = constructHoleChains.first { $0.id == s.chainB }?.panelId
+            if let a = pa, let b = pb { adj[a, default: []].insert(b); adj[b, default: []].insert(a) }
+        }
+        for g in constructGlues { adj[g.panelA, default: []].insert(g.panelB); adj[g.panelB, default: []].insert(g.panelA) }
+        var seen: Set<Int> = [constructGroundPanel]
+        var q = [constructGroundPanel]
+        while let r = q.popLast() { for n in adj[r] ?? [] where !seen.contains(n) { seen.insert(n); q.append(n) } }
+        let floating = ids.subtracting(seen).count
+        let seamedChains = Set(constructSeams.flatMap { [$0.chainA, $0.chainB] })
+        let openChains = constructHoleChains.filter { !seamedChains.contains($0.id) }.count
+        let mismatched = constructSeams.filter { $0.verdict == .mismatch }.count
+        return (floating, openChains, mismatched, floating == 0 && mismatched == 0)
+    }
+
     /// Clears all per-panel pose overrides (back to the seated pose).
     func clearConstructPanelTransforms() {
         guard !constructPanelXf.isEmpty else { return }

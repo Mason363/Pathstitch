@@ -179,6 +179,15 @@ struct ConstructViewport: NSViewRepresentable {
             case "seamFit":
                 let fits = json["seams"] as? [[String: Any]] ?? []
                 DispatchQueue.main.async { self.state.applySeamFit(fits) }
+            case "readouts":
+                let r = json["r"] as? [String: Any] ?? [:]
+                DispatchQueue.main.async {
+                    self.state.constructFinishedW = (r["w"] as? Double) ?? 0
+                    self.state.constructFinishedH = (r["h"] as? Double) ?? 0
+                    self.state.constructFinishedD = (r["d"] as? Double) ?? 0
+                    self.state.constructLeatherAreaMm2 = (r["area"] as? Double) ?? 0
+                    self.state.constructReadoutPanels = (r["panels"] as? Int) ?? 0
+                }
             case "panelXf":
                 let handle = json["handle"] as? String ?? ""
                 let t = json["t"] as? [Double] ?? []

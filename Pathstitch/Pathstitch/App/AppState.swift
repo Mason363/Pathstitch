@@ -2016,6 +2016,14 @@ class AppState {
     var constructTransformMode: String = "translate"   // translate | rotate | scale
     var constructTransformModeToken: Int = 0
 
+    // Live assembly readouts reported by the viewport: finished size (mm) + flat
+    // leather area (mm²) + panel count. Drives the inspector readouts panel.
+    var constructFinishedW: Double = 0
+    var constructFinishedH: Double = 0
+    var constructFinishedD: Double = 0
+    var constructLeatherAreaMm2: Double = 0
+    var constructReadoutPanels: Int = 0
+
     // Overlap handling: per-engulfed-area treatment (inner DXF handle → "stamp" |
     // "patch" | "cutout" | "independent"). Persisted. `pendingEngulfed` holds the
     // detected nestings the user hasn't decided yet (drives the chooser).
