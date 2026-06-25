@@ -647,8 +647,13 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     # region, so extend the drawn segment into a long chord along its direction
     # (shapely only splits where the chord crosses the panel; the overshoot is
     # harmless, and the hinge tagging then covers the full crossing).
+    # A crease drawn on panel N must cut *only* panel N — so chords carrying a
+    # panelId are bucketed per panel and applied just to that one (an untagged
+    # legacy chord still falls through to the global fold list).
+    extra_by_panel: Dict[int, List[List[Pt]]] = {}
     for ef in (args.get("extra_folds") or []):
         seg = ef.get("seg") if isinstance(ef, dict) else ef
+        pid = ef.get("panelId") if isinstance(ef, dict) else None
         if seg and len(seg) >= 2:
             p0 = (float(seg[0][0]), float(seg[0][1]))
             p1 = (float(seg[-1][0]), float(seg[-1][1]))
@@ -657,7 +662,10 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
             ux, uy = dx / ln, dy / ln
             L = 1.0e4
             chord = [(p0[0] - ux * L, p0[1] - uy * L), (p1[0] + ux * L, p1[1] + uy * L)]
-            folds_in = list(folds_in) + [chord]
+            if pid is None:
+                folds_in = list(folds_in) + [chord]
+            else:
+                extra_by_panel.setdefault(int(pid), []).append(chord)
 
     if not panels_in:
         return {"status": "error", "message": "No closed panel outlines found."}
@@ -681,6 +689,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
             poly = poly.buffer(0)
         my_folds = [f for f in folds_in
                     if len(f) >= 2 and poly.buffer(1e-6).intersects(LineString(f))]
+        my_folds = my_folds + extra_by_panel.get(idx, [])   # this panel's own creases
         tl = _auto_target_len(outline, requested_len)
         try:
             mesh = _triangulate_panel(outline, my_folds, tl)

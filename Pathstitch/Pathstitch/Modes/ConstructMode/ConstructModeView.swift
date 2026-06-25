@@ -71,7 +71,7 @@ struct ConstructModeView: View {
                              step: "Click a fold line on the model, then set its angle in the panel →.")
         case .crease:
             return ToolGuide(icon: "scribble.variable", name: "Crease",
-                             step: "Click two points across a panel to draw a new fold line there.")
+                             step: "Click a start point, then an end point across a panel — the dashed preview becomes a new fold.")
         case .ground:
             return ToolGuide(icon: "square.grid.3x3.fill.square", name: "Ground",
                              step: "Click the panel that should stay flat as the base. (Now: panel \(state.constructGroundPanel).)")
@@ -90,8 +90,10 @@ struct ConstructModeView: View {
             return ToolGuide(icon: "link", name: "Glue",
                              step: "Click two panels in turn to weld their meeting edges (glue tabs).")
         case .drag:
+            let ax = state.constructDragAxis
+            let axName = ax == "screen" ? "free (view plane)" : "\(ax.uppercased()) axis"
             return ToolGuide(icon: "hand.draw", name: "Bend",
-                             step: "Drag across a panel to bend it. The base stays put; leather never stretches.")
+                             step: "Grab a panel and move it — bends as one stiff sheet, never stretches. Move: \(axName). Press X/Y/Z to lock an axis, F for free.")
         }
     }
 
@@ -208,15 +210,21 @@ struct ConstructModeView: View {
             )
             .controlSize(.small)
             if state.constructFolds.isEmpty {
-                Text("No fold lines detected. Draw fold lines on a layer named FOLD (or CREASE) in 2D, or use the Crease tool to add them in 3D.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No fold lines yet. Two ways to add them:")
+                        .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                    Text("• In 2D: draw a LINE, then move it to a layer named FOLD or CREASE (Layers panel). Back here, press Rebuild.")
+                        .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
+                    Text("• In 3D: pick the Crease tool and click two points across a panel.")
+                        .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
+                }
             } else {
                 ForEach(state.constructFolds) { spec in
                     foldRow(spec)
                 }
             }
             if state.constructTool == .crease {
-                Text("Crease tool — click two points on a panel to add a fold line.")
+                Text("Crease tool — click a start point, then an end point across the panel. A dashed line previews it; the second click commits the fold and selects it so you can set its angle here.")
                     .font(PlasticityFont.label).foregroundColor(.accent)
             }
             if !state.constructUserFolds.isEmpty {
@@ -379,23 +387,40 @@ struct ConstructModeView: View {
 
     // MARK: Drag brush — pose / drape the form without stretching
 
+    private let dragAxes: [(String, String)] = [
+        ("screen", "Free"), ("x", "X"), ("y", "Y"), ("z", "Z")
+    ]
+
     private var dragSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Drag brush")
+            sectionHeader("Bend")
             if state.constructTool == .drag {
-                Text("Drag on a panel to pose it. The base stays put; the leather bends but never stretches.")
+                Text("Grab the leather like a hand and move it — the sheet bends as one stiff piece and never stretches, so if you pull past its reach it just slips back.")
                     .font(PlasticityFont.label).foregroundColor(.text_secondary)
             } else {
                 Button {
                     state.setConstructTool(.drag)
                 } label: {
-                    HStack { Image(systemName: ConstructTool.drag.icon); Text("Drag brush") }
+                    HStack { Image(systemName: ConstructTool.drag.icon); Text("Bend tool") }
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PlasticityButtonStyle(isEnabled: true))
             }
+
+            // Axis lock (Blender-style). "Free" moves on the screen plane; X/Y/Z
+            // constrain the grab to that world axis. Mirrored by the X/Y/Z keys.
+            Text("Move along").font(PlasticityFont.label).foregroundColor(.text_secondary)
+            Picker("", selection: Binding(
+                get: { state.constructDragAxis },
+                set: { state.setConstructDragAxis($0) })) {
+                ForEach(dragAxes, id: \.0) { key, label in Text(label).tag(key) }
+            }
+            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
+            Text("Free = drag in the view plane. X / Y / Z lock to that axis (Z is up). You can also press X, Y, Z, or F while dragging.")
+                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
+
             HStack {
-                Text("Radius").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                Text("Grab size").font(PlasticityFont.label).foregroundColor(.text_secondary)
                 Spacer()
                 Text("\(Int(state.constructBrushRadius)) mm")
                     .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
@@ -408,7 +433,7 @@ struct ConstructModeView: View {
             )
             .controlSize(.small)
             Button { state.resetConstructDrape() } label: {
-                HStack { Image(systemName: "arrow.uturn.backward"); Text("Reset drape") }
+                HStack { Image(systemName: "arrow.uturn.backward"); Text("Reset bend") }
                     .font(PlasticityFont.label)
             }
             .buttonStyle(.plain).foregroundColor(.text_secondary)

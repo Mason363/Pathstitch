@@ -1987,6 +1987,12 @@ class AppState {
     // Drag brush (Phase 3): radius of the no-stretch grab brush, pushed live.
     var constructBrushRadius: Double = 25
     var constructBrushToken: Int = 0
+    // Bend-grab constraint axis: "screen" (free, view-plane) or "x"/"y"/"z" (locked
+    // to a world axis, Blender-style). Settable from the inspector or X/Y/Z keys.
+    var constructDragAxis: String = "screen"
+    // Panel whose freshly-added crease should be auto-selected after the rebuild
+    // (so the new fold's angle slider is highlighted as confirmation).
+    var pendingCreaseSelectPanel: Int? = nil
 
     // Fold stiffness 0…1: low rounds folds over a radius (soft bend), high keeps
     // them tight. Real leather can't crease infinitely sharp.

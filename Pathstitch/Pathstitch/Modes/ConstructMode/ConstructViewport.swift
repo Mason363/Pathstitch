@@ -144,6 +144,14 @@ struct ConstructViewport: NSViewRepresentable {
                         self.state.hasUnsavedChanges = true
                     }
                 }
+            case "dragAxis":
+                let axis = json["axis"] as? String ?? "screen"
+                DispatchQueue.main.async {
+                    if self.state.constructDragAxis != axis {
+                        self.state.constructDragAxis = axis           // reflect X/Y/Z keys in the UI
+                        self.lastBrushToken = self.state.constructBrushToken  // JS already has it
+                    }
+                }
             case "selectChain":
                 let chainId = json["chainId"] as? Int ?? -1
                 DispatchQueue.main.async {
@@ -204,6 +212,7 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastBrushToken != state.constructBrushToken else { return }
             lastBrushToken = state.constructBrushToken
             webView.evaluateJavaScript("setConstructBrush(\(state.constructBrushRadius));", completionHandler: nil)
+            webView.evaluateJavaScript("setConstructDragAxis('\(state.constructDragAxis)');", completionHandler: nil)
         }
 
         func pushMaterial() {

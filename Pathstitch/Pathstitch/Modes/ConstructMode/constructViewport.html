@@ -136,7 +136,9 @@ let SHOW_THREAD=true;
 let SELECTED_CHAIN=-1;    // chain the user has picked (first half of a stitch)
 let CREASE_PT=null;       // first clicked point of a new fold being drawn in 3D
 let creaseMark=null;      // marker dot for that first point
+let creaseLine=null;      // rubber-band preview from the first point to the cursor
 let holeMesh=null;        // InstancedMesh of all hole markers (rides the fold)
+let chainLineMesh=null;   // LineSegments linking each chain's holes (always shown)
 let HOLE_SLOTS=[];        // per-instance {chainId, k} parallel to holeMesh
 let threadGroup=new THREE.Group(); scene.add(threadGroup);
 let seamReport=[];        // per-seam gap stats for the HUD
@@ -144,6 +146,7 @@ let seamReport=[];        // per-seam gap stats for the HUD
 // Drag brush (Phase 3) — Blender-style soft grab, never stretches -----------
 let BRUSH_R=25;           // brush radius (world mm)
 let DRAG=null;            // active drag: {panel, idxs, w, rest, n, P0}
+let DRAG_AXIS="screen";   // "screen" | "x" | "y" | "z" — grab constraint (Blender-like)
 let brushRing=null;       // hover ring showing the brush footprint
 // Fold stiffness 0..1: real leather can't crease infinitely sharp — low values
 // round the folds over a radius, high values keep them tight. Drives a
@@ -154,7 +157,10 @@ let MATERIAL_COLOR=0x8a5a2b;
 let THICKNESS=2.0;
 
 const COL_GROUND=0x6b8caf, COL_FLAP=0xb98a5e, COL_FOLD=0xff7a1a, COL_WIRE=0x000000;
-const COL_HOLE=0x202225, COL_HOLE_SEL=0x35c1ff, COL_THREAD=0xf0e2c0;
+// Hole markers are a *tool* overlay, so they're high-contrast (orange) and light
+// up cyan when their chain is picked — visible on any leather colour. The chain
+// line links a run of holes so the seam reads even before it's stitched.
+const COL_HOLE=0xff8c2b, COL_HOLE_SEL=0x35c1ff, COL_THREAD=0xf0e2c0, COL_CHAIN=0xffb066;
 const _SPHERE=new THREE.SphereGeometry(1,10,8);   // unit sphere, scaled per hole
 const _IDENT=new THREE.Matrix4();
 
@@ -168,6 +174,7 @@ function clearPanels(){
   }
   PANELS=[]; PANEL_BY_ID={};
   if(holeMesh){ root.remove(holeMesh); holeMesh.geometry.dispose(); holeMesh.material.dispose(); holeMesh=null; }
+  if(chainLineMesh){ root.remove(chainLineMesh); chainLineMesh.geometry.dispose(); chainLineMesh.material.dispose(); chainLineMesh=null; }
   HOLE_SLOTS=[];
   clearThread();
 }
@@ -301,12 +308,15 @@ function buildHoleChains(chains){
   let total=0;
   for(const c of chains){ CHAIN_BY_ID[c.id]=c; total+=c.holes.length; }
   if(holeMesh){ root.remove(holeMesh); holeMesh.geometry.dispose(); holeMesh.material.dispose(); holeMesh=null; }
+  if(chainLineMesh){ root.remove(chainLineMesh); chainLineMesh.geometry.dispose(); chainLineMesh.material.dispose(); chainLineMesh=null; }
   if(total===0) return;
-  // marker radius from a typical pitch (kept readable but not chunky)
+  // marker radius from a typical pitch — bigger than before so the holes are
+  // unmistakable (users reported not being able to see them at all).
   let pitch=0; let np=0; for(const c of chains){ if(c.pitch){ pitch+=c.pitch; np++; } }
-  pitch = np? pitch/np : 4; const rad=Math.max(0.4, Math.min(pitch*0.18, 2.0));
-  // base white so per-instance colors (which multiply the base) read true.
-  const mat=new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.5, metalness:0.1});
+  pitch = np? pitch/np : 4; const rad=Math.max(1.1, Math.min(pitch*0.34, 3.2));
+  // Unlit (MeshBasic) + base white so the per-instance colour reads true and the
+  // markers stay bright regardless of scene lighting / leather colour.
+  const mat=new THREE.MeshBasicMaterial({color:0xffffff});
   holeMesh=new THREE.InstancedMesh(_SPHERE, mat, total);
   holeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   holeMesh.userData.rad=rad;
@@ -596,6 +606,7 @@ function recomputePose(){
   solveStitches();                                // seat & sew panels together
   for(const panel of PANELS) writePanelGeometry(panel);
   updateHoleInstances();
+  updateChainLines();
   updateThread();
   reportStretch();
 }
@@ -612,6 +623,30 @@ function updateHoleInstances(){
   }
   holeMesh.instanceMatrix.needsUpdate=true;
   if(holeMesh.instanceColor) holeMesh.instanceColor.needsUpdate=true;
+}
+// A faint poly-line through each chain's holes, always on, so a "run of holes"
+// reads as a stitch line you can aim at — even before it's stitched. Rebuilt each
+// pose (cheap: a handful of segments) so it rides the fold with the markers.
+function updateChainLines(){
+  if(chainLineMesh){ root.remove(chainLineMesh); chainLineMesh.geometry.dispose(); chainLineMesh.material.dispose(); chainLineMesh=null; }
+  if(!CHAINS.length) return;
+  const pos=[], colArr=[], sel=new THREE.Color(COL_HOLE_SEL), base=new THREE.Color(COL_CHAIN);
+  for(const c of CHAINS){
+    const n=c.holes.length; if(n<2) continue;
+    const col=(c.id===SELECTED_CHAIN)?sel:base;
+    const last=c.closed?n:n-1;
+    for(let k=0;k<last;k++){
+      const a=holeWorld(c,k), b=holeWorld(c,(k+1)%n);
+      pos.push(a[0],a[1],a[2], b[0],b[1],b[2]);
+      colArr.push(col.r,col.g,col.b, col.r,col.g,col.b);
+    }
+  }
+  if(!pos.length) return;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute("color", new THREE.Float32BufferAttribute(colArr,3));
+  chainLineMesh=new THREE.LineSegments(g, new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.85}));
+  chainLineMesh.renderOrder=3; root.add(chainLineMesh);
 }
 // Stitch rendering — make a sewn seam *read* like real saddle stitching:
 //   • running stitch: bright thread segments hole→hole along each chain (the
@@ -733,23 +768,49 @@ function beginDrag(clientX, clientY){
   // dynamic fold) instead of slumping back. Everything between core and anchor
   // is free, so the smoothing rounds it into a smooth bend, not a wrinkled drag.
   const core=new Set(); for(let k=0;k<idxs.length;k++){ if(w[k]>0.5) core.add(idxs[k]); }
-  DRAG={panel, idxs, w, n, P0, pinned, core, brushR:BRUSH_R, lastDelta:[0,0,0]};
+  DRAG={panel, idxs, w, n, P0, pinned, core, brushR:BRUSH_R, axis:DRAG_AXIS, lastP1:P0.slice()};
   controls.enabled=false;
+  post({op:"dragAxis", axis:DRAG.axis});
   return true;
+}
+// Where is the handle right now (centroid of the grabbed core)? Used to re-base
+// the target when the axis lock changes mid-drag so the handle doesn't jump.
+function coreCentroid(d){
+  let cx=0,cy=0,cz=0,n=0; d.core.forEach(i=>{ const p=d.panel.X[i]; cx+=p[0];cy+=p[1];cz+=p[2];n++; });
+  return n?[cx/n,cy/n,cz/n]:d.P0.slice();
+}
+// Closest point on the world line (P0 + t·A) to the mouse ray (o + s·rd). A,rd unit.
+function closestOnAxis(P0,A,o,rd){
+  const w0=sub(o,P0), b=dot(rd,A), dd=dot(rd,w0), e=dot(A,w0);
+  const den=1-b*b; if(Math.abs(den)<1e-6) return P0.slice();
+  return add(P0, scl(A,(e-b*dd)/den));
+}
+function setDragAxis(a){
+  if(!DRAG) { DRAG_AXIS=a; return; }
+  DRAG.axis=a; DRAG.lastP1=coreCentroid(DRAG);   // re-base so the handle stays put
+  DRAG.P0=DRAG.lastP1.slice();
+  post({op:"dragAxis", axis:a});
 }
 function moveDrag(clientX, clientY){
   if(!DRAG) return;
   setMouse(clientX, clientY); ray.setFromCamera(mouse,camera);
   const o=[camera.position.x,camera.position.y,camera.position.z];
   const rd=[ray.ray.direction.x, ray.ray.direction.y, ray.ray.direction.z];
-  const denom=dot(rd,DRAG.n); if(Math.abs(denom)<1e-6) return;
-  const tt=dot(sub(DRAG.P0,o),DRAG.n)/denom;
-  const P1=add(o,scl(rd,tt));
-  const delta=sub(P1,DRAG.P0);
-  const inc=sub(delta, DRAG.lastDelta); DRAG.lastDelta=delta;   // impulse since last move
+  let P1;
+  if(DRAG.axis==="x"||DRAG.axis==="y"||DRAG.axis==="z"){
+    // Blender-style axis lock: the handle slides only along this world axis.
+    const A = DRAG.axis==="x"?[1,0,0] : DRAG.axis==="y"?[0,1,0] : [0,0,1];
+    P1 = closestOnAxis(DRAG.P0, A, o, rd);
+  }else{
+    // free: move on the screen-facing plane through the grab point.
+    const denom=dot(rd,DRAG.n); if(Math.abs(denom)<1e-6) return;
+    const tt=dot(sub(DRAG.P0,o),DRAG.n)/denom;
+    P1=add(o,scl(rd,tt));
+  }
+  const inc=sub(P1, DRAG.lastP1); DRAG.lastP1=P1.slice();   // impulse since last move
   applyDrag(DRAG, inc);
   writePanelGeometry(DRAG.panel);
-  updateHoleInstances(); updateThread(); reportStretch();
+  updateHoleInstances(); updateChainLines(); updateThread(); reportStretch();
 }
 // Distance relax: project every bar back to rest length (no-stretch), holding the
 // `pinned` (far anchor) verts. `extra` is an additional held set (the brush core)
@@ -799,8 +860,11 @@ function applyDrag(d, inc){
       panel.X[i][0]+=inc[0]*f; panel.X[i][1]+=inc[1]*f; panel.X[i][2]+=inc[2]*f;
     }
     relaxBars(panel, pinned, 8);
-    smoothBend(panel, held, 2, 0.5);   // de-wrinkle into a smooth bend
-    relaxBars(panel, pinned, 12);      // restore inextensibility
+    // Strong smoothing → the sheet behaves like stiff leather: the handle moves
+    // and the whole panel bends as one smooth surface, with almost no local
+    // denting/wrinkling around the grab.
+    smoothBend(panel, held, 4, 0.6);
+    relaxBars(panel, pinned, 14);      // restore inextensibility (no-stretch)
   }
 }
 function endDrag(){ DRAG=null; controls.enabled=true; }
@@ -827,6 +891,7 @@ function updateBrushRing(clientX, clientY){
   brushRing.scale.setScalar(BRUSH_R);
 }
 window.setConstructBrush=function(r){ BRUSH_R=(r&&r>0)?r:25; };
+window.setConstructDragAxis=function(a){ setDragAxis(a||"screen"); };
 // Mockup material controls (Phase 4).
 window.setConstructMaterial=function(hex){
   if(hex!=null) MATERIAL_COLOR=hex>>>0;
@@ -921,10 +986,24 @@ function hitTo2D(panel, face, point){
 }
 function showCreaseMark(w){
   if(!creaseMark){ creaseMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:COL_FOLD}));
-    creaseMark.scale.setScalar(2); scene.add(creaseMark); }
+    creaseMark.scale.setScalar(3); scene.add(creaseMark); }
   creaseMark.visible=true; creaseMark.position.set(w[0],w[1],w[2]);
 }
-function hideCreaseMark(){ if(creaseMark) creaseMark.visible=false; }
+function hideCreaseMark(){ if(creaseMark) creaseMark.visible=false; clearCreasePreview(); }
+// Rubber-band from the first crease point to the cursor so the user can see the
+// fold line they're about to commit (second click finishes it).
+function showCreasePreview(a,b){
+  if(!creaseLine){
+    const g=new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute([0,0,0,0,0,0],3));
+    creaseLine=new THREE.Line(g, new THREE.LineDashedMaterial({color:COL_FOLD, dashSize:3, gapSize:2}));
+    creaseLine.renderOrder=4; scene.add(creaseLine);
+  }
+  const p=creaseLine.geometry.attributes.position.array;
+  p[0]=a[0];p[1]=a[1];p[2]=a[2]; p[3]=b[0];p[4]=b[1];p[5]=b[2];
+  creaseLine.geometry.attributes.position.needsUpdate=true;
+  creaseLine.computeLineDistances(); creaseLine.visible=true;
+}
+function clearCreasePreview(){ if(creaseLine) creaseLine.visible=false; }
 
 // ---- controls from Swift --------------------------------------------------
 window.setConstructControls=function(jsonStr){
@@ -935,7 +1014,12 @@ window.setConstructControls=function(jsonStr){
   for(const f of (c.folds||[])) CONTROLS.foldAngle[f.panelId+"-"+f.foldId]=f.angleDeg||0;
   needsPose=true;
 };
-window.setConstructTool=function(t){ TOOL=t||"select"; if(TOOL!=="drag" && brushRing) brushRing.visible=false; if(PANELS.length) reportStretch(); };
+window.setConstructTool=function(t){
+  TOOL=t||"select";
+  if(TOOL!=="drag" && brushRing) brushRing.visible=false;
+  if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); }   // abandon a half-drawn crease
+  if(PANELS.length) reportStretch();
+};
 window.setConstructSeams=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   SEAMS=c.seams||[];
@@ -969,7 +1053,15 @@ renderer.domElement.addEventListener("pointerdown",e=>{
 });
 renderer.domElement.addEventListener("pointermove",e=>{
   if(DRAG){ moveDrag(e.clientX,e.clientY); return; }
-  if(TOOL==="drag") updateBrushRing(e.clientX,e.clientY);
+  if(TOOL==="drag"){ updateBrushRing(e.clientX,e.clientY); return; }
+  if(TOOL==="crease" && CREASE_PT){
+    // live rubber-band to the cursor's point on the same panel
+    mouse.x=(e.clientX/window.innerWidth)*2-1; mouse.y=-(e.clientY/window.innerHeight)*2+1;
+    ray.setFromCamera(mouse,camera);
+    const panel=PANEL_BY_ID[CREASE_PT.panelId];
+    const hit=panel?ray.intersectObject(panel.mesh,false)[0]:null;
+    if(hit) showCreasePreview(CREASE_PT.world, [hit.point.x,hit.point.y,hit.point.z]);
+  }
 });
 renderer.domElement.addEventListener("pointerup",e=>{
   if(DRAG){ endDrag(); return; }
@@ -985,7 +1077,8 @@ renderer.domElement.addEventListener("pointerup",e=>{
       const panel=PANEL_BY_ID[hit.object.userData.panelId];
       const p2d=hitTo2D(panel, hit.face, hit.point);
       if(!CREASE_PT || CREASE_PT.panelId!==panel.id){
-        CREASE_PT={panelId:panel.id, p2d}; showCreaseMark([hit.point.x,hit.point.y,hit.point.z]);
+        CREASE_PT={panelId:panel.id, p2d, world:[hit.point.x,hit.point.y,hit.point.z]};
+        showCreaseMark(CREASE_PT.world);
       }else{
         post({op:"addFold", panelId:panel.id, seg:[CREASE_PT.p2d, p2d]});
         CREASE_PT=null; hideCreaseMark();
@@ -1032,6 +1125,15 @@ function tick(){
     renderer.render(scene,camera);
   }catch(e){ if(!window.__rerr){ window.__rerr=1; post({op:"consoleError", message:"RENDER: "+((e&&e.message)||e)+" @ "+((e&&e.stack)||"").slice(0,300)}); } }
 }
+// Blender-style axis keys: while bending, X / Y / Z lock the grab to that world
+// axis; F (or Esc) returns to free screen-plane move. Posts back so the inspector
+// segmented control stays in sync.
+window.addEventListener("keydown",e=>{
+  if(!DRAG) return;
+  const k=(e.key||"").toLowerCase();
+  if(k==="x"||k==="y"||k==="z"){ setDragAxis(k); e.preventDefault(); }
+  else if(k==="f"||k==="escape"){ setDragAxis("screen"); e.preventDefault(); }
+});
 window.addEventListener("resize",()=>{
   camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);

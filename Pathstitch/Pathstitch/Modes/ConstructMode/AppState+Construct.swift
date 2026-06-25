@@ -81,6 +81,14 @@ extension AppState {
                     self.constructFoldStateToken += 1   // re-apply ground + angles to the new mesh
                     self.constructSeamStateToken += 1   // re-apply seams to the new mesh
                     self.isBuildingConstructModel = false
+                    // Just creased? Select that panel's newest fold so the angle
+                    // slider is right there — visible proof the crease landed.
+                    if let cp = self.pendingCreaseSelectPanel {
+                        self.pendingCreaseSelectPanel = nil
+                        if let newest = newFolds.filter({ $0.panelId == cp }).max(by: { $0.foldId < $1.foldId }) {
+                            self.selectedFoldId = newest.id
+                        }
+                    }
                 }
                 // Refresh each surviving seam's correspondence against the new
                 // hole counts (a 2D edit can change how many holes a seam has).
@@ -124,6 +132,12 @@ extension AppState {
     func setConstructBrushRadius(_ r: Double) {
         constructBrushRadius = r
         constructBrushToken += 1
+    }
+
+    /// Sets the bend-grab axis ("screen" | "x" | "y" | "z") and pushes it live.
+    func setConstructDragAxis(_ axis: String) {
+        constructDragAxis = axis
+        constructBrushToken += 1   // rides the brush push
     }
 
     /// Sets fold stiffness (0 = round/soft bend, 1 = tight crease) and re-poses.
@@ -194,6 +208,7 @@ extension AppState {
         guard hypot(x1 - x0, y1 - y0) > 1.0 else { return }   // ignore a stray double-click
         constructUserFolds.append(ConstructUserFold(panelId: panelId, x0: x0, y0: y0, x1: x1, y1: y1))
         hasUnsavedChanges = true
+        pendingCreaseSelectPanel = panelId   // select the new fold once the rebuild lands
         buildConstructModel()   // re-triangulate so the new crease is a real hinge
     }
 
