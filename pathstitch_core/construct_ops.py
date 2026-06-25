@@ -611,7 +611,9 @@ def _auto_target_len(outline: Sequence[Pt], requested: float) -> float:
         return requested
     minx, miny, maxx, maxy = _bbox(outline)
     span = max(maxx - minx, maxy - miny, 1.0)
-    return max(span / 14.0, 1.0)  # ~14 cells across the larger dimension
+    # ~24 cells across the larger dimension — fine enough that folds and brush
+    # bends read as smooth curves, not faceted ridges. (Floor keeps tiny tabs sane.)
+    return max(span / 24.0, 0.8)
 
 
 def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
