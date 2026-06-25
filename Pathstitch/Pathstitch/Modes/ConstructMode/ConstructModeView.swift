@@ -21,6 +21,10 @@ struct ConstructModeView: View {
                     homeToken: state.triggerConstructHomeToken,
                     state: state
                 )
+                // Always-on "what does this tool do, what do I click next" banner —
+                // the single biggest clarity fix. Sits where the eye already is.
+                toolHUD
+                    .padding(12)
                 if state.isBuildingConstructModel {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
@@ -30,6 +34,7 @@ struct ConstructModeView: View {
                     .background(Color.bg_panel.opacity(0.9))
                     .cornerRadius(6)
                     .padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -44,6 +49,92 @@ struct ConstructModeView: View {
             // edits made in 2D show up here — the "live sketch" promise.
             state.buildConstructModel()
         }
+    }
+
+    // MARK: Tool guidance — one source of truth for "what this tool does + what to
+    // click next", shown both as the viewport HUD and the inspector step card. The
+    // text reacts to pending picks (e.g. first glue panel chosen) so it always
+    // tells the user the *next* action, not a generic blurb.
+    private struct ToolGuide { var icon: String; var name: String; var step: String }
+
+    private var toolGuide: ToolGuide {
+        switch state.constructTool {
+        case .select:
+            return ToolGuide(icon: "cursorarrow", name: "Select",
+                             step: "Drag to orbit. Click a fold line to adjust its angle.")
+        case .fold:
+            if let id = state.selectedFoldId, state.constructFolds.contains(where: { $0.id == id }) {
+                return ToolGuide(icon: "arrow.uturn.up", name: "Fold",
+                                 step: "Drag the angle slider in the panel → to fold. Or click another fold line.")
+            }
+            return ToolGuide(icon: "arrow.uturn.up", name: "Fold",
+                             step: "Click a fold line on the model, then set its angle in the panel →.")
+        case .crease:
+            return ToolGuide(icon: "scribble.variable", name: "Crease",
+                             step: "Click two points across a panel to draw a new fold line there.")
+        case .ground:
+            return ToolGuide(icon: "square.grid.3x3.fill.square", name: "Ground",
+                             step: "Click the panel that should stay flat as the base. (Now: panel \(state.constructGroundPanel).)")
+        case .stitch:
+            if let pick = state.selectedChainForStitch {
+                return ToolGuide(icon: "point.topleft.down.to.point.bottomright.curvepath", name: "Stitch",
+                                 step: "Chain \(pick) picked — click the chain to sew it to.")
+            }
+            return ToolGuide(icon: "point.topleft.down.to.point.bottomright.curvepath", name: "Stitch",
+                             step: "Click one row of sewing holes, then the row to sew it to.")
+        case .glue:
+            if let p = state.selectedPanelForGlue {
+                return ToolGuide(icon: "link", name: "Glue",
+                                 step: "Panel \(p) picked — click the panel to glue it to.")
+            }
+            return ToolGuide(icon: "link", name: "Glue",
+                             step: "Click two panels in turn to weld their meeting edges (glue tabs).")
+        case .drag:
+            return ToolGuide(icon: "hand.draw", name: "Bend",
+                             step: "Drag across a panel to bend it. The base stays put; leather never stretches.")
+        }
+    }
+
+    private var toolHUD: some View {
+        let g = toolGuide
+        return HStack(spacing: 10) {
+            Image(systemName: g.icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.accent)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(g.name).font(PlasticityFont.label.weight(.semibold)).foregroundColor(.text_primary)
+                Text(g.step).font(PlasticityFont.label).foregroundColor(.text_secondary)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.bg_panel.opacity(0.92))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accent.opacity(0.35), lineWidth: 1))
+        )
+        .frame(maxWidth: 360, alignment: .leading)
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+
+    private var stepCard: some View {
+        let g = toolGuide
+        return HStack(alignment: .top, spacing: 9) {
+            Image(systemName: g.icon).font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.accent).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(g.name.uppercased()).font(PlasticityFont.label.weight(.semibold))
+                    .foregroundColor(.text_primary).tracking(1)
+                Text(g.step).font(PlasticityFont.label).foregroundColor(.text_secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.accent.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.accent.opacity(0.30), lineWidth: 1))
+        .padding(.top, 12)
     }
 
     private var inspector: some View {
@@ -62,6 +153,10 @@ struct ConstructModeView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    // Mirror the viewport HUD so the active tool's controls below
+                    // have an obvious header tying icon → name → next step.
+                    stepCard
+
                     Button {
                         state.buildConstructModel()
                     } label: {
@@ -69,7 +164,6 @@ struct ConstructModeView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(PlasticityButtonStyle(isEnabled: true))
-                    .padding(.top, 12)
 
                     groundSection
                     foldSection

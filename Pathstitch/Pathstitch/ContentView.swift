@@ -4304,12 +4304,11 @@ extension ContentView {
                             if !state.isPlaneSelectionActive { state.startPlaneSelection() }
                         }
                     } else if state.activeMode == .construct {
-                        // Construct tools share this leftmost sidebar, like 2D/3D.
+                        // Construct tools share this leftmost sidebar, like 2D/3D —
+                        // but labelled (icon + name), since users couldn't tell the
+                        // assembly tools apart from icons alone.
                         ForEach(ConstructTool.available) { tool in
-                            threeDToolButton(icon: tool.icon, active: state.constructTool == tool,
-                                             help: constructToolHelp(tool)) {
-                                state.setConstructTool(tool)
-                            }
+                            constructToolButton(tool)
                         }
                     }
 
@@ -4367,6 +4366,26 @@ extension ContentView {
         .background(active ? Color.bg_selected : Color.clear)
         .foregroundColor(active ? Color.accent : Color.text_secondary)
         .help(help)
+    }
+
+    /// Construct tool button — icon **and** name stacked, so the assembly tools
+    /// are legible at the default narrow rail width (the icons alone were a
+    /// guessing game). Falls back to the same hover-help as elsewhere.
+    private func constructToolButton(_ tool: ConstructTool) -> some View {
+        let active = state.constructTool == tool
+        return Button { state.setConstructTool(tool) } label: {
+            VStack(spacing: 3) {
+                Image(systemName: tool.icon).font(.system(size: 15))
+                Text(tool.label).font(.system(size: 8.5)).lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PlainButtonStyle())
+        .background(active ? Color.bg_selected : Color.clear)
+        .foregroundColor(active ? Color.accent : Color.text_secondary)
+        .help(constructToolHelp(tool))
     }
 
     private func constructToolHelp(_ tool: ConstructTool) -> String {
