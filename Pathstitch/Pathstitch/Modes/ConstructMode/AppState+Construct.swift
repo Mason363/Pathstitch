@@ -30,6 +30,62 @@ extension AppState {
         enterConstructMode()
     }
 
+    // MARK: - Guided one-click helpers (Phase 2)
+
+    /// One-click "Assemble": fold every still-flat fold to 90° (the natural box/
+    /// upright pose) without disturbing angles the user already set. Hobbyist path.
+    func assembleAll() {
+        guard !constructFolds.isEmpty else { return }
+        pushConstructUndo()
+        for i in constructFolds.indices where constructFolds[i].angleDeg == 0 {
+            constructFolds[i].angleDeg = 90
+        }
+        constructFoldStateToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// True when there are unstitched chains that could plausibly be auto-paired.
+    var canAutoStitch: Bool {
+        let seamed = Set(constructSeams.flatMap { [$0.chainA, $0.chainB] })
+        return constructHoleChains.filter { !seamed.contains($0.id) }.count >= 2
+    }
+
+    /// Auto-propose seams: greedily pair unstitched chains on *different* panels by
+    /// closest arc-length (a quick local score — no worker round-trips), then create
+    /// a seam for each plausible pair for the user to confirm/adjust. The flagship
+    /// matcher (match_chains) still resolves correspondence per created seam.
+    func autoProposeSeams() {
+        let chains = constructHoleChains
+        func arclen(_ c: HoleChain) -> Double {
+            guard c.holes.count > 1 else { return 0 }
+            var s = 0.0
+            for k in 0..<(c.holes.count - 1) {
+                s += hypot(c.holes[k+1].x - c.holes[k].x, c.holes[k+1].y - c.holes[k].y)
+            }
+            if c.closed, let f = c.holes.first, let l = c.holes.last { s += hypot(l.x - f.x, l.y - f.y) }
+            return s
+        }
+        let lens = Dictionary(uniqueKeysWithValues: chains.map { ($0.id, arclen($0)) })
+        var used = Set(constructSeams.flatMap { [$0.chainA, $0.chainB] })
+        var cands: [(score: Double, a: Int, b: Int)] = []
+        for i in 0..<chains.count {
+            for j in (i+1)..<chains.count {
+                let A = chains[i], B = chains[j]
+                if A.panelId == B.panelId { continue }
+                let la = lens[A.id] ?? 0, lb = lens[B.id] ?? 0, m = max(la, lb, 1e-6)
+                let score = abs(la - lb) / m
+                if score < 0.25 { cands.append((score, A.id, B.id)) }   // plausible match
+            }
+        }
+        cands.sort { $0.score < $1.score }
+        var created = 0
+        for c in cands where !used.contains(c.a) && !used.contains(c.b) {
+            createStitch(chainA: c.a, chainB: c.b)   // each pushes undo + runs the matcher
+            used.insert(c.a); used.insert(c.b); created += 1
+        }
+        if created == 0 { errorMessage = "No clearly-matching seams found. Stitch chains manually." }
+    }
+
     /// Assigns how an engulfed area is treated ("stamp" | "patch" | "cutout" |
     /// "independent") and rebuilds so it takes effect. Drives the overlap chooser.
     func setAreaTreatment(inner: String, mode: String) {

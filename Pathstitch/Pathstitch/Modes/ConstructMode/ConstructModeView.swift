@@ -204,13 +204,21 @@ struct ConstructModeView: View {
                     // have an obvious header tying icon → name → next step.
                     stepCard
 
+                    // One-click: fold every flat fold up to 90° (box/upright pose).
+                    Button { state.assembleAll() } label: {
+                        HStack { Image(systemName: "shippingbox"); Text("Assemble") }
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(PlasticityButtonStyle(isEnabled: !state.constructFolds.isEmpty))
+                    .disabled(state.constructFolds.isEmpty)
+
                     Button {
                         state.buildConstructModel()
                     } label: {
                         HStack { Image(systemName: "arrow.triangle.2.circlepath"); Text("Rebuild from sketch") }
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                    .buttonStyle(.plain).foregroundColor(.text_secondary).font(PlasticityFont.label)
 
                     groundSection
                     foldSection
@@ -355,6 +363,16 @@ struct ConstructModeView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                }
+
+                // One-click: auto-pair likely seams (closest arc-length, different
+                // panels) for the user to confirm/adjust.
+                if state.canAutoStitch {
+                    Button { state.autoProposeSeams() } label: {
+                        HStack { Image(systemName: "wand.and.stars"); Text("Auto-stitch seams") }
+                            .font(PlasticityFont.label)
+                    }
+                    .buttonStyle(.plain).foregroundColor(.accent)
                 }
 
                 if !state.constructSeams.isEmpty {
