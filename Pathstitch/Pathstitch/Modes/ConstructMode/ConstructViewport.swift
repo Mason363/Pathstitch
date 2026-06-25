@@ -23,6 +23,9 @@ struct ConstructViewport: NSViewRepresentable {
     let panelXfToken: Int
     let transformModeToken: Int
     let exportToken: Int
+    let renderToken: Int       // edit ↔ mockup render mode
+    let lightingToken: Int     // studio lighting changes
+    let textureToken: Int      // custom leather texture / tiling
     let snapActive: Bool   // mirrors the 2D snap toggle so changes re-push live
     let homeToken: Int
     var state: AppState
@@ -69,6 +72,9 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushTransformMode()
         context.coordinator.pushSnap()
         context.coordinator.pushExport()
+        context.coordinator.pushRenderMode()
+        context.coordinator.pushLighting()
+        context.coordinator.pushTexture()
         context.coordinator.pushHome()
     }
 
@@ -88,6 +94,9 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastPanelXfToken = -1
         private var lastTransformModeToken = -1
         private var lastExportToken = -1
+        private var lastRenderToken = -1
+        private var lastLightingToken = -1
+        private var lastTextureToken = -1
         private var lastSnap: Bool? = nil
         private var lastHomeToken = -1
 
@@ -126,6 +135,12 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushPanelXf()
                     self.pushTransformMode()
                     self.pushSnap()
+                    self.lastRenderToken = -1
+                    self.lastLightingToken = -1
+                    self.lastTextureToken = -1
+                    self.pushRenderMode()
+                    self.pushLighting()
+                    self.pushTexture()
                 }
             case "selectFold":
                 let panelId = json["panelId"] as? Int ?? 0
@@ -296,6 +311,31 @@ struct ConstructViewport: NSViewRepresentable {
             lastMaterialToken = state.constructMaterialToken
             webView.evaluateJavaScript("setConstructMaterial(\(state.constructMaterialColorInt));", completionHandler: nil)
             webView.evaluateJavaScript("setConstructThickness(\(state.constructThicknessMm));", completionHandler: nil)
+            webView.evaluateJavaScript("setConstructFinish('\(state.constructFinish)');", completionHandler: nil)
+        }
+
+        func pushRenderMode() {
+            guard ready, let webView = webView else { return }
+            guard lastRenderToken != state.constructRenderToken else { return }
+            lastRenderToken = state.constructRenderToken
+            webView.evaluateJavaScript("setConstructRenderMode('\(state.constructRenderMode)');", completionHandler: nil)
+        }
+
+        func pushLighting() {
+            guard ready, let webView = webView else { return }
+            guard lastLightingToken != state.constructLightingToken else { return }
+            lastLightingToken = state.constructLightingToken
+            let esc = Self.escape(state.constructLightingJSON)
+            webView.evaluateJavaScript("setConstructLighting(\"\(esc)\");", completionHandler: nil)
+        }
+
+        func pushTexture() {
+            guard ready, let webView = webView else { return }
+            guard lastTextureToken != state.constructTextureToken else { return }
+            lastTextureToken = state.constructTextureToken
+            let url = state.constructLeatherTextureURL ?? ""
+            let esc = Self.escape(url)
+            webView.evaluateJavaScript("setConstructLeatherTexture(\"\(esc)\", \(state.constructLeatherTiling));", completionHandler: nil)
         }
 
         func pushDecals() {

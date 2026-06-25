@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import UniformTypeIdentifiers
 
 /// Construct-mode logic on AppState: build the bar-and-hinge model from the live
 /// 2D sketch, and push fold / ground controls to the viewport. The interactive
@@ -468,6 +470,115 @@ extension AppState {
     /// Hex string → 0xRRGGBB int for the viewport.
     var constructMaterialColorInt: Int {
         Int(constructMaterialHex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0x8A5A2B
+    }
+
+    // MARK: - Mockup rendering (render mode + finish + custom texture + lighting)
+
+    /// Switches between the editing view and the clean Mockup beauty render.
+    func setConstructRenderMode(_ m: String) {
+        guard m != constructRenderMode else { return }
+        constructRenderMode = m
+        constructRenderToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// Leather finish preset (matte / satin / glossy); pushed with the material.
+    func setConstructFinish(_ name: String) {
+        guard name != constructFinish else { return }
+        constructFinish = name
+        constructMaterialToken += 1   // pushMaterial re-applies finish too
+        hasUnsavedChanges = true
+    }
+
+    /// Opens an image and uses it as the custom leather albedo (tiled, visual-only).
+    func loadConstructLeatherTexture() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { resp in
+            guard resp == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+            let ext = url.pathExtension.lowercased()
+            let mime = ["png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                        "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"][ext] ?? "image/jpeg"
+            let dataURL = "data:\(mime);base64,\(data.base64EncodedString())"
+            DispatchQueue.main.async { self.setConstructLeatherTextureURL(dataURL) }
+        }
+    }
+
+    /// Sets / clears the custom leather texture and pushes it live.
+    func setConstructLeatherTextureURL(_ url: String?) {
+        constructLeatherTextureURL = url
+        constructTextureToken += 1
+        hasUnsavedChanges = true
+    }
+    /// Tiling (repeats per panel) for the custom leather texture.
+    func setConstructLeatherTiling(_ t: Double) {
+        constructLeatherTiling = max(0.25, t)
+        constructTextureToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// {ambient, lights:[{color,intensity,rotation,height,softness,on}]} for the viewport.
+    var constructLightingJSON: String {
+        let lights = constructLights.map { l -> [String: Any] in
+            let c = Int(l.colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0xFFFFFF
+            return ["color": c, "intensity": l.intensity, "rotation": l.rotation,
+                    "height": l.height, "softness": l.softness, "on": l.on]
+        }
+        let payload: [String: Any] = ["ambient": constructAmbient, "lights": lights]
+        guard let d = try? JSONSerialization.data(withJSONObject: payload),
+              let s = String(data: d, encoding: .utf8) else { return "{}" }
+        return s
+    }
+
+    /// Applies one of the named lighting presets (Standard / Diffuse / Top-Left / Right).
+    func applyLightPreset(_ preset: ConstructLightPreset) {
+        constructLights = preset.lights
+        constructAmbient = preset.ambient
+        activeLightIndex = 0
+        constructLightingToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// Mutate the currently-edited light and re-push the lighting live.
+    private func updateActiveLight(_ f: (inout ConstructLight) -> Void) {
+        guard constructLights.indices.contains(activeLightIndex) else { return }
+        f(&constructLights[activeLightIndex])
+        constructLightingToken += 1
+        hasUnsavedChanges = true
+    }
+    func setLightColor(_ hex: String)   { updateActiveLight { $0.colorHex = hex } }
+    func setLightIntensity(_ v: Double)  { updateActiveLight { $0.intensity = v } }
+    func setLightSoftness(_ v: Double)   { updateActiveLight { $0.softness = v } }
+    func setLightOn(_ on: Bool)          { updateActiveLight { $0.on = on } }
+    /// The sphere-drag and the rotation/height sliders both set the light direction.
+    func setLightDirection(rotation: Double, height: Double) {
+        updateActiveLight { $0.rotation = rotation; $0.height = height }
+    }
+    func setActiveLight(_ i: Int) { if constructLights.indices.contains(i) { activeLightIndex = i } }
+    /// Sets the global ambient fill (0 = dramatic … high = flat/soft).
+    func setConstructAmbient(_ v: Double) {
+        constructAmbient = max(0, min(1, v))
+        constructLightingToken += 1
+        hasUnsavedChanges = true
+    }
+    /// Adds a light (copied from the active one) and selects it for editing.
+    func addConstructLight() {
+        var l = constructLights.indices.contains(activeLightIndex) ? constructLights[activeLightIndex] : ConstructLight()
+        l.id = UUID(); l.rotation = (l.rotation + 90).truncatingRemainder(dividingBy: 360)
+        constructLights.append(l)
+        activeLightIndex = constructLights.count - 1
+        constructLightingToken += 1
+        hasUnsavedChanges = true
+    }
+    /// Removes a light (keeps at least one).
+    func removeConstructLight(_ i: Int) {
+        guard constructLights.count > 1, constructLights.indices.contains(i) else { return }
+        constructLights.remove(at: i)
+        activeLightIndex = min(activeLightIndex, constructLights.count - 1)
+        constructLightingToken += 1
+        hasUnsavedChanges = true
     }
 
     /// {panelId: {url, ox, oy, scale, rot, mirror}} for the viewport to re-apply

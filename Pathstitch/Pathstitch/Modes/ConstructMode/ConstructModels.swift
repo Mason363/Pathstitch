@@ -155,6 +155,10 @@ struct MaterialRef: Codable, Hashable {
     var id: String = ""               // PolyHaven slug or bundled name
     var thicknessMm: Double = 2.0
     var colorHex: String = "8A5A2B"   // leather tint
+    // Mockup finish + custom leather texture (optional → older files default).
+    var finish: String? = nil         // "matte" | "satin" | "glossy"
+    var leatherTextureURL: String? = nil  // custom albedo data URL (visual only)
+    var leatherTiling: Double? = nil  // repeats per panel for the custom texture
 }
 
 /// Everything needed to reopen an assembly exactly as posed. Optional in the
@@ -195,6 +199,11 @@ struct ConstructAssembly: Codable {
     /// Per-panel pose override (move/rotate/scale): DXF handle → [tx,ty,tz, qx,qy,
     /// qz,qw, scale]. Pose only — never edits the 2D sketch.
     var panelXf: [String: [Double]]? = nil
+    /// Mockup lighting: the studio lights + ambient + render mode. Optional → older
+    /// files open with the default lighting.
+    var lights: [ConstructLight]? = nil
+    var ambient: Double? = nil
+    var renderMode: String? = nil   // "edit" | "mockup"
 }
 
 /// A full snapshot of the editable assembly state for the panel's own undo/redo
@@ -239,5 +248,61 @@ struct GlueJoint: Codable, Identifiable, Hashable {
         mode = (try? c.decode(String.self, forKey: .mode)) ?? "panel"
         aPt = try? c.decode([Double].self, forKey: .aPt)
         bPt = try? c.decode([Double].self, forKey: .bPt)
+    }
+}
+
+/// One studio light for the Mockup render (Illustrator-style 3D lighting): a colour
+/// + intensity, aimed by `rotation` (azimuth, 0…360°) and `height` (elevation,
+/// 0…90°), with `softness` driving the shadow blur. The first visible light throws
+/// the contact shadow. Visual-only — persisted with the assembly's mockup settings.
+struct ConstructLight: Codable, Hashable, Identifiable {
+    var id: UUID = UUID()
+    var colorHex: String = "FFFFFF"
+    var intensity: Double = 2.2     // ~0…5 (slider shows 0…100%)
+    var rotation: Double = 145      // azimuth degrees
+    var height: Double = 45         // elevation degrees (0 = grazing … 90 = overhead)
+    var softness: Double = 0.4      // 0 = crisp shadow … 1 = very soft
+
+    init(id: UUID = UUID(), colorHex: String = "FFFFFF", intensity: Double = 2.2,
+         rotation: Double = 145, height: Double = 45, softness: Double = 0.4, on: Bool = true) {
+        self.id = id; self.colorHex = colorHex; self.intensity = intensity
+        self.rotation = rotation; self.height = height; self.softness = softness; self.on = on
+    }
+    var on: Bool = true
+}
+
+/// The named lighting setups shown as thumbnails atop the lighting panel (mirrors
+/// Illustrator's Standard / Diffuse / Top-Left / Right presets).
+enum ConstructLightPreset: String, CaseIterable, Identifiable {
+    case standard, diffuse, topLeft, right
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .standard: return "Standard"
+        case .diffuse:  return "Diffuse"
+        case .topLeft:  return "Top Left"
+        case .right:    return "Right"
+        }
+    }
+    var ambient: Double {
+        switch self {
+        case .standard: return 0.26
+        case .diffuse:  return 0.55
+        case .topLeft:  return 0.22
+        case .right:    return 0.24
+        }
+    }
+    var lights: [ConstructLight] {
+        switch self {
+        case .standard:
+            return [ConstructLight(intensity: 2.2, rotation: 135, height: 50, softness: 0.4),
+                    ConstructLight(colorHex: "DCE6FF", intensity: 0.7, rotation: 300, height: 28, softness: 0.85)]
+        case .diffuse:
+            return [ConstructLight(intensity: 1.1, rotation: 145, height: 62, softness: 1.0)]
+        case .topLeft:
+            return [ConstructLight(intensity: 2.5, rotation: 315, height: 55, softness: 0.4)]
+        case .right:
+            return [ConstructLight(intensity: 2.5, rotation: 90, height: 40, softness: 0.45)]
+        }
     }
 }

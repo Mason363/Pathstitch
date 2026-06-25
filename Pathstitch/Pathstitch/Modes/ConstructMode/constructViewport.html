@@ -93,15 +93,50 @@ function makeEnv(){
 }
 try{ scene.environment=makeEnv(); }catch(e){}
 
-scene.add(new THREE.HemisphereLight(0xeaf0ff, 0x3a3f47, 0.55));
-const keyLight=new THREE.DirectionalLight(0xffffff, 2.0);
-keyLight.position.set(180,360,220); keyLight.castShadow=true;
-keyLight.shadow.mapSize.set(2048,2048);
-keyLight.shadow.camera.near=1; keyLight.shadow.camera.far=2500;
-keyLight.shadow.camera.left=-500; keyLight.shadow.camera.right=500;
-keyLight.shadow.camera.top=500; keyLight.shadow.camera.bottom=-500;
-keyLight.shadow.bias=-0.0004; keyLight.shadow.radius=4; scene.add(keyLight);
-const fillLight=new THREE.DirectionalLight(0xffffff,0.35); fillLight.position.set(-220,140,-180); scene.add(fillLight);
+// User-controllable lighting (Illustrator-style): a list of directional lights,
+// each with colour / intensity / rotation(azimuth) / height(elevation) / softness.
+// The first visible light throws the soft contact shadow. A faint hemisphere +
+// ambient give a base fill so nothing is ever pitch-black. Swift pushes the real
+// config via setConstructLighting; we seed a sensible default below.
+const HEMI=new THREE.HemisphereLight(0xeaf0ff, 0x3a3f47, 0.30); scene.add(HEMI);
+const AMBIENT=new THREE.AmbientLight(0xffffff, 0.25); scene.add(AMBIENT);
+let LIGHT_POOL=[];
+function makePoolLight(){ const L=new THREE.DirectionalLight(0xffffff,1); L.castShadow=false; scene.add(L); LIGHT_POOL.push(L); return L; }
+function configShadow(L){
+  L.shadow.mapSize.set(2048,2048);
+  L.shadow.camera.near=1; L.shadow.camera.far=4000;
+  L.shadow.camera.left=-900; L.shadow.camera.right=900;
+  L.shadow.camera.top=900; L.shadow.camera.bottom=-900;
+  L.shadow.bias=-0.0004;
+}
+function lightDir(rotDeg, heightDeg){
+  const az=(rotDeg||0)*Math.PI/180, el=(heightDeg||0)*Math.PI/180;
+  return [Math.cos(el)*Math.sin(az), Math.sin(el), Math.cos(el)*Math.cos(az)];
+}
+// cfg = {ambient, lights:[{color(int), intensity, rotation, height, softness, on}]}
+window.setConstructLighting=function(jsonStr){
+  let cfg; try{ cfg=(typeof jsonStr==="string")?JSON.parse(jsonStr):jsonStr; }catch(e){ return; }
+  const lights=cfg.lights||[];
+  const amb=(cfg.ambient!=null?cfg.ambient:0.25);
+  AMBIENT.intensity=amb; HEMI.intensity=0.15+0.5*amb;
+  while(LIGHT_POOL.length<lights.length) makePoolLight();
+  let caster=-1;
+  for(let i=0;i<LIGHT_POOL.length;i++){
+    const L=LIGHT_POOL[i], c=lights[i];
+    L.castShadow=false;
+    if(!c || c.on===false){ L.visible=false; continue; }
+    L.visible=true; L.color.setHex((c.color>>>0)||0xffffff);
+    L.intensity=(c.intensity!=null?c.intensity:1.8);
+    const d=lightDir(c.rotation, c.height!=null?c.height:45), R=900;
+    L.position.set(d[0]*R, Math.max(d[1],0.12)*R, d[2]*R);
+    if(caster<0){ caster=i;
+      if(!L.userData.shadowCfg){ configShadow(L); L.userData.shadowCfg=true; }
+      L.castShadow=true; L.shadow.radius=1+(c.softness!=null?c.softness:0.4)*10;
+    }
+  }
+};
+makePoolLight();
+window.setConstructLighting({ambient:0.26, lights:[{color:0xffffff,intensity:2.2,rotation:145,height:45,softness:0.4,on:true}]});
 
 // Soft contact shadow on the ground (transparent catcher) + faint grid.
 const shadowCatcher=new THREE.Mesh(new THREE.PlaneGeometry(6000,6000),
@@ -114,32 +149,73 @@ const root=new THREE.Group(); scene.add(root);
 // ---- procedural leather material (built-in, no network) --------------------
 // A repeating grain bump + subtle roughness variation so the leather reads as
 // real material under the IBL. Custom PolyHaven/user maps can replace these.
-let LEATHER_BUMP=null;
+let LEATHER_BUMP=null, LEATHER_ROUGH=null, LEATHER_TEX=null;
 function leatherBump(){
   if(LEATHER_BUMP) return LEATHER_BUMP;
   const S=256, c=document.createElement("canvas"); c.width=c.height=S; const x=c.getContext("2d");
   x.fillStyle="#808080"; x.fillRect(0,0,S,S);
   // pebbled grain: many soft blobs, light and dark
-  for(let i=0;i<2600;i++){
-    const r=1+Math.random()*2.4, gx=Math.random()*S, gy=Math.random()*S;
-    const v=128+(Math.random()*2-1)*70; x.fillStyle="rgba("+(v|0)+","+(v|0)+","+(v|0)+",0.35)";
+  for(let i=0;i<3200;i++){
+    const r=1+Math.random()*2.6, gx=Math.random()*S, gy=Math.random()*S;
+    const v=128+(Math.random()*2-1)*72; x.fillStyle="rgba("+(v|0)+","+(v|0)+","+(v|0)+",0.32)";
     x.beginPath(); x.arc(gx,gy,r,0,6.283); x.fill();
   }
   const tex=new THREE.CanvasTexture(c);
   tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(6,6);
   LEATHER_BUMP=tex; return tex;
 }
+// Subtle roughness variation so specular highlights break up like real grain.
+function leatherRough(){
+  if(LEATHER_ROUGH) return LEATHER_ROUGH;
+  const S=256, c=document.createElement("canvas"); c.width=c.height=S; const x=c.getContext("2d");
+  x.fillStyle="#b0b0b0"; x.fillRect(0,0,S,S);
+  for(let i=0;i<1400;i++){ const r=4+Math.random()*16, gx=Math.random()*S, gy=Math.random()*S;
+    const v=150+(Math.random()*2-1)*70; x.fillStyle="rgba("+(v|0)+","+(v|0)+","+(v|0)+",0.22)";
+    x.beginPath(); x.arc(gx,gy,r,0,6.283); x.fill(); }
+  const tex=new THREE.CanvasTexture(c); tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(4,4);
+  LEATHER_ROUGH=tex; return tex;
+}
+// Finish presets — roughness + clearcoat sheen, from matte veg-tan to glossy patent.
+const FINISHES={ matte:{roughness:0.85,clearcoat:0.04,ccRough:0.6},
+                 satin:{roughness:0.58,clearcoat:0.22,ccRough:0.45},
+                 glossy:{roughness:0.32,clearcoat:0.7,ccRough:0.12} };
+let FINISH=FINISHES.satin;
 function makeLeatherMaterial(hex){
-  const m=new THREE.MeshStandardMaterial({
-    color:hex, roughness:0.62, metalness:0.0, side:THREE.DoubleSide,
-    bumpMap:leatherBump(), bumpScale:0.35, envMapIntensity:0.7,
-    // Flat shading = each rigid region reads as a clean plane and every fold is a
-    // crisp crease — no normals smeared across the hinge (the "mismatched shaders"
-    // the smooth-normal mesh produced). Crease lines are drawn on top.
-    flatShading:true,
+  // MeshPhysicalMaterial = MeshStandard + a clearcoat layer for the leather sheen,
+  // lit by the procedural studio environment. Flat shading keeps every rigid region
+  // a clean plane and sharp folds crisp; rounded fillets read via the bump/normal +
+  // env reflection. Crease lines are still drawn on top in edit mode.
+  const m=new THREE.MeshPhysicalMaterial({
+    color:hex, roughness:FINISH.roughness, metalness:0.0, side:THREE.DoubleSide,
+    bumpMap:leatherBump(), bumpScale:0.22, roughnessMap:leatherRough(),
+    clearcoat:FINISH.clearcoat, clearcoatRoughness:FINISH.ccRough,
+    envMapIntensity:1.0, flatShading:true,
   });
+  if(LEATHER_TEX){ m.map=LEATHER_TEX; m.color.setHex(0xffffff); }
   return m;
 }
+// Switch the leather finish on every panel (matte / satin / glossy).
+window.setConstructFinish=function(name){
+  FINISH=FINISHES[name]||FINISHES.satin;
+  for(const p of PANELS){ if(p.mat){ p.mat.roughness=FINISH.roughness; p.mat.clearcoat=FINISH.clearcoat; p.mat.clearcoatRoughness=FINISH.ccRough; p.mat.needsUpdate=true; } }
+};
+// Custom leather albedo (a photo / seamless texture) tiled across every plain-leather
+// panel; panels carrying artwork keep their own composited map. tiling = repeats per
+// panel. Pass an empty url to clear back to the tinted procedural leather.
+window.setConstructLeatherTexture=function(dataURL, tiling){
+  tiling=(tiling>0?tiling:1);
+  const apply=()=>{ for(const p of PANELS){ if(p.mat && DECALS[p.id]===undefined){
+      p.mat.map=LEATHER_TEX||null; p.mat.color.setHex(LEATHER_TEX?0xffffff:MATERIAL_COLOR); p.mat.needsUpdate=true; } } };
+  if(!dataURL){ if(LEATHER_TEX){ LEATHER_TEX.dispose(); LEATHER_TEX=null; } apply(); return; }
+  const img=new Image();
+  img.onload=function(){
+    const tex=new THREE.Texture(img); tex.needsUpdate=true;
+    tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(tiling,tiling);
+    tex.encoding=THREE.sRGBEncoding; tex.anisotropy=4;
+    if(LEATHER_TEX) LEATHER_TEX.dispose(); LEATHER_TEX=tex; apply();
+  };
+  img.src=dataURL;
+};
 
 // ---- model state ----------------------------------------------------------
 let MODEL=null;           // {panels:[...], groundPanel}
@@ -653,21 +729,49 @@ function foldPanel(panel){
   const T=panel.tree;
   // start from flat rest
   for(let i=0;i<panel.X.length;i++){ const r=panel.rest3[i]; panel.X[i][0]=r[0]; panel.X[i][1]=r[1]; panel.X[i][2]=r[2]; }
-  // forward fold each non-root region about its parent fold, in BFS order
+  // Forward-fold each non-root region about its parent fold, in BFS order. Each
+  // fold is a developable BEND: at roundness 0 it's an exact rigid (knife-sharp)
+  // rotation of the subtree; with roundness it becomes a true circular fillet on
+  // the child side while the parent/base stays perfectly flat — a real radius,
+  // zero stretch (the perpendicular profile is arc-length-preserving and the
+  // along-hinge coordinate is untouched). The far field is the same rigid rotation,
+  // just translated by the arc, so descendant folds keep composing correctly.
   for(const r of T.order){
     if(T.parent[r]<0) continue;
     const fid=T.parentFold[r];
     const key=panel.id+"-"+fid;
     let deg=CONTROLS.foldAngle[key]||0; if(!deg) continue;
+    const A=deg*Math.PI/180; if(Math.abs(A)<1e-6) continue;
     const ax=T.parentVerts[r]; if(!ax) continue;
-    const a=panel.X[ax[0]], b=panel.X[ax[1]];
-    let u=norm(sub(b,a)); const o=a;
-    // orient axis so +angle lifts the subtree (+y), matching the inspector
-    const sub_=T.subtree[r]; let cen=[0,0,0],cn=0; sub_.forEach(v=>{ cen=add(cen,panel.X[v]); cn++; }); cen=scl(cen,1/Math.max(cn,1));
-    const test=rotAbout(cen,o,u, 0.05);
-    if(test[1]-cen[1] < 0) u=scl(u,-1);
-    const t=deg*Math.PI/180;
-    sub_.forEach(v=>{ const np=rotAbout(panel.X[v],o,u,t); panel.X[v][0]=np[0]; panel.X[v][1]=np[1]; panel.X[v][2]=np[2]; });
+    const o=panel.X[ax[0]];
+    let u=norm(sub(panel.X[ax[1]], o));        // hinge axis (in current/folded space)
+    const sub_=T.subtree[r];
+    // lift sign: orient u so +deg sends the subtree up (+y), matching the slider.
+    let cen=[0,0,0],cn=0; sub_.forEach(v=>{ cen=add(cen,panel.X[v]); cn++; }); cen=scl(cen,1/Math.max(cn,1));
+    if(rotAbout(cen,o,u,0.05)[1]-cen[1] < 0) u=scl(u,-1);
+    // a = in-plane perpendicular toward the child region; n = u×a is the lift normal,
+    // so a small +rotation about u sends a→cos·a+sin·n (matches the rigid fold).
+    let aDir=sub(cen,o); aDir=sub(aDir, scl(u, dot(aDir,u)));
+    const al=len(aDir); aDir = al<1e-9 ? [1,0,0] : scl(aDir,1/al);
+    const nDir=norm(cross(u,aDir));
+    // Fillet band: roundness consumes a strip of width W of the child region's
+    // material next to the hinge; r = W/|A| is the true bend radius.
+    const round=(CONTROLS.foldRound&&CONTROLS.foldRound[key])||0;
+    let dmax=0; for(const v of T.region[r].verts){ const d=dot(sub(panel.X[v],o),aDir); if(d>dmax) dmax=d; }
+    const W = round>0 ? round*dmax*0.8 : 0;
+    const WA = W/A, cosA=Math.cos(A), sinA=Math.sin(A);
+    const Epa = WA*sinA, Epn = WA*(1-cosA);    // arc end-point (→ 0 when W=0 ⇒ rigid)
+    for(const v of sub_){
+      const rel=sub(panel.X[v],o);
+      const along=dot(rel,u), d=dot(rel,aDir);
+      let pa, pn;
+      if(W>0 && d>0 && d<W){ const th=A*(d/W); pa=WA*Math.sin(th); pn=WA*(1-Math.cos(th)); }
+      else if(d<=0){ pa=d; pn=0; }
+      else { pa=Epa+(d-W)*cosA; pn=Epn+(d-W)*sinA; }
+      panel.X[v][0]=o[0]+along*u[0]+pa*aDir[0]+pn*nDir[0];
+      panel.X[v][1]=o[1]+along*u[1]+pa*aDir[1]+pn*nDir[1];
+      panel.X[v][2]=o[2]+along*u[2]+pa*aDir[2]+pn*nDir[2];
+    }
   }
   // PBD distance relax: keep the root region (base / pinned ground) anchored;
   // project every bar to rest length so curved folds settle without stretching.
@@ -679,52 +783,6 @@ function foldPanel(panel){
       const wa=pinned.has(a)?0:1, wb=pinned.has(b)?0:1; const wsum=wa+wb; if(wsum===0) continue;
       const dx=sub(panel.X[b],panel.X[a]); const d=len(dx)||1e-9; const s=(d-rest)/d;
       const ca=scl(dx, (wa/wsum)*s), cb=scl(dx, (wb/wsum)*s);
-      if(wa){ panel.X[a][0]+=ca[0]; panel.X[a][1]+=ca[1]; panel.X[a][2]+=ca[2]; }
-      if(wb){ panel.X[b][0]-=cb[0]; panel.X[b][1]-=cb[1]; panel.X[b][2]-=cb[2]; }
-    }
-  }
-}
-// Per-fold roundness: after the sharp kinematic fold, relax the interior band of
-// vertices around each rounded hinge onto a smooth arc and re-project the bars, so
-// the crease reads as a real radius (band width ∝ roundness) and never stretches.
-function roundFolds(panel){
-  if(!panel.nbr || !CONTROLS.foldRound) return;
-  // panel rest span (for band-width scaling)
-  let mnx=1e18,mny=1e18,mnz=1e18,mxx=-1e18,mxy=-1e18,mxz=-1e18;
-  for(const r of panel.rest3){ if(r[0]<mnx)mnx=r[0]; if(r[1]<mny)mny=r[1]; if(r[2]<mnz)mnz=r[2]; if(r[0]>mxx)mxx=r[0]; if(r[1]>mxy)mxy=r[1]; if(r[2]>mxz)mxz=r[2]; }
-  const span=Math.hypot(mxx-mnx,mxy-mny,mxz-mnz)||1;
-  // For each rounded, actually-folded hinge: collect interior verts within band of
-  // its (rest) hinge line.
-  const band=new Set(); let any=false;
-  const seen={};
-  for(const h of panel.hinges){
-    if(h.foldId<0) continue; const key=panel.id+"-"+h.foldId;
-    if(seen[h.foldId]) continue;
-    const round=CONTROLS.foldRound[key]||0, deg=CONTROLS.foldAngle[key]||0;
-    if(round<=0 || Math.abs(deg)<3) continue;
-    seen[h.foldId]=true; any=true;
-    const A=panel.rest3[h.v0], B=panel.rest3[h.v1]; const u=norm(sub(B,A));
-    const hw=round*Math.min(40, span*0.28);   // band half-width (mm)
-    for(let i=0;i<panel.X.length;i++){ if(panel.boundary.has(i)) continue;
-      const ap=sub(panel.rest3[i],A); const proj=dot(ap,u); const perp=sub(ap,scl(u,proj));
-      if(len(perp)<hw) band.add(i);
-    }
-  }
-  if(!any || !band.size) return;
-  // Laplacian-smooth only the band (folded coords), re-project bars holding the
-  // rest of the panel fixed → rounds the crease with zero net stretch.
-  const passes=10, lambda=0.5;
-  for(let it=0; it<passes; it++){
-    const tmp=[];
-    for(const i of band){ const nb=panel.nbr[i]; if(!nb.length) continue;
-      let cx=0,cy=0,cz=0; for(const j of nb){ cx+=panel.X[j][0]; cy+=panel.X[j][1]; cz+=panel.X[j][2]; } const m=nb.length;
-      tmp.push([i, panel.X[i][0]+lambda*(cx/m-panel.X[i][0]), panel.X[i][1]+lambda*(cy/m-panel.X[i][1]), panel.X[i][2]+lambda*(cz/m-panel.X[i][2])]);
-    }
-    for(const [i,x,y,z] of tmp){ panel.X[i][0]=x; panel.X[i][1]=y; panel.X[i][2]=z; }
-    for(let s=0;s<4;s++) for(const [a,b,rest] of panel.edges){
-      const wa=band.has(a)?1:0, wb=band.has(b)?1:0; const wsum=wa+wb; if(wsum===0) continue;
-      const dx=sub(panel.X[b],panel.X[a]); const dd=len(dx)||1e-9; const sc=(dd-rest)/dd;
-      const ca=scl(dx,(wa/wsum)*sc), cb=scl(dx,(wb/wsum)*sc);
       if(wa){ panel.X[a][0]+=ca[0]; panel.X[a][1]+=ca[1]; panel.X[a][2]+=ca[2]; }
       if(wb){ panel.X[b][0]-=cb[0]; panel.X[b][1]-=cb[1]; panel.X[b][2]-=cb[2]; }
     }
@@ -784,8 +842,7 @@ window.gatherConstructExport=function(){
   return JSON.stringify({ regions:regs, thickness:THICKNESS });
 };
 function recomputePose(){
-  for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically
-  for(const panel of PANELS) roundFolds(panel);  // soften creases per-fold (no stretch)
+  for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically (rounded fillets included)
   solveStitches();                                // seat & sew panels together
   // Raised patches sit just above their container (re-applied each pose, so no
   // drift). World-up offset reads right for the common flat-area pocket case.
@@ -799,6 +856,7 @@ function recomputePose(){
   reportStretch();
   postSeamFit();
   postReadouts();
+  if(typeof applyRenderMode==="function") applyRenderMode();   // re-hide overlays in mockup
   // Keep the gizmo on its panel as the pose changes (but never while dragging it).
   if(gizmoPanel && gizmoPanel.seatCentroid && !tcontrols.dragging){
     const c=gizmoPanel.seatCentroid, xf=gizmoPanel.userXf;
@@ -966,10 +1024,37 @@ function reportStretch(){
 // Mockup material controls (Phase 4).
 window.setConstructMaterial=function(hex){
   if(hex!=null) MATERIAL_COLOR=hex>>>0;
-  // panels showing artwork keep white (the map is their albedo); others tint.
-  for(const p of PANELS){ if(p.mat && DECALS[p.id]===undefined) p.mat.color.setHex(MATERIAL_COLOR); }
+  // panels showing artwork or a custom texture keep white (the map is their albedo);
+  // plain-leather panels take the tint.
+  for(const p of PANELS){ if(p.mat && DECALS[p.id]===undefined && !LEATHER_TEX) p.mat.color.setHex(MATERIAL_COLOR); }
 };
 window.setConstructThickness=function(t){ THICKNESS=Math.max(0, t||0); needsPose=true; };
+
+// ---- render mode: Edit vs Mockup ------------------------------------------
+// Mockup hides every editing overlay (grid, panel outlines, crease lines, hole
+// markers, chain lines, gizmo, snap dot) for a clean beauty shot, and swaps in a
+// soft studio backdrop. Stitching thread + tooled stamps stay — they're part of
+// the finished piece. Re-applied after each pose so rebuilt overlays inherit it.
+let RENDER_MODE="edit", STUDIO_BG=null;
+function studioBG(){
+  if(STUDIO_BG) return STUDIO_BG;
+  const c=document.createElement("canvas"); c.width=16; c.height=256; const g=c.getContext("2d");
+  const grd=g.createLinearGradient(0,0,0,256);
+  grd.addColorStop(0,"#474c55"); grd.addColorStop(0.5,"#2c2f34"); grd.addColorStop(1,"#161719");
+  g.fillStyle=grd; g.fillRect(0,0,16,256);
+  STUDIO_BG=new THREE.CanvasTexture(c); return STUDIO_BG;
+}
+function applyRenderMode(){
+  const mock=(RENDER_MODE==="mockup");
+  grid.visible=!mock;
+  for(const p of PANELS){ if(p.wire) p.wire.visible=!mock; if(p.foldLine) p.foldLine.visible=!mock; }
+  if(holeMesh) holeMesh.visible=!mock;
+  if(chainLineMesh) chainLineMesh.visible=!mock;
+  scene.background = mock ? studioBG() : new THREE.Color(0x1e1f22);
+  if(mock){ detachGizmo(); hideSnapIndicator(); hideCreaseMark(); }
+  document.getElementById("hud").style.display = mock ? "none" : "block";
+}
+window.setConstructRenderMode=function(m){ RENDER_MODE=(m==="mockup")?"mockup":"edit"; applyRenderMode(); };
 
 // ---- custom artwork decals (Phase 4) ---------------------------------------
 // A dropped image becomes a transparent overlay riding a panel's mesh (art on
@@ -1036,9 +1121,11 @@ window.setConstructDecals=function(jsonStr){
     if(e!==undefined){
       const url=(typeof e==="string")?e:e.url;
       applyDecalToPanel(p, url, (typeof e==="string")?null:e);
-    } else if(DECALS[p.id]!==undefined){   // remove artwork → back to plain leather
-      if(p.mat.map){ p.mat.map.dispose(); p.mat.map=null; }
-      p.mat.color.setHex(MATERIAL_COLOR); p.mat.needsUpdate=true; delete DECALS[p.id];
+    } else if(DECALS[p.id]!==undefined){   // remove artwork → back to plain leather / texture
+      if(p.mat.map){ p.mat.map.dispose(); p.mat.map=null; }   // the decal's own composited canvas
+      if(LEATHER_TEX){ p.mat.map=LEATHER_TEX; p.mat.color.setHex(0xffffff); }
+      else p.mat.color.setHex(MATERIAL_COLOR);
+      p.mat.needsUpdate=true; delete DECALS[p.id];
     }
   }
 };

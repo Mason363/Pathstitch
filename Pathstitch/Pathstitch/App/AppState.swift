@@ -2063,6 +2063,20 @@ class AppState {
     // art is dropped (or the user clicks a decal'd panel).
     var activeDecalPanel: Int? = nil
 
+    // MARK: Mockup rendering — render mode + leather finish + custom texture +
+    // studio lighting (Illustrator-style). All visual-only, pushed live to the
+    // viewport, and persisted with the assembly.
+    var constructRenderMode: String = "edit"        // "edit" | "mockup"
+    var constructRenderToken: Int = 0
+    var constructFinish: String = "satin"           // matte | satin | glossy (pushed w/ material)
+    var constructLeatherTextureURL: String? = nil   // custom albedo data URL (visual only)
+    var constructLeatherTiling: Double = 2          // repeats of the texture per panel
+    var constructTextureToken: Int = 0
+    var constructLights: [ConstructLight] = ConstructLightPreset.standard.lights
+    var constructAmbient: Double = ConstructLightPreset.standard.ambient
+    var constructLightingToken: Int = 0
+    var activeLightIndex: Int = 0                    // light the inspector controls edit
+
     /// The active panel's framing vector, defaulted when absent.
     func decalXform(_ pid: Int) -> [Double] {
         let v = constructDecalXforms[pid] ?? []
@@ -7097,7 +7111,10 @@ class AppState {
                         folds: constructFolds,
                         material: MaterialRef(source: "bundled", id: "",
                                               thicknessMm: constructThicknessMm,
-                                              colorHex: constructMaterialHex),
+                                              colorHex: constructMaterialHex,
+                                              finish: constructFinish,
+                                              leatherTextureURL: constructLeatherTextureURL,
+                                              leatherTiling: constructLeatherTiling),
                         seams: constructSeams.isEmpty ? nil : constructSeams,
                         holeChains: constructHoleChains.isEmpty ? nil : constructHoleChains,
                         userFolds: constructUserFolds.isEmpty ? nil : constructUserFolds,
@@ -7110,7 +7127,10 @@ class AppState {
                         areaTreatments: constructAreaTreatments.isEmpty ? nil : constructAreaTreatments,
                         baseRegions: constructBaseRegions.isEmpty ? nil :
                             Dictionary(uniqueKeysWithValues: constructBaseRegions.map { (String($0.key), $0.value) }),
-                        panelXf: constructPanelXf.isEmpty ? nil : constructPanelXf)
+                        panelXf: constructPanelXf.isEmpty ? nil : constructPanelXf,
+                        lights: constructLights.isEmpty ? nil : constructLights,
+                        ambient: constructAmbient,
+                        renderMode: constructRenderMode)
             )
 
             let encoder = JSONEncoder()
@@ -7215,7 +7235,13 @@ class AppState {
                 if let mat = asm.material {
                     self.constructThicknessMm = mat.thicknessMm
                     self.constructMaterialHex = mat.colorHex
+                    self.constructFinish = mat.finish ?? "satin"
+                    self.constructLeatherTextureURL = mat.leatherTextureURL
+                    self.constructLeatherTiling = mat.leatherTiling ?? 2
                 }
+                if let lights = asm.lights, !lights.isEmpty { self.constructLights = lights }
+                if let amb = asm.ambient { self.constructAmbient = amb }
+                self.constructRenderMode = asm.renderMode ?? "edit"
                 self.constructDecals = Dictionary(uniqueKeysWithValues:
                     (asm.decals ?? [:]).compactMap { k, v in Int(k).map { ($0, v) } })
                 self.constructDecalXforms = Dictionary(uniqueKeysWithValues:

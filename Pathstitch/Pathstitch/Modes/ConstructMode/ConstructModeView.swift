@@ -22,6 +22,9 @@ struct ConstructModeView: View {
                     panelXfToken: state.constructPanelXfToken,
                     transformModeToken: state.constructTransformModeToken,
                     exportToken: state.constructExportToken,
+                    renderToken: state.constructRenderToken,
+                    lightingToken: state.constructLightingToken,
+                    textureToken: state.constructTextureToken,
                     snapActive: state.snapActive,
                     homeToken: state.triggerConstructHomeToken,
                     state: state
@@ -208,34 +211,44 @@ struct ConstructModeView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // Mirror the viewport HUD so the active tool's controls below
-                    // have an obvious header tying icon → name → next step.
-                    stepCard
+                    // Edit ↔ Mockup. Mockup hides the editing tools and shows the
+                    // material + lighting (presentation) controls instead.
+                    renderModeSection
 
-                    // One-click: fold every flat fold up to 90° (box/upright pose).
-                    Button { state.assembleAll() } label: {
-                        HStack { Image(systemName: "shippingbox"); Text("Assemble") }
-                            .frame(maxWidth: .infinity)
+                    let editing = state.constructRenderMode == "edit"
+                    if editing {
+                        // Mirror the viewport HUD so the active tool's controls below
+                        // have an obvious header tying icon → name → next step.
+                        stepCard
+
+                        // One-click: fold every flat fold up to 90° (box/upright pose).
+                        Button { state.assembleAll() } label: {
+                            HStack { Image(systemName: "shippingbox"); Text("Assemble") }
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PlasticityButtonStyle(isEnabled: !state.constructFolds.isEmpty))
+                        .disabled(state.constructFolds.isEmpty)
+
+                        Button {
+                            state.buildConstructModel()
+                        } label: {
+                            HStack { Image(systemName: "arrow.triangle.2.circlepath"); Text("Rebuild from sketch") }
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.plain).foregroundColor(.text_secondary).font(PlasticityFont.label)
+
+                        if state.constructTool == .move { moveSection }
+                        groundSection
+                        foldSection
+                        seamSection
+                        glueSection
                     }
-                    .buttonStyle(PlasticityButtonStyle(isEnabled: !state.constructFolds.isEmpty))
-                    .disabled(state.constructFolds.isEmpty)
 
-                    Button {
-                        state.buildConstructModel()
-                    } label: {
-                        HStack { Image(systemName: "arrow.triangle.2.circlepath"); Text("Rebuild from sketch") }
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.plain).foregroundColor(.text_secondary).font(PlasticityFont.label)
-
-                    if state.constructTool == .move { moveSection }
-                    groundSection
-                    foldSection
-                    seamSection
-                    glueSection
                     materialSection
+                    ConstructLightingView(state: state)
+
                     readoutsSection
-                    stretchSection
+                    if editing { stretchSection }
                 }
                 .padding(14)
             }
@@ -243,9 +256,31 @@ struct ConstructModeView: View {
         }
     }
 
+    // MARK: Render mode — Edit (working) vs Mockup (clean beauty render)
+
+    private let renderModes: [(String, String)] = [("edit", "Edit"), ("mockup", "Mockup")]
+
+    private var renderModeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("", selection: Binding(
+                get: { state.constructRenderMode },
+                set: { state.setConstructRenderMode($0) })) {
+                ForEach(renderModes, id: \.0) { key, label in Text(label).tag(key) }
+            }
+            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
+            Text(state.constructRenderMode == "mockup"
+                 ? "Mockup — clean render with editing overlays hidden. Tune the leather and lighting below."
+                 : "Edit — fold lines, holes and gizmos shown for building. Switch to Mockup for a beauty render.")
+                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private let transformModes: [(String, String)] = [
         ("translate", "Move"), ("rotate", "Rotate"), ("scale", "Scale")
     ]
+
+    private let finishes: [(String, String)] = [("matte", "Matte"), ("satin", "Satin"), ("glossy", "Glossy")]
 
     private var moveSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -281,19 +316,34 @@ struct ConstructModeView: View {
     private var foldSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Folds")
+            // Always shown — answers "what actually makes a line a fold?" A plain
+            // line crossing a shape is NOT auto-folded (that would bend cut lines and
+            // guides too); you mark it, so folds are deliberate.
+            Text("A fold line is a line on the **FOLD / CREASE layer**, or one you draw with the **Crease tool**. A plain line crossing a panel stays just a line until you mark it.")
+                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
             if state.constructFolds.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("No fold lines yet. Two ways to add them:")
+                    Text("No fold lines yet. Two ways to add one:")
                         .font(PlasticityFont.label).foregroundColor(.text_secondary)
-                    Text("• In 2D: draw a LINE, then move it to a layer named FOLD or CREASE (Layers panel). Back here, press Rebuild.")
+                    Text("• In 2D: draw a LINE → right-click → “Make Fold Line” (or move it to a FOLD layer), then press Rebuild.")
                         .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
-                    Text("• In 3D: pick the Crease tool and click two points across a panel.")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("• In 3D: use the Crease tool below and click two points across a panel.")
                         .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 ForEach(state.constructFolds) { spec in
                     foldRow(spec)
                 }
+            }
+            if state.constructTool != .crease {
+                Button { state.setConstructTool(.crease) } label: {
+                    HStack { Image(systemName: ConstructTool.crease.icon); Text("Add fold (Crease tool)") }
+                        .font(PlasticityFont.label)
+                }
+                .buttonStyle(.plain).foregroundColor(.accent)
             }
             if state.constructTool == .crease {
                 Text("Crease tool — click a start point, then an end point across the panel (endpoints snap to corners/edges). The new fold is saved into the 2D sketch on the FOLD layer, so you can edit or delete it back in 2D.")
@@ -567,6 +617,38 @@ struct ConstructModeView: View {
                 onEditingChanged: { began in if began { state.pushConstructUndo() } }
             )
             .controlSize(.small)
+
+            // Finish — surface sheen from matte veg-tan to glossy patent.
+            HStack {
+                Text("Finish").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                Spacer()
+            }
+            Picker("", selection: Binding(
+                get: { state.constructFinish },
+                set: { state.setConstructFinish($0) })) {
+                ForEach(finishes, id: \.0) { key, label in Text(label).tag(key) }
+            }
+            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
+
+            // Custom leather texture — a photo / seamless tile used as the albedo.
+            HStack(spacing: 8) {
+                Button { state.loadConstructLeatherTexture() } label: {
+                    HStack(spacing: 4) { Image(systemName: "photo"); Text(state.constructLeatherTextureURL == nil ? "Custom texture…" : "Replace texture…") }
+                        .font(PlasticityFont.label)
+                }
+                .buttonStyle(.plain).foregroundColor(.accent)
+                if state.constructLeatherTextureURL != nil {
+                    Button { state.setConstructLeatherTextureURL(nil) } label: {
+                        Image(systemName: "xmark.circle").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain).foregroundColor(.text_secondary).help("Remove texture")
+                }
+            }
+            if state.constructLeatherTextureURL != nil {
+                framingSlider("Tiling", value: state.constructLeatherTiling, range: 0.5...8) {
+                    state.setConstructLeatherTiling($0)
+                }
+            }
 
             Divider().background(Color.border_subtle).padding(.vertical, 2)
             artworkSection
