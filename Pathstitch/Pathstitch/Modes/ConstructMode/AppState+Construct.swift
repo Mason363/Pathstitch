@@ -147,10 +147,19 @@ extension AppState {
                         return f
                     })
                     for fid in foldIds.sorted() {
-                        let keep = prior.first { $0.panelId == pid && $0.foldId == fid }?.angleDeg ?? 0
-                        newFolds.append(FoldSpec(panelId: pid, foldId: fid, angleDeg: keep))
+                        let kept = prior.first { $0.panelId == pid && $0.foldId == fid }
+                        newFolds.append(FoldSpec(panelId: pid, foldId: fid,
+                                                 angleDeg: kept?.angleDeg ?? 0,
+                                                 roundness: kept?.roundness ?? 0))
                     }
                 }
+
+                // id → DXF handle (this build) so index-keyed refs migrate by stable
+                // handle across rebuilds; allHandles prunes refs to deleted areas.
+                var newIdToHandle: [Int: String] = [:]
+                for p in panels { if let id = p["id"] as? Int { newIdToHandle[id] = (p["handle"] as? String) ?? String(id) } }
+                let newHandleToId = Dictionary(newIdToHandle.map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+                let allHandles = Set((data["allHandles"] as? [String]) ?? [])
 
                 // Sewing-hole chains, auto-detected from the live sketch.
                 var chains: [HoleChain] = []
@@ -179,6 +188,27 @@ extension AppState {
                    let s = String(data: sd, encoding: .utf8) { stampsStr = s }
 
                 await MainActor.run {
+                    // Reconcile index-keyed refs to the rebuilt panels: migrate by
+                    // DXF handle (panel ids renumber after a 2D delete), dropping any
+                    // whose area was deleted in 2D — so nothing ghosts. (No history →
+                    // keep ids that are still valid, e.g. first build after reopen.)
+                    let oldMap = self.constructPanelHandles
+                    func mapId(_ id: Int) -> Int? {
+                        if let h = oldMap[id] { return newHandleToId[h] }
+                        return newIdToHandle[id] != nil ? id : nil
+                    }
+                    self.constructDecals = Dictionary(self.constructDecals.compactMap { k, v in mapId(k).map { ($0, v) } }, uniquingKeysWith: { a, _ in a })
+                    self.constructDecalXforms = Dictionary(self.constructDecalXforms.compactMap { k, v in mapId(k).map { ($0, v) } }, uniquingKeysWith: { a, _ in a })
+                    self.constructBaseRegions = Dictionary(self.constructBaseRegions.compactMap { k, v in mapId(k).map { ($0, v) } }, uniquingKeysWith: { a, _ in a })
+                    self.constructGlues = self.constructGlues.compactMap { g in
+                        guard let a = mapId(g.panelA), let b = mapId(g.panelB) else { return nil }
+                        var gg = g; gg.panelA = a; gg.panelB = b; return gg
+                    }
+                    if let ap = self.activeDecalPanel { self.activeDecalPanel = mapId(ap) }
+                    self.constructIncludeHandles = self.constructIncludeHandles.intersection(allHandles)
+                    self.constructAreaTreatments = self.constructAreaTreatments.filter { allHandles.contains($0.key) }
+                    self.constructPanelHandles = newIdToHandle
+
                     self.constructModelJSON = modelStr
                     self.constructFolds = newFolds
                     self.constructHoleChains = chains

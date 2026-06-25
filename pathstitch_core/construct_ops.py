@@ -573,9 +573,10 @@ def _entity_center(ent) -> Optional[Pt]:
 def _extract_from_dxf(input_path: str,
                       fold_layers: Optional[List[str]],
                       include_handles: Optional[set] = None
-                      ) -> Tuple[List[List[Pt]], List[List[Pt]], List[Pt], List[str]]:
-    """Reads panel outlines, fold-layer lines, sewing-hole centers, and the DXF
-    handle of each panel (parallel to `panels`).
+                      ) -> Tuple[List[List[Pt]], List[List[Pt]], List[Pt], List[str], List[str]]:
+    """Reads panel outlines, fold-layer lines, sewing-hole centers, the DXF handle
+    of each panel (parallel to `panels`), and *all* closed-area handles in the
+    sketch (regardless of the include filter — used to prune stale references).
 
     `include_handles` (optional) restricts which closed areas become panels — to
     their DXF entity handle — so the user can assemble just one selected area.
@@ -589,6 +590,7 @@ def _extract_from_dxf(input_path: str,
 
     panels: List[List[Pt]] = []
     panel_handles: List[str] = []
+    all_handles: List[str] = []
     folds: List[List[Pt]] = []
     holes: List[Pt] = []
     for ent in msp:
@@ -616,11 +618,12 @@ def _extract_from_dxf(input_path: str,
             if layer in fold_set:
                 folds.append(pts)
             elif closed and layer not in _SKIP_LAYERS:
+                all_handles.append(str(ent.dxf.handle))   # every area, pre-filter
                 if include_handles and str(ent.dxf.handle) not in include_handles:
                     continue  # only the user-chosen area(s) become panels
                 panels.append(pts)
                 panel_handles.append(str(ent.dxf.handle))
-    return panels, folds, holes, panel_handles
+    return panels, folds, holes, panel_handles, all_handles
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +656,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     folds_in = args.get("folds") or []
     holes_in = args.get("holes") or []
     panel_handles: List[str] = []
+    all_handles: List[str] = []
 
     if panels_in is None:
         input_path = args.get("input")
@@ -661,11 +665,13 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         inc = args.get("include_handles") or []
         inc_set = {str(h) for h in inc} if inc else None
         try:
-            panels_in, folds_in, holes_in, panel_handles = _extract_from_dxf(input_path, args.get("fold_layers"), inc_set)
+            panels_in, folds_in, holes_in, panel_handles, all_handles = _extract_from_dxf(input_path, args.get("fold_layers"), inc_set)
         except Exception as e:
             return {"status": "error", "message": f"DXF read failed: {e}"}
     if not panel_handles:
         panel_handles = [str(i) for i in range(len(panels_in or []))]
+    if not all_handles:
+        all_handles = list(panel_handles)
 
     # Fold lines the user drew directly in 3D (two points on a panel) — appended
     # so they're triangulated as real hinges just like DXF FOLD-layer folds. A
@@ -827,6 +833,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         "holeChains": hole_chains,
         "engulfed": engulfed,
         "stamps": stamps,
+        "allHandles": all_handles,
     }}
 
 

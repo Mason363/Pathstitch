@@ -2002,6 +2002,11 @@ class AppState {
     var constructBaseRegions: [Int: [Double]] = [:]
     var constructBaseToken: Int = 0
 
+    // Last build's panelId → DXF handle map, so index-keyed refs (decals, base,
+    // glue) can be migrated by stable handle across rebuilds (2D edits renumber
+    // panel ids). Not persisted — rebuilt every assemble.
+    var constructPanelHandles: [Int: String] = [:]
+
     // Overlap handling: per-engulfed-area treatment (inner DXF handle → "stamp" |
     // "patch" | "cutout" | "independent"). Persisted. `pendingEngulfed` holds the
     // detected nestings the user hasn't decided yet (drives the chooser).
