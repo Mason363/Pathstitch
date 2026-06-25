@@ -59,6 +59,9 @@ struct FoldSpec: Codable, Identifiable, Hashable {
     var panelId: Int
     var foldId: Int
     var angleDeg: Double = 0
+    /// 0 = knife-sharp crease … 1 = max rounded radius. Real leather rarely folds
+    /// dead-sharp; this softens the crease over a true radius (no stretch).
+    var roundness: Double = 0
 
     var id: String { "\(panelId)-\(foldId)" }
 }

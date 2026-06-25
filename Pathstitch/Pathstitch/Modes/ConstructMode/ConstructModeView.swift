@@ -327,6 +327,20 @@ struct ConstructModeView: View {
                 onEditingChanged: { began in if began { state.pushConstructUndo() } }
             )
             .controlSize(.small)
+            HStack(spacing: 6) {
+                Image(systemName: "drop").font(.system(size: 9)).foregroundColor(.text_secondary)
+                Slider(
+                    value: Binding(
+                        get: { spec.roundness },
+                        set: { state.setConstructFoldRoundness(spec.id, $0) }),
+                    in: 0...1,
+                    onEditingChanged: { began in if began { state.pushConstructUndo() } }
+                )
+                .controlSize(.mini)
+                Text(spec.roundness < 0.02 ? "sharp" : "round")
+                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
+            }
+            .help("Fold roundness — 0 = sharp crease, 1 = rounded")
         }
         .padding(6)
         .background(selected ? Color.bg_selected : Color.clear)

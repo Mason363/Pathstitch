@@ -294,6 +294,14 @@ extension AppState {
         hasUnsavedChanges = true
     }
 
+    /// Sets a fold's roundness (0 sharp … 1 round) and re-poses.
+    func setConstructFoldRoundness(_ id: FoldSpec.ID, _ r: Double) {
+        guard let i = constructFolds.firstIndex(where: { $0.id == id }) else { return }
+        constructFolds[i].roundness = max(0, min(1, r))
+        constructFoldStateToken += 1
+        hasUnsavedChanges = true
+    }
+
     /// Pins a different panel to the ground plane.
     func setConstructGround(_ panelId: Int) {
         guard panelId != constructGroundPanel else { return }
@@ -441,7 +449,8 @@ extension AppState {
     /// Serialized {groundPanel, folds:[{panelId,foldId,angleDeg}]} for the bridge.
     var constructControlsJSON: String {
         let folds = constructFolds.map {
-            ["panelId": $0.panelId, "foldId": $0.foldId, "angleDeg": $0.angleDeg] as [String: Any]
+            ["panelId": $0.panelId, "foldId": $0.foldId, "angleDeg": $0.angleDeg,
+             "roundness": $0.roundness] as [String: Any]
         }
         let payload: [String: Any] = ["groundPanel": constructGroundPanel,
                                       "folds": folds]

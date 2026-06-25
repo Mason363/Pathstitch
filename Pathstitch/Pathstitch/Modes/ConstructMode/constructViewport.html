@@ -133,7 +133,7 @@ function makeLeatherMaterial(hex){
 let MODEL=null;           // {panels:[...], groundPanel}
 let PANELS=[];            // per-panel runtime: {rest, X, edges, regions, tree, mesh, foldLine, wire}
 let PANEL_BY_ID={};       // id -> panel
-let CONTROLS={ groundPanel:0, foldAngle:{} };  // foldAngle["pid-fid"]=deg
+let CONTROLS={ groundPanel:0, foldAngle:{}, foldRound:{} };  // foldAngle["pid-fid"]=deg, foldRound=0..1
 let TOOL="select";
 let needsPose=false, hudT=0;
 
@@ -587,8 +587,55 @@ function foldPanel(panel){
     }
   }
 }
+// Per-fold roundness: after the sharp kinematic fold, relax the interior band of
+// vertices around each rounded hinge onto a smooth arc and re-project the bars, so
+// the crease reads as a real radius (band width ∝ roundness) and never stretches.
+function roundFolds(panel){
+  if(!panel.nbr || !CONTROLS.foldRound) return;
+  // panel rest span (for band-width scaling)
+  let mnx=1e18,mny=1e18,mnz=1e18,mxx=-1e18,mxy=-1e18,mxz=-1e18;
+  for(const r of panel.rest3){ if(r[0]<mnx)mnx=r[0]; if(r[1]<mny)mny=r[1]; if(r[2]<mnz)mnz=r[2]; if(r[0]>mxx)mxx=r[0]; if(r[1]>mxy)mxy=r[1]; if(r[2]>mxz)mxz=r[2]; }
+  const span=Math.hypot(mxx-mnx,mxy-mny,mxz-mnz)||1;
+  // For each rounded, actually-folded hinge: collect interior verts within band of
+  // its (rest) hinge line.
+  const band=new Set(); let any=false;
+  const seen={};
+  for(const h of panel.hinges){
+    if(h.foldId<0) continue; const key=panel.id+"-"+h.foldId;
+    if(seen[h.foldId]) continue;
+    const round=CONTROLS.foldRound[key]||0, deg=CONTROLS.foldAngle[key]||0;
+    if(round<=0 || Math.abs(deg)<3) continue;
+    seen[h.foldId]=true; any=true;
+    const A=panel.rest3[h.v0], B=panel.rest3[h.v1]; const u=norm(sub(B,A));
+    const hw=round*Math.min(40, span*0.28);   // band half-width (mm)
+    for(let i=0;i<panel.X.length;i++){ if(panel.boundary.has(i)) continue;
+      const ap=sub(panel.rest3[i],A); const proj=dot(ap,u); const perp=sub(ap,scl(u,proj));
+      if(len(perp)<hw) band.add(i);
+    }
+  }
+  if(!any || !band.size) return;
+  // Laplacian-smooth only the band (folded coords), re-project bars holding the
+  // rest of the panel fixed → rounds the crease with zero net stretch.
+  const passes=10, lambda=0.5;
+  for(let it=0; it<passes; it++){
+    const tmp=[];
+    for(const i of band){ const nb=panel.nbr[i]; if(!nb.length) continue;
+      let cx=0,cy=0,cz=0; for(const j of nb){ cx+=panel.X[j][0]; cy+=panel.X[j][1]; cz+=panel.X[j][2]; } const m=nb.length;
+      tmp.push([i, panel.X[i][0]+lambda*(cx/m-panel.X[i][0]), panel.X[i][1]+lambda*(cy/m-panel.X[i][1]), panel.X[i][2]+lambda*(cz/m-panel.X[i][2])]);
+    }
+    for(const [i,x,y,z] of tmp){ panel.X[i][0]=x; panel.X[i][1]=y; panel.X[i][2]=z; }
+    for(let s=0;s<4;s++) for(const [a,b,rest] of panel.edges){
+      const wa=band.has(a)?1:0, wb=band.has(b)?1:0; const wsum=wa+wb; if(wsum===0) continue;
+      const dx=sub(panel.X[b],panel.X[a]); const dd=len(dx)||1e-9; const sc=(dd-rest)/dd;
+      const ca=scl(dx,(wa/wsum)*sc), cb=scl(dx,(wb/wsum)*sc);
+      if(wa){ panel.X[a][0]+=ca[0]; panel.X[a][1]+=ca[1]; panel.X[a][2]+=ca[2]; }
+      if(wb){ panel.X[b][0]-=cb[0]; panel.X[b][1]-=cb[1]; panel.X[b][2]-=cb[2]; }
+    }
+  }
+}
 function recomputePose(){
   for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically
+  for(const panel of PANELS) roundFolds(panel);  // soften creases per-fold (no stretch)
   solveStitches();                                // seat & sew panels together
   // Raised patches sit just above their container (re-applied each pose, so no
   // drift). World-up offset reads right for the common flat-area pocket case.
@@ -941,8 +988,8 @@ function clearCreasePreview(){ if(creaseLine) creaseLine.visible=false; }
 window.setConstructControls=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   CONTROLS.groundPanel=c.groundPanel||0;
-  CONTROLS.foldAngle={};
-  for(const f of (c.folds||[])) CONTROLS.foldAngle[f.panelId+"-"+f.foldId]=f.angleDeg||0;
+  CONTROLS.foldAngle={}; CONTROLS.foldRound={};
+  for(const f of (c.folds||[])){ const k=f.panelId+"-"+f.foldId; CONTROLS.foldAngle[k]=f.angleDeg||0; CONTROLS.foldRound[k]=f.roundness||0; }
   needsPose=true;
 };
 window.setConstructTool=function(t){
