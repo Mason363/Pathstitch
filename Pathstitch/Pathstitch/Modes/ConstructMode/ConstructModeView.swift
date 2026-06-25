@@ -135,9 +135,21 @@ struct ConstructModeView: View {
 
     private var inspector: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
                 Text("Construct").font(PlasticityFont.header).foregroundColor(.text_primary)
                 Spacer()
+                Button { state.undoConstruct() } label: {
+                    Image(systemName: "arrow.uturn.backward").font(.system(size: 12))
+                }
+                .buttonStyle(.plain).disabled(!state.canUndoConstruct)
+                .foregroundColor(state.canUndoConstruct ? .text_secondary : .text_secondary.opacity(0.3))
+                .help("Undo (⌘Z)")
+                Button { state.redoConstruct() } label: {
+                    Image(systemName: "arrow.uturn.forward").font(.system(size: 12))
+                }
+                .buttonStyle(.plain).disabled(!state.canRedoConstruct)
+                .foregroundColor(state.canRedoConstruct ? .text_secondary : .text_secondary.opacity(0.3))
+                .help("Redo (⇧⌘Z)")
                 Button { state.constructHome() } label: {
                     Image(systemName: "house").font(.system(size: 12))
                 }
@@ -263,7 +275,8 @@ struct ConstructModeView: View {
                     get: { spec.angleDeg },
                     set: { state.setConstructFoldAngle(spec.id, $0) }
                 ),
-                in: -180...180, step: 1
+                in: -180...180, step: 1,
+                onEditingChanged: { began in if began { state.pushConstructUndo() } }
             )
             .controlSize(.small)
         }
@@ -419,7 +432,8 @@ struct ConstructModeView: View {
                 value: Binding(
                     get: { state.constructThicknessMm },
                     set: { state.setConstructThickness($0) }),
-                in: 0.5...8, step: 0.1
+                in: 0.5...8, step: 0.1,
+                onEditingChanged: { began in if began { state.pushConstructUndo() } }
             )
             .controlSize(.small)
 
@@ -495,7 +509,8 @@ struct ConstructModeView: View {
                 Text(unit == "°" ? "\(Int(value))\(unit)" : String(format: "%.2f", value))
                     .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
             }
-            Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range)
+            Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range,
+                   onEditingChanged: { began in if began { state.pushConstructUndo() } })
                 .controlSize(.small)
         }
     }

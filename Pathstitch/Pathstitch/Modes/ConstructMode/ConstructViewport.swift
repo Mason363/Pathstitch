@@ -130,6 +130,7 @@ struct ConstructViewport: NSViewRepresentable {
                 let dataURL = json["dataURL"] as? String ?? ""
                 DispatchQueue.main.async {
                     if panelId >= 0 && !dataURL.isEmpty {
+                        self.state.pushConstructUndo()
                         self.state.constructDecals[panelId] = dataURL
                         if self.state.constructDecalXforms[panelId] == nil {
                             self.state.constructDecalXforms[panelId] = [0, 0, 1, 0, 0]  // centred, full, upright

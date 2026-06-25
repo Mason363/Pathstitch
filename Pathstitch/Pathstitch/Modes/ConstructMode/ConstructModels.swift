@@ -180,6 +180,20 @@ struct ConstructAssembly: Codable {
     var decalFrames: [String: [Double]]? = nil
 }
 
+/// A full snapshot of the editable assembly state for the panel's own undo/redo
+/// stack (separate from the 2D DXF history). Cheap to copy — all value types.
+struct ConstructUndoState {
+    var groundPanel: Int
+    var folds: [FoldSpec]
+    var seams: [StitchSeam]
+    var glues: [GlueJoint]
+    var userFolds: [ConstructUserFold]
+    var materialHex: String
+    var thicknessMm: Double
+    var decals: [Int: String]
+    var decalXforms: [Int: [Double]]
+}
+
 /// A glue/weld join: panel B is seated onto panel A where their edges meet and
 /// held rigidly coincident (no thread). For glue-tab designs.
 struct GlueJoint: Codable, Identifiable, Hashable {

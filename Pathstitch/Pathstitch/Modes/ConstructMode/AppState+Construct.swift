@@ -108,6 +108,73 @@ extension AppState {
         }
     }
 
+    // MARK: - Assembly undo/redo (the panel's own history)
+
+    var canUndoConstruct: Bool { !constructUndoStack.isEmpty }
+    var canRedoConstruct: Bool { !constructRedoStack.isEmpty }
+
+    private func snapshotConstruct() -> ConstructUndoState {
+        ConstructUndoState(groundPanel: constructGroundPanel, folds: constructFolds,
+                           seams: constructSeams, glues: constructGlues,
+                           userFolds: constructUserFolds, materialHex: constructMaterialHex,
+                           thicknessMm: constructThicknessMm, decals: constructDecals,
+                           decalXforms: constructDecalXforms)
+    }
+
+    /// Record the current assembly state before a mutating edit, so Cmd-Z can undo
+    /// it. Coalesce identical back-to-back snapshots (e.g. a slider re-press).
+    func pushConstructUndo() {
+        let snap = snapshotConstruct()
+        if let last = constructUndoStack.last, sameConstruct(last, snap) { return }
+        constructUndoStack.append(snap)
+        if constructUndoStack.count > 100 { constructUndoStack.removeFirst() }
+        constructRedoStack.removeAll()
+    }
+
+    private func sameConstruct(_ a: ConstructUndoState, _ b: ConstructUndoState) -> Bool {
+        a.groundPanel == b.groundPanel && a.folds == b.folds && a.seams == b.seams
+        && a.glues == b.glues && a.userFolds == b.userFolds && a.materialHex == b.materialHex
+        && a.thicknessMm == b.thicknessMm && a.decals == b.decals && a.decalXforms == b.decalXforms
+    }
+
+    private func applyConstruct(_ s: ConstructUndoState) {
+        constructGroundPanel = s.groundPanel
+        constructFolds = s.folds
+        constructSeams = s.seams
+        constructGlues = s.glues
+        constructMaterialHex = s.materialHex
+        constructThicknessMm = s.thicknessMm
+        constructDecals = s.decals
+        constructDecalXforms = s.decalXforms
+        // userFolds change the topology → rebuild; otherwise just re-push controls.
+        let topologyChanged = (s.userFolds != constructUserFolds)
+        constructUserFolds = s.userFolds
+        if selectedFoldId != nil && !constructFolds.contains(where: { $0.id == selectedFoldId }) {
+            selectedFoldId = nil
+        }
+        hasUnsavedChanges = true
+        if topologyChanged {
+            buildConstructModel()
+        } else {
+            constructFoldStateToken += 1
+            constructSeamStateToken += 1
+            constructMaterialToken += 1
+            constructDecalToken += 1
+        }
+    }
+
+    func undoConstruct() {
+        guard let prev = constructUndoStack.popLast() else { return }
+        constructRedoStack.append(snapshotConstruct())
+        applyConstruct(prev)
+    }
+
+    func redoConstruct() {
+        guard let next = constructRedoStack.popLast() else { return }
+        constructUndoStack.append(snapshotConstruct())
+        applyConstruct(next)
+    }
+
     /// Sets a fold's target angle and pushes it live to the solver.
     func setConstructFoldAngle(_ id: FoldSpec.ID, _ deg: Double) {
         guard let i = constructFolds.firstIndex(where: { $0.id == id }) else { return }
@@ -118,6 +185,8 @@ extension AppState {
 
     /// Pins a different panel to the ground plane.
     func setConstructGround(_ panelId: Int) {
+        guard panelId != constructGroundPanel else { return }
+        pushConstructUndo()
         constructGroundPanel = panelId
         constructFoldStateToken += 1   // ground is pushed alongside the fold angles
         hasUnsavedChanges = true
@@ -137,6 +206,8 @@ extension AppState {
 
     /// Sets the mockup leather colour (hex like "8A5A2B") and pushes it live.
     func setConstructMaterialColor(_ hex: String) {
+        guard hex != constructMaterialHex else { return }
+        pushConstructUndo()
         constructMaterialHex = hex
         constructMaterialToken += 1
         hasUnsavedChanges = true
@@ -170,6 +241,7 @@ extension AppState {
 
     /// Removes one panel's artwork (the viewport reconciles the removal).
     func clearConstructDecal(_ pid: Int) {
+        pushConstructUndo()
         constructDecals.removeValue(forKey: pid)
         constructDecalXforms.removeValue(forKey: pid)
         if activeDecalPanel == pid { activeDecalPanel = nil }
@@ -179,6 +251,7 @@ extension AppState {
 
     /// Clears all artwork decals (the viewport reconciles removals).
     func clearConstructDecals() {
+        pushConstructUndo()
         constructDecals.removeAll()
         constructDecalXforms.removeAll()
         activeDecalPanel = nil
@@ -189,6 +262,7 @@ extension AppState {
     /// Adds a fold line drawn in 3D (2D segment in a panel's space) and rebuilds.
     func addConstructUserFold(panelId: Int, x0: Double, y0: Double, x1: Double, y1: Double) {
         guard hypot(x1 - x0, y1 - y0) > 1.0 else { return }   // ignore a stray double-click
+        pushConstructUndo()
         constructUserFolds.append(ConstructUserFold(panelId: panelId, x0: x0, y0: y0, x1: x1, y1: y1))
         hasUnsavedChanges = true
         pendingCreaseSelectPanel = panelId   // select the new fold once the rebuild lands
@@ -198,6 +272,7 @@ extension AppState {
     /// Removes the most recently added 3D fold line.
     func undoLastUserFold() {
         guard !constructUserFolds.isEmpty else { return }
+        pushConstructUndo()
         constructUserFolds.removeLast()
         buildConstructModel()
     }
@@ -218,12 +293,14 @@ extension AppState {
         guard !constructGlues.contains(where: {
             ($0.panelA == panelA && $0.panelB == panelB) ||
             ($0.panelA == panelB && $0.panelB == panelA) }) else { return }
+        pushConstructUndo()
         constructGlues.append(GlueJoint(panelA: panelA, panelB: panelB))
         constructSeamStateToken += 1
         hasUnsavedChanges = true
     }
 
     func removeGlue(_ id: GlueJoint.ID) {
+        pushConstructUndo()
         constructGlues.removeAll { $0.id == id }
         constructSeamStateToken += 1
         hasUnsavedChanges = true
@@ -265,6 +342,7 @@ extension AppState {
               !constructSeams.contains(where: {
                   ($0.chainA == chainA && $0.chainB == chainB) ||
                   ($0.chainA == chainB && $0.chainB == chainA) }) else { return }
+        pushConstructUndo()
         let seam = StitchSeam(chainA: chainA, chainB: chainB)
         constructSeams.append(seam)
         hasUnsavedChanges = true
@@ -337,7 +415,8 @@ extension AppState {
 
     /// Changes how a seam resolves a perimeter mismatch (ease / deform / 1:1).
     func setSeamMode(_ seamId: StitchSeam.ID, _ mode: StitchMode) {
-        guard let i = constructSeams.firstIndex(where: { $0.id == seamId }) else { return }
+        guard let i = constructSeams.firstIndex(where: { $0.id == seamId }), constructSeams[i].mode != mode else { return }
+        pushConstructUndo()
         constructSeams[i].mode = mode
         constructSeamStateToken += 1
         hasUnsavedChanges = true
@@ -345,6 +424,7 @@ extension AppState {
 
     /// Removes a seam (unstitch).
     func removeSeam(_ seamId: StitchSeam.ID) {
+        pushConstructUndo()
         constructSeams.removeAll { $0.id == seamId }
         constructSeamStateToken += 1
         hasUnsavedChanges = true

@@ -1988,6 +1988,11 @@ class AppState {
     // (so the new fold's angle slider is highlighted as confirmation).
     var pendingCreaseSelectPanel: Int? = nil
 
+    // Assembly-panel undo/redo (folds, seams, ground, glue, material, decals).
+    // Separate from the 2D DXF history; driven by Cmd-Z while in construct mode.
+    var constructUndoStack: [ConstructUndoState] = []
+    var constructRedoStack: [ConstructUndoState] = []
+
     // Fold lines added in 3D (re-fed to the triangulator on rebuild) + glue joints.
     var constructUserFolds: [ConstructUserFold] = []
     var constructGlues: [GlueJoint] = []
@@ -2513,6 +2518,9 @@ class AppState {
     }
     
     func undo() {
+        // In assembly mode, Cmd-Z drives the assembly's own undo stack (folds,
+        // seams, ground, glue, material, decals) — not the 2D DXF history.
+        if activeMode == .construct { undoConstruct(); return }
         guard !undoStack.isEmpty else { return }
 
         // A history restore replaces the whole working buffer, so drop any
@@ -2575,6 +2583,7 @@ class AppState {
     }
     
     func redo() {
+        if activeMode == .construct { redoConstruct(); return }
         guard !redoStack.isEmpty else { return }
 
         // See undo(): drop deferred optimistic deletions before a full restore.
