@@ -1657,7 +1657,7 @@ struct DxfCanvasView: View {
         // Draw Snapping Hover Indicator (only when snapping is on)
         if state.snapActive, let hover = hoverCoords {
             let hoverScreen = toScreen(dx: Double(hover.x), dy: Double(hover.y), size: size, bounds: modelBounds)
-            if let snap = getSnappedPoint(for: hoverScreen, size: size, bounds: modelBounds) {
+            if let snap = getSnappedPoint(for: hoverScreen, size: size, bounds: modelBounds, ref: orthoReferencePoint()) {
                 let snapPt = snap.snappedScreenPt
                 let snapRect = CGRect(x: snapPt.x - 4, y: snapPt.y - 4, width: 8, height: 8)
                 var snapPath = SwiftUI.Path()
@@ -4208,6 +4208,7 @@ struct DxfCanvasView: View {
         enum SnapType: String {
             case endpoint = "Endpoint"
             case intersection = "Intersection"
+            case tangent = "Tangent"
             case midpoint = "Midpoint"
             case center = "Center"
             case coincident = "Coincident"
@@ -4266,7 +4267,99 @@ struct DxfCanvasView: View {
         }
     }
     
-    func getSnapCandidates(for queryModelPt: CGPoint) -> [SnapCandidate] {
+    /// An analytic curve used for intersection/tangent osnaps: either a straight
+    /// segment or a circular arc (full circle when the sweep covers 0…360°).
+    private enum SnapCurve {
+        case segment(CGPoint, CGPoint)
+        case arc(center: CGPoint, radius: CGFloat, a0: Double, a1: Double, full: Bool)
+    }
+
+    /// True if `deg` (0…360) lies on the CCW sweep from `a0` to `a1` (degrees).
+    private func angleInArc(_ deg: Double, a0: Double, a1: Double) -> Bool {
+        var s = a0, e = a1
+        if e < s { e += 360 }
+        var t = deg
+        if t < s { t += 360 }
+        return t >= s - 1e-6 && t <= e + 1e-6
+    }
+
+    /// Intersection points of two analytic curves, restricted to each curve's
+    /// extent (segment bounds / arc sweep).
+    private func curveIntersections(_ c1: SnapCurve, _ c2: SnapCurve) -> [CGPoint] {
+        func onArc(_ p: CGPoint, _ center: CGPoint, _ a0: Double, _ a1: Double, _ full: Bool) -> Bool {
+            if full { return true }
+            var deg = atan2(Double(p.y - center.y), Double(p.x - center.x)) * 180.0 / .pi
+            if deg < 0 { deg += 360 }
+            return angleInArc(deg, a0: a0, a1: a1)
+        }
+        switch (c1, c2) {
+        case let (.segment(a, b), .segment(p, q)):
+            if let t = segIntersectParam(a, b, p, q) {
+                return [CGPoint(x: a.x + CGFloat(t) * (b.x - a.x), y: a.y + CGFloat(t) * (b.y - a.y))]
+            }
+            return []
+        case let (.segment(a, b), .arc(center, r, a0, a1, full)),
+             let (.arc(center, r, a0, a1, full), .segment(a, b)):
+            var out: [CGPoint] = []
+            let rx = Double(b.x - a.x), ry = Double(b.y - a.y)
+            let aa = rx*rx + ry*ry
+            if aa < 1e-12 { return [] }
+            let fx = Double(a.x) - Double(center.x), fy = Double(a.y) - Double(center.y)
+            let bb = 2*(fx*rx + fy*ry)
+            let cc = fx*fx + fy*fy - Double(r)*Double(r)
+            let disc = bb*bb - 4*aa*cc
+            if disc < 0 { return [] }
+            let sq = disc.squareRoot()
+            for t in [(-bb - sq)/(2*aa), (-bb + sq)/(2*aa)] {
+                if t < -1e-9 || t > 1 + 1e-9 { continue }
+                let pt = CGPoint(x: a.x + CGFloat(t) * (b.x - a.x), y: a.y + CGFloat(t) * (b.y - a.y))
+                if onArc(pt, center, a0, a1, full) { out.append(pt) }
+            }
+            return out
+        case let (.arc(c1c, r1, s1, e1, f1), .arc(c2c, r2, s2, e2, f2)):
+            let d = hypot(Double(c2c.x - c1c.x), Double(c2c.y - c1c.y))
+            let R1 = Double(r1), R2 = Double(r2)
+            if d < 1e-9 || d > R1 + R2 + 1e-9 || d < abs(R1 - R2) - 1e-9 { return [] }
+            let aMid = (d*d - R2*R2 + R1*R1) / (2*d)
+            let hSq = R1*R1 - aMid*aMid
+            if hSq < 0 { return [] }
+            let h = hSq.squareRoot()
+            let ux = Double(c2c.x - c1c.x) / d, uy = Double(c2c.y - c1c.y) / d
+            let mx = Double(c1c.x) + aMid * ux, my = Double(c1c.y) + aMid * uy
+            var out: [CGPoint] = []
+            for sign in [1.0, -1.0] {
+                let pt = CGPoint(x: mx + sign * h * (-uy), y: my + sign * h * ux)
+                if onArc(pt, c1c, s1, e1, f1) && onArc(pt, c2c, s2, e2, f2) { out.append(pt) }
+                if h < 1e-9 { break }
+            }
+            return out
+        }
+    }
+
+    /// Tangent points on a circle/arc from an external reference point `ref`.
+    private func tangentPoints(from ref: CGPoint, center: CGPoint, radius: CGFloat,
+                               a0: Double, a1: Double, full: Bool) -> [CGPoint] {
+        let dx = Double(ref.x - center.x), dy = Double(ref.y - center.y)
+        let d = hypot(dx, dy)
+        let r = Double(radius)
+        if d <= r + 1e-6 { return [] }   // ref inside/on the circle → no tangent
+        let base = atan2(dy, dx)
+        let off = acos(r / d)
+        var out: [CGPoint] = []
+        for ang in [base + off, base - off] {
+            let pt = CGPoint(x: center.x + CGFloat(r * cos(ang)), y: center.y + CGFloat(r * sin(ang)))
+            if full {
+                out.append(pt)
+            } else {
+                var deg = atan2(Double(pt.y - center.y), Double(pt.x - center.x)) * 180.0 / .pi
+                if deg < 0 { deg += 360 }
+                if angleInArc(deg, a0: a0, a1: a1) { out.append(pt) }
+            }
+        }
+        return out
+    }
+
+    func getSnapCandidates(for queryModelPt: CGPoint, ref: CGPoint? = nil) -> [SnapCandidate] {
         var list: [SnapCandidate] = []
         var layerLookup: [String: DXFLayer] = [:]
         for layer in state.layers {
@@ -4356,47 +4449,74 @@ struct DxfCanvasView: View {
             }
         }
 
-        // Intersection snaps: where two straight edges actually cross. Gather all
-        // visible straight segments, then add the true crossing point of every
-        // pair (skipping points that merely coincide with a shared endpoint —
-        // those are already endpoint snaps).
-        var segs: [(CGPoint, CGPoint)] = []
+        // Intersection & tangent snaps. Gather every visible edge as an analytic
+        // curve (straight segment or circular arc), then add the true crossing of
+        // each pair plus — when a rubber-band reference exists — tangent points on
+        // each circle/arc. Endpoints/vertices of each curve are tracked so a
+        // crossing that merely lands on a shared endpoint (already an endpoint
+        // snap) is skipped.
+        var curves: [SnapCurve] = []
+        var curveEnds: [[CGPoint]] = []
         for ent in state.entities {
             let matched = ent.layerId.flatMap { layerLookup[$0] } ?? layerLookup[ent.layer]
             if !(matched?.visible ?? true) { continue }
             if ent.type == "LINE", let s = ent.start, let e = ent.end {
-                segs.append((CGPoint(x: s[0], y: s[1]), CGPoint(x: e[0], y: e[1])))
+                let a = CGPoint(x: s[0], y: s[1]); let b = CGPoint(x: e[0], y: e[1])
+                curves.append(.segment(a, b)); curveEnds.append([a, b])
+            } else if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
+                let c = CGPoint(x: center[0], y: center[1])
+                curves.append(.arc(center: c, radius: CGFloat(radius), a0: 0, a1: 360, full: true))
+                curveEnds.append([])
+            } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius,
+                      let sa = ent.start_angle, let ea = ent.end_angle {
+                let c = CGPoint(x: center[0], y: center[1]); let r = CGFloat(radius)
+                curves.append(.arc(center: c, radius: r, a0: sa, a1: ea, full: false))
+                let ptS = CGPoint(x: c.x + r * CGFloat(cos(sa * .pi / 180)), y: c.y + r * CGFloat(sin(sa * .pi / 180)))
+                let ptE = CGPoint(x: c.x + r * CGFloat(cos(ea * .pi / 180)), y: c.y + r * CGFloat(sin(ea * .pi / 180)))
+                curveEnds.append([ptS, ptE])
             } else if let vertices = ent.vertices, vertices.count >= 2 {
                 let pts = vertices.map { CGPoint(x: $0[0], y: $0[1]) }
-                for i in 0..<(pts.count - 1) { segs.append((pts[i], pts[i + 1])) }
-                if ent.closed == true { segs.append((pts[pts.count - 1], pts[0])) }
+                for i in 0..<(pts.count - 1) {
+                    curves.append(.segment(pts[i], pts[i + 1])); curveEnds.append([pts[i], pts[i + 1]])
+                }
+                if ent.closed == true {
+                    curves.append(.segment(pts[pts.count - 1], pts[0])); curveEnds.append([pts[pts.count - 1], pts[0]])
+                }
             }
         }
-        // O(n²) over segments — cap to keep mouse-move cheap on dense outlines.
-        if segs.count <= 600 {
+        // O(n²) over curves — cap to keep mouse-move cheap on dense outlines.
+        if curves.count <= 600 {
             let eps: CGFloat = 1e-4
-            for i in 0..<segs.count {
-                let a = segs[i]
-                for j in (i + 1)..<segs.count {
-                    let b = segs[j]
-                    guard let t = segIntersectParam(a.0, a.1, b.0, b.1) else { continue }
-                    let pt = CGPoint(x: a.0.x + CGFloat(t) * (a.1.x - a.0.x),
-                                     y: a.0.y + CGFloat(t) * (a.1.y - a.0.y))
-                    // Skip crossings that sit on a shared endpoint of either edge.
-                    let onEndpoint = [a.0, a.1, b.0, b.1].contains {
-                        hypot(pt.x - $0.x, pt.y - $0.y) < eps
+            for i in 0..<curves.count {
+                for j in (i + 1)..<curves.count {
+                    for pt in curveIntersections(curves[i], curves[j]) {
+                        // Skip crossings sitting on a shared endpoint of either edge.
+                        let onEndpoint = (curveEnds[i] + curveEnds[j]).contains {
+                            hypot(pt.x - $0.x, pt.y - $0.y) < eps
+                        }
+                        if onEndpoint { continue }
+                        list.append(SnapCandidate(modelPoint: pt, type: .intersection))
                     }
-                    if onEndpoint { continue }
-                    list.append(SnapCandidate(modelPoint: pt, type: .intersection))
+                }
+            }
+            // Tangent points are defined relative to where the current segment
+            // started — only meaningful while rubber-banding from a reference.
+            if let ref = ref {
+                for curve in curves {
+                    if case let .arc(center, r, a0, a1, full) = curve {
+                        for pt in tangentPoints(from: ref, center: center, radius: r, a0: a0, a1: a1, full: full) {
+                            list.append(SnapCandidate(modelPoint: pt, type: .tangent))
+                        }
+                    }
                 }
             }
         }
         return list
     }
 
-    func getSnappedPoint(for screenPt: CGPoint, size: CGSize, bounds: CGRect) -> SnapResult? {
+    func getSnappedPoint(for screenPt: CGPoint, size: CGSize, bounds: CGRect, ref: CGPoint? = nil) -> SnapResult? {
         let queryModelPt = toModel(point: screenPt, size: size, bounds: bounds)
-        let candidates = getSnapCandidates(for: queryModelPt)
+        let candidates = getSnapCandidates(for: queryModelPt, ref: ref)
         
         var bestCandidate: SnapResult? = nil
         
@@ -4429,15 +4549,16 @@ struct DxfCanvasView: View {
         switch type {
         case .endpoint: return 0
         case .intersection: return 1
-        case .midpoint: return 2
-        case .center: return 3
-        case .coincident: return 4
+        case .tangent: return 2
+        case .midpoint: return 3
+        case .center: return 4
+        case .coincident: return 5
         }
     }
     
     func snappedMouseLocation(size: CGSize, bounds: CGRect) -> (point: CGPoint, snap: SnapResult?) {
         // A real geometry snap (endpoint/midpoint/centre) under the cursor wins.
-        if state.snapActive, let snap = getSnappedPoint(for: mouseLocation, size: size, bounds: bounds) {
+        if state.snapActive, let snap = getSnappedPoint(for: mouseLocation, size: size, bounds: bounds, ref: orthoReferencePoint()) {
             return (snap.snappedModelPt, snap)
         }
         var modelPt = toModel(point: mouseLocation, size: size, bounds: bounds)
@@ -4473,7 +4594,7 @@ struct DxfCanvasView: View {
     /// Snapped model point for a screen click (placement), honouring `snapEnabled`
     /// and ortho relative to an optional reference (e.g. the ruler's first point).
     private func snappedModelPoint(forScreen point: CGPoint, ref: CGPoint?, size: CGSize, bounds: CGRect) -> CGPoint {
-        if state.snapActive, let s = getSnappedPoint(for: point, size: size, bounds: bounds) {
+        if state.snapActive, let s = getSnappedPoint(for: point, size: size, bounds: bounds, ref: ref) {
             return s.snappedModelPt
         }
         var m = toModel(point: point, size: size, bounds: bounds)
