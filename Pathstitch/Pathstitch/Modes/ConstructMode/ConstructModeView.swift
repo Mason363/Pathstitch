@@ -16,6 +16,7 @@ struct ConstructModeView: View {
                     seamStateToken: state.constructSeamStateToken,
                     toolToken: state.constructToolToken,
                     brushToken: state.constructBrushToken,
+                    materialToken: state.constructMaterialToken,
                     homeToken: state.triggerConstructHomeToken,
                     state: state
                 )
@@ -74,6 +75,7 @@ struct ConstructModeView: View {
                     seamSection
                     glueSection
                     dragSection
+                    materialSection
                     stretchSection
                 }
                 .padding(14)
@@ -315,6 +317,42 @@ struct ConstructModeView: View {
                     .font(PlasticityFont.label)
             }
             .buttonStyle(.plain).foregroundColor(.text_secondary)
+        }
+    }
+
+    // MARK: Mockup material — leather colour + thickness
+
+    private let leatherSwatches: [(String, String)] = [
+        ("8A5A2B", "Tan"), ("4A2F1B", "Dark brown"), ("C9A36A", "Natural"),
+        ("3A2418", "Espresso"), ("7C1E1E", "Oxblood"), ("1C1C1E", "Black")
+    ]
+
+    private var materialSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Material")
+            HStack(spacing: 8) {
+                ForEach(leatherSwatches, id: \.0) { hex, name in
+                    Circle()
+                        .fill(Color(hex: hex))
+                        .frame(width: 22, height: 22)
+                        .overlay(Circle().stroke(state.constructMaterialHex.caseInsensitiveCompare(hex) == .orderedSame ? Color.accent : Color.border_subtle, lineWidth: 2))
+                        .onTapGesture { state.setConstructMaterialColor(hex) }
+                        .help(name)
+                }
+            }
+            HStack {
+                Text("Thickness").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                Spacer()
+                Text(String(format: "%.1f mm", state.constructThicknessMm))
+                    .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { state.constructThicknessMm },
+                    set: { state.setConstructThickness($0) }),
+                in: 0.5...8, step: 0.1
+            )
+            .controlSize(.small)
         }
     }
 

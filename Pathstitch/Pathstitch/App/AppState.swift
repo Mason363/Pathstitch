@@ -1997,6 +1997,11 @@ class AppState {
     var constructGlues: [GlueJoint] = []
     var selectedPanelForGlue: Int? = nil   // first panel picked while gluing
 
+    // Mockup material (Phase 4): leather colour + thickness, pushed live.
+    var constructMaterialHex: String = "8A5A2B"
+    var constructThicknessMm: Double = 2.0
+    var constructMaterialToken: Int = 0
+
     // Phase 4: Globe UX / Interactivity & Overrides
     var anchorFace3D: SelectedFace? {
         didSet {
@@ -6984,6 +6989,9 @@ class AppState {
                     ConstructAssembly(
                         groundPanel: constructGroundPanel,
                         folds: constructFolds,
+                        material: MaterialRef(source: "bundled", id: "",
+                                              thicknessMm: constructThicknessMm,
+                                              colorHex: constructMaterialHex),
                         stiffness: constructStiffness,
                         seams: constructSeams.isEmpty ? nil : constructSeams,
                         holeChains: constructHoleChains.isEmpty ? nil : constructHoleChains,
@@ -7091,6 +7099,10 @@ class AppState {
                 self.constructHoleChains = asm.holeChains ?? []
                 self.constructUserFolds = asm.userFolds ?? []
                 self.constructGlues = asm.glues ?? []
+                if let mat = asm.material {
+                    self.constructThicknessMm = mat.thicknessMm
+                    self.constructMaterialHex = mat.colorHex
+                }
             }
             self.logEntries = validContainer.logEntries
             self.canvasScale = CGFloat(validContainer.canvasScale)

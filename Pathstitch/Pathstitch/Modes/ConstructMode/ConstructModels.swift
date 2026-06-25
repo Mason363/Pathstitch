@@ -135,6 +135,7 @@ struct MaterialRef: Codable, Hashable {
     var source: String = "polyhaven"  // "polyhaven" | "bundled" | "custom"
     var id: String = ""               // PolyHaven slug or bundled name
     var thicknessMm: Double = 2.0
+    var colorHex: String = "8A5A2B"   // leather tint
 }
 
 /// Everything needed to reopen an assembly exactly as posed. Optional in the

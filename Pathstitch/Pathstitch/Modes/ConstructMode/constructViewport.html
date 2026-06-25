@@ -51,18 +51,73 @@ let camera=new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight,
 camera.position.set(120,140,180);
 const renderer=new THREE.WebGLRenderer({canvas, antialias:true});
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+// Mockup-grade output: filmic tone mapping, sRGB, soft shadows.
+renderer.outputEncoding=THREE.sRGBEncoding;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.05;
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 
 const controls=new THREE.OrbitControls(camera, renderer.domElement);
 controls.enableDamping=true; controls.dampingFactor=0.08;
 controls.mouseButtons={ LEFT:null, MIDDLE:THREE.MOUSE.PAN, RIGHT:THREE.MOUSE.ROTATE };
 
-scene.add(new THREE.AmbientLight(0xffffff,0.5));
-const d1=new THREE.DirectionalLight(0xffffff,0.7); d1.position.set(200,400,300); scene.add(d1);
-const d2=new THREE.DirectionalLight(0xffffff,0.25); d2.position.set(-200,-100,-300); scene.add(d2);
-const grid=new THREE.GridHelper(600,60,0x3a3d42,0x2a2c30); grid.position.y=0; scene.add(grid);
+// Image-based lighting from a small procedural sky/studio gradient (soft, free).
+function makeEnv(){
+  const c=document.createElement("canvas"); c.width=16; c.height=64; const g=c.getContext("2d");
+  const grd=g.createLinearGradient(0,0,0,64);
+  grd.addColorStop(0.0,"#cdd6e4"); grd.addColorStop(0.45,"#8a93a3"); grd.addColorStop(0.55,"#5d6470"); grd.addColorStop(1.0,"#23262b");
+  g.fillStyle=grd; g.fillRect(0,0,16,64);
+  const tex=new THREE.CanvasTexture(c); tex.mapping=THREE.EquirectangularReflectionMapping;
+  const pm=new THREE.PMREMGenerator(renderer); const env=pm.fromEquirectangular(tex).texture;
+  tex.dispose(); pm.dispose(); return env;
+}
+try{ scene.environment=makeEnv(); }catch(e){}
+
+scene.add(new THREE.HemisphereLight(0xeaf0ff, 0x3a3f47, 0.55));
+const keyLight=new THREE.DirectionalLight(0xffffff, 2.0);
+keyLight.position.set(180,360,220); keyLight.castShadow=true;
+keyLight.shadow.mapSize.set(2048,2048);
+keyLight.shadow.camera.near=1; keyLight.shadow.camera.far=2500;
+keyLight.shadow.camera.left=-500; keyLight.shadow.camera.right=500;
+keyLight.shadow.camera.top=500; keyLight.shadow.camera.bottom=-500;
+keyLight.shadow.bias=-0.0004; keyLight.shadow.radius=4; scene.add(keyLight);
+const fillLight=new THREE.DirectionalLight(0xffffff,0.35); fillLight.position.set(-220,140,-180); scene.add(fillLight);
+
+// Soft contact shadow on the ground (transparent catcher) + faint grid.
+const shadowCatcher=new THREE.Mesh(new THREE.PlaneGeometry(6000,6000),
+  new THREE.ShadowMaterial({opacity:0.26}));
+shadowCatcher.rotation.x=-Math.PI/2; shadowCatcher.position.y=-0.05; shadowCatcher.receiveShadow=true; scene.add(shadowCatcher);
+const grid=new THREE.GridHelper(600,60,0x3a3d42,0x2a2c30); grid.position.y=0; grid.material.opacity=0.5; grid.material.transparent=true; scene.add(grid);
 
 const root=new THREE.Group(); scene.add(root);
+
+// ---- procedural leather material (built-in, no network) --------------------
+// A repeating grain bump + subtle roughness variation so the leather reads as
+// real material under the IBL. Custom PolyHaven/user maps can replace these.
+let LEATHER_BUMP=null;
+function leatherBump(){
+  if(LEATHER_BUMP) return LEATHER_BUMP;
+  const S=256, c=document.createElement("canvas"); c.width=c.height=S; const x=c.getContext("2d");
+  x.fillStyle="#808080"; x.fillRect(0,0,S,S);
+  // pebbled grain: many soft blobs, light and dark
+  for(let i=0;i<2600;i++){
+    const r=1+Math.random()*2.4, gx=Math.random()*S, gy=Math.random()*S;
+    const v=128+(Math.random()*2-1)*70; x.fillStyle="rgba("+(v|0)+","+(v|0)+","+(v|0)+",0.35)";
+    x.beginPath(); x.arc(gx,gy,r,0,6.283); x.fill();
+  }
+  const tex=new THREE.CanvasTexture(c);
+  tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.repeat.set(6,6);
+  LEATHER_BUMP=tex; return tex;
+}
+function makeLeatherMaterial(hex){
+  const m=new THREE.MeshStandardMaterial({
+    color:hex, roughness:0.62, metalness:0.0, side:THREE.DoubleSide,
+    bumpMap:leatherBump(), bumpScale:0.5, envMapIntensity:0.7,
+  });
+  return m;
+}
 
 // ---- model state ----------------------------------------------------------
 let MODEL=null;           // {panels:[...], groundPanel}
@@ -94,6 +149,9 @@ let brushRing=null;       // hover ring showing the brush footprint
 // round the folds over a radius, high values keep them tight. Drives a
 // curvature smoothing pass after folding (bars re-projected → still 0% stretch).
 let STIFFNESS=0.6;
+// Mockup material (Phase 4): leather colour + thickness (mm) for the shell.
+let MATERIAL_COLOR=0x8a5a2b;
+let THICKNESS=2.0;
 
 const COL_GROUND=0x6b8caf, COL_FLAP=0xb98a5e, COL_FOLD=0xff7a1a, COL_WIRE=0x000000;
 const COL_HOLE=0x202225, COL_HOLE_SEL=0x35c1ff, COL_THREAD=0xf0e2c0;
@@ -102,6 +160,7 @@ const _IDENT=new THREE.Matrix4();
 
 function clearPanels(){
   for(const p of PANELS){
+    if(p.shell){ root.remove(p.shell); p.shell.geometry.dispose(); }  // shares p.mat
     if(p.mesh){ root.remove(p.mesh); p.mesh.geometry.dispose(); p.mesh.material.dispose(); }
     if(p.foldLine){ root.remove(p.foldLine); p.foldLine.geometry.dispose(); p.foldLine.material.dispose(); }
     if(p.wire){ root.remove(p.wire); p.wire.geometry.dispose(); p.wire.material.dispose(); }
@@ -222,9 +281,9 @@ window.loadConstructModel=function(jsonStr){
     for(const t of panel.triangles){ for(const [a,b] of [[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){
       nbr[a].add(b); nbr[b].add(a); const k=ek(a,b); ec[k]=(ec[k]||0)+1; } }
     panel.nbr=nbr.map(s=>[...s]);
-    const bnd=new Set();
-    for(const k in ec){ if(ec[k]===1){ const [a,b]=k.split("_").map(Number); bnd.add(a); bnd.add(b); } }
-    panel.boundary=bnd;
+    const bnd=new Set(), bedges=[];
+    for(const k in ec){ if(ec[k]===1){ const [a,b]=k.split("_").map(Number); bnd.add(a); bnd.add(b); bedges.push([a,b]); } }
+    panel.boundary=bnd; panel.boundaryEdges=bedges;
     buildPanelMeshes(panel);
     PANELS.push(panel); PANEL_BY_ID[panel.id]=panel;
   }
@@ -277,9 +336,22 @@ function buildPanelMeshes(panel){
   geo.setAttribute("position", new THREE.BufferAttribute(pos,3));
   const idx=[]; for(const t of panel.triangles){ idx.push(t[0],t[1],t[2]); }
   geo.setIndex(idx);
-  const isGround=panel.id===CONTROLS.groundPanel;
-  const mat=new THREE.MeshStandardMaterial({ color:isGround?COL_GROUND:COL_FLAP, roughness:0.75, metalness:0.05, side:THREE.DoubleSide, flatShading:false });
-  const mesh=new THREE.Mesh(geo,mat); mesh.userData.panelId=panel.id; root.add(mesh); panel.mesh=mesh;
+  const mat=makeLeatherMaterial(MATERIAL_COLOR);
+  const mesh=new THREE.Mesh(geo,mat); mesh.userData.panelId=panel.id;
+  mesh.castShadow=true; mesh.receiveShadow=true;
+  root.add(mesh); panel.mesh=mesh; panel.mat=mat;
+
+  // Thickness shell: a bottom surface (reversed) + a rim band around the
+  // boundary, offset along the surface normal by the material thickness, so the
+  // leather reads as solid with a real edge. Rebuilt with the surface each pose.
+  const N=panel.X.length, sidx=[];
+  for(const t of panel.triangles) sidx.push(N+t[0], N+t[2], N+t[1]);   // underside, reversed
+  for(const [a,b] of panel.boundaryEdges){ sidx.push(a, b, N+b); sidx.push(a, N+b, N+a); }  // rim quads
+  const sgeo=new THREE.BufferGeometry();
+  sgeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(N*2*3),3));
+  sgeo.setIndex(sidx);
+  panel.shell=new THREE.Mesh(sgeo, mat); panel.shell.castShadow=true; panel.shell.receiveShadow=true;
+  root.add(panel.shell);
 
   // faint wireframe of every triangle edge (reads the tessellation/curvature)
   const wpos=new Float32Array(panel.edges.length*2*3);
@@ -580,6 +652,21 @@ function writePanelGeometry(panel){
   for(let i=0;i<panel.X.length;i++){ pos[i*3]=panel.X[i][0]; pos[i*3+1]=panel.X[i][1]; pos[i*3+2]=panel.X[i][2]; }
   panel.mesh.geometry.attributes.position.needsUpdate=true;
   panel.mesh.geometry.computeVertexNormals();
+  // thickness shell: top half = surface, bottom half = surface − normal·thickness
+  if(panel.shell){
+    const N=panel.X.length, sp=panel.shell.geometry.attributes.position.array;
+    const nrm=panel.mesh.geometry.attributes.normal.array;
+    for(let i=0;i<N;i++){
+      sp[i*3]=panel.X[i][0]; sp[i*3+1]=panel.X[i][1]; sp[i*3+2]=panel.X[i][2];
+      const o=(N+i)*3;
+      sp[o]=panel.X[i][0]-nrm[i*3]*THICKNESS;
+      sp[o+1]=panel.X[i][1]-nrm[i*3+1]*THICKNESS;
+      sp[o+2]=panel.X[i][2]-nrm[i*3+2]*THICKNESS;
+    }
+    panel.shell.geometry.attributes.position.needsUpdate=true;
+    panel.shell.geometry.computeVertexNormals();
+    panel.shell.geometry.computeBoundingSphere();
+  }
   // wire
   const wp=panel.wire.geometry.attributes.position.array;
   panel.edges.forEach(([a,b],i)=>{ const A=panel.X[a],B=panel.X[b]; wp[i*6]=A[0];wp[i*6+1]=A[1];wp[i*6+2]=A[2]; wp[i*6+3]=B[0];wp[i*6+4]=B[1];wp[i*6+5]=B[2]; });
@@ -703,6 +790,12 @@ function updateBrushRing(clientX, clientY){
   brushRing.scale.setScalar(BRUSH_R);
 }
 window.setConstructBrush=function(r){ BRUSH_R=(r&&r>0)?r:25; };
+// Mockup material controls (Phase 4).
+window.setConstructMaterial=function(hex){
+  if(hex!=null) MATERIAL_COLOR=hex>>>0;
+  for(const p of PANELS){ if(p.mat) p.mat.color.setHex(MATERIAL_COLOR); }
+};
+window.setConstructThickness=function(t){ THICKNESS=Math.max(0, t||0); needsPose=true; };
 
 // ---- create a fold line in 3D (two clicks on a panel) ----------------------
 function bary3(p,a,b,c){
@@ -730,8 +823,6 @@ window.setConstructControls=function(jsonStr){
   if(c.stiffness!=null) STIFFNESS=Math.max(0,Math.min(1,c.stiffness));
   CONTROLS.foldAngle={};
   for(const f of (c.folds||[])) CONTROLS.foldAngle[f.panelId+"-"+f.foldId]=f.angleDeg||0;
-  // recolor ground vs flap
-  for(const p of PANELS){ if(p.mesh) p.mesh.material.color.setHex(p.id===CONTROLS.groundPanel?COL_GROUND:COL_FLAP); }
   needsPose=true;
 };
 window.setConstructTool=function(t){ TOOL=t||"select"; if(TOOL!=="drag" && brushRing) brushRing.visible=false; if(PANELS.length) reportStretch(); };
@@ -825,9 +916,11 @@ renderer.domElement.addEventListener("pointerup",e=>{
 // ---- loop -----------------------------------------------------------------
 function tick(){
   requestAnimationFrame(tick);
-  if(needsPose){ needsPose=false; recomputePose(); }
-  controls.update();
-  renderer.render(scene,camera);
+  try{
+    if(needsPose){ needsPose=false; recomputePose(); }
+    controls.update();
+    renderer.render(scene,camera);
+  }catch(e){ if(!window.__rerr){ window.__rerr=1; post({op:"consoleError", message:"RENDER: "+((e&&e.message)||e)+" @ "+((e&&e.stack)||"").slice(0,300)}); } }
 }
 window.addEventListener("resize",()=>{
   camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();

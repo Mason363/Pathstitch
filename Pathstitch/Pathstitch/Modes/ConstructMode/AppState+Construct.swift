@@ -133,6 +133,25 @@ extension AppState {
         hasUnsavedChanges = true
     }
 
+    /// Sets the mockup leather colour (hex like "8A5A2B") and pushes it live.
+    func setConstructMaterialColor(_ hex: String) {
+        constructMaterialHex = hex
+        constructMaterialToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// Sets the mockup material thickness (mm) and re-shells the panels.
+    func setConstructThickness(_ mm: Double) {
+        constructThicknessMm = mm
+        constructMaterialToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// Hex string → 0xRRGGBB int for the viewport.
+    var constructMaterialColorInt: Int {
+        Int(constructMaterialHex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0x8A5A2B
+    }
+
     /// Re-poses from the folded rest state, clearing any brush drape.
     func resetConstructDrape() {
         constructFoldStateToken += 1   // re-applying controls re-solves from rest

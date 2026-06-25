@@ -16,6 +16,7 @@ struct ConstructViewport: NSViewRepresentable {
     let seamStateToken: Int
     let toolToken: Int
     let brushToken: Int
+    let materialToken: Int
     let homeToken: Int
     var state: AppState
 
@@ -54,6 +55,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushSeams()
         context.coordinator.pushTool()
         context.coordinator.pushBrush()
+        context.coordinator.pushMaterial()
         context.coordinator.pushHome()
     }
 
@@ -67,6 +69,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastSeamToken = -1
         private var lastToolToken = -1
         private var lastBrushToken = -1
+        private var lastMaterialToken = -1
         private var lastHomeToken = -1
 
         init(state: AppState) { self.state = state }
@@ -87,11 +90,13 @@ struct ConstructViewport: NSViewRepresentable {
                     self.lastSeamToken = -1
                     self.lastToolToken = -1
                     self.lastBrushToken = -1
+                    self.lastMaterialToken = -1
                     self.pushModel()
                     self.pushControls()
                     self.pushSeams()
                     self.pushTool()
                     self.pushBrush()
+                    self.pushMaterial()
                 }
             case "selectFold":
                 let panelId = json["panelId"] as? Int ?? 0
@@ -179,6 +184,14 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastBrushToken != state.constructBrushToken else { return }
             lastBrushToken = state.constructBrushToken
             webView.evaluateJavaScript("setConstructBrush(\(state.constructBrushRadius));", completionHandler: nil)
+        }
+
+        func pushMaterial() {
+            guard ready, let webView = webView else { return }
+            guard lastMaterialToken != state.constructMaterialToken else { return }
+            lastMaterialToken = state.constructMaterialToken
+            webView.evaluateJavaScript("setConstructMaterial(\(state.constructMaterialColorInt));", completionHandler: nil)
+            webView.evaluateJavaScript("setConstructThickness(\(state.constructThicknessMm));", completionHandler: nil)
         }
 
         func pushHome() {
