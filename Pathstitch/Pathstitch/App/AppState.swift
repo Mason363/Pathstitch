@@ -1997,6 +1997,11 @@ class AppState {
     // assemble every enclosed area (the default). Persisted in the assembly.
     var constructIncludeHandles: Set<String> = []
 
+    // Per-panel base region ("which side stays flat"): panelId → [x,y] point in the
+    // chosen region. The viewport roots that panel's fold tree there. Persisted.
+    var constructBaseRegions: [Int: [Double]] = [:]
+    var constructBaseToken: Int = 0
+
     // Overlap handling: per-engulfed-area treatment (inner DXF handle → "stamp" |
     // "patch" | "cutout" | "independent"). Persisted. `pendingEngulfed` holds the
     // detected nestings the user hasn't decided yet (drives the chooser).
@@ -7054,7 +7059,8 @@ class AppState {
                                          && constructSeams.isEmpty && constructUserFolds.isEmpty
                                          && constructGlues.isEmpty && constructDecals.isEmpty
                                          && constructIncludeHandles.isEmpty
-                                         && constructAreaTreatments.isEmpty) ? nil :
+                                         && constructAreaTreatments.isEmpty
+                                         && constructBaseRegions.isEmpty) ? nil :
                     ConstructAssembly(
                         groundPanel: constructGroundPanel,
                         folds: constructFolds,
@@ -7070,7 +7076,9 @@ class AppState {
                         decalFrames: constructDecalXforms.isEmpty ? nil :
                             Dictionary(uniqueKeysWithValues: constructDecalXforms.map { (String($0.key), $0.value) }),
                         includeHandles: constructIncludeHandles.isEmpty ? nil : Array(constructIncludeHandles),
-                        areaTreatments: constructAreaTreatments.isEmpty ? nil : constructAreaTreatments)
+                        areaTreatments: constructAreaTreatments.isEmpty ? nil : constructAreaTreatments,
+                        baseRegions: constructBaseRegions.isEmpty ? nil :
+                            Dictionary(uniqueKeysWithValues: constructBaseRegions.map { (String($0.key), $0.value) }))
             )
 
             let encoder = JSONEncoder()
@@ -7182,6 +7190,8 @@ class AppState {
                     (asm.decalFrames ?? [:]).compactMap { k, v in Int(k).map { ($0, v) } })
                 self.constructIncludeHandles = Set(asm.includeHandles ?? [])
                 self.constructAreaTreatments = asm.areaTreatments ?? [:]
+                self.constructBaseRegions = Dictionary(uniqueKeysWithValues:
+                    (asm.baseRegions ?? [:]).compactMap { k, v in Int(k).map { ($0, v) } })
             }
             self.logEntries = validContainer.logEntries
             self.canvasScale = CGFloat(validContainer.canvasScale)

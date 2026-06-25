@@ -18,6 +18,7 @@ struct ConstructViewport: NSViewRepresentable {
     let materialToken: Int
     let decalToken: Int
     let stampToken: Int
+    let baseToken: Int
     let snapActive: Bool   // mirrors the 2D snap toggle so changes re-push live
     let homeToken: Int
     var state: AppState
@@ -59,6 +60,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushMaterial()
         context.coordinator.pushDecals()
         context.coordinator.pushStamps()
+        context.coordinator.pushBase()
         context.coordinator.pushSnap()
         context.coordinator.pushHome()
     }
@@ -75,6 +77,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastMaterialToken = -1
         private var lastDecalToken = -1
         private var lastStampToken = -1
+        private var lastBaseToken = -1
         private var lastSnap: Bool? = nil
         private var lastHomeToken = -1
 
@@ -98,6 +101,7 @@ struct ConstructViewport: NSViewRepresentable {
                     self.lastMaterialToken = -1
                     self.lastDecalToken = -1
                     self.lastStampToken = -1
+                    self.lastBaseToken = -1
                     self.lastSnap = nil
                     self.pushModel()
                     self.pushControls()
@@ -106,6 +110,7 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushMaterial()
                     self.pushDecals()
                     self.pushStamps()
+                    self.pushBase()
                     self.pushSnap()
                 }
             case "selectFold":
@@ -119,9 +124,10 @@ struct ConstructViewport: NSViewRepresentable {
                 }
             case "selectPanel":
                 let panelId = json["panelId"] as? Int ?? 0
+                let p2d = json["p2d"] as? [Double]
                 DispatchQueue.main.async {
                     switch self.state.constructTool {
-                    case .ground: self.state.setConstructGround(panelId)
+                    case .ground: self.state.setConstructGround(panelId, basePoint: p2d)
                     case .glue:   self.state.pickPanelForGlue(panelId)
                     default: break
                     }
@@ -182,6 +188,7 @@ struct ConstructViewport: NSViewRepresentable {
             lastSeamToken = -1  // re-apply seams to the freshly loaded mesh
             lastDecalToken = -1 // re-apply decals to the freshly loaded mesh
             lastStampToken = -1 // re-apply stamps to the freshly loaded mesh
+            lastBaseToken = -1  // re-root base regions on the freshly loaded mesh
             let esc = Self.escape(json)
             webView.evaluateJavaScript("loadConstructModel(\"\(esc)\");", completionHandler: nil)
         }
@@ -200,6 +207,14 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastSnap != on else { return }
             lastSnap = on
             webView.evaluateJavaScript("setConstructSnap(\(on));", completionHandler: nil)
+        }
+
+        func pushBase() {
+            guard ready, let webView = webView else { return }
+            guard lastBaseToken != state.constructBaseToken else { return }
+            lastBaseToken = state.constructBaseToken
+            let esc = Self.escape(state.constructBaseJSON)
+            webView.evaluateJavaScript("setConstructBase(\"\(esc)\");", completionHandler: nil)
         }
 
         func pushControls() {

@@ -187,6 +187,8 @@ struct ConstructAssembly: Codable {
     /// Per-engulfed-area treatment: inner DXF handle → "stamp"|"patch"|"cutout"|
     /// "independent". Optional → older files have no overlaps resolved.
     var areaTreatments: [String: String]? = nil
+    /// Per-panel base region ("which side stays flat"): panelId (as string) → [x,y].
+    var baseRegions: [String: [Double]]? = nil
 }
 
 /// A full snapshot of the editable assembly state for the panel's own undo/redo
@@ -203,6 +205,7 @@ struct ConstructUndoState {
     var decalXforms: [Int: [Double]]
     var includeHandles: Set<String>
     var areaTreatments: [String: String]
+    var baseRegions: [Int: [Double]]
 }
 
 /// A glue/weld join: panel B is seated onto panel A where their edges meet and

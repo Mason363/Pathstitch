@@ -18,6 +18,7 @@ struct ConstructModeView: View {
                     materialToken: state.constructMaterialToken,
                     decalToken: state.constructDecalToken,
                     stampToken: state.constructStampToken,
+                    baseToken: state.constructBaseToken,
                     snapActive: state.snapActive,
                     homeToken: state.triggerConstructHomeToken,
                     state: state
@@ -239,7 +240,7 @@ struct ConstructModeView: View {
             sectionHeader("Ground")
             Text("Panel \(state.constructGroundPanel) is pinned to the ground plane.")
                 .font(PlasticityFont.label).foregroundColor(.text_secondary)
-            Text("Pick the Ground tool, then click another panel to re-pin.")
+            Text("Ground tool → click a face to pin it as the base that stays flat. On a folded panel, click the side you want flat — the rest folds relative to it.")
                 .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
         }
     }

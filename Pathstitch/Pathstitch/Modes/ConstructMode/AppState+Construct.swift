@@ -223,7 +223,8 @@ extension AppState {
                            thicknessMm: constructThicknessMm, decals: constructDecals,
                            decalXforms: constructDecalXforms,
                            includeHandles: constructIncludeHandles,
-                           areaTreatments: constructAreaTreatments)
+                           areaTreatments: constructAreaTreatments,
+                           baseRegions: constructBaseRegions)
     }
 
     /// Record the current assembly state before a mutating edit, so Cmd-Z can undo
@@ -241,6 +242,7 @@ extension AppState {
         && a.glues == b.glues && a.userFolds == b.userFolds && a.materialHex == b.materialHex
         && a.thicknessMm == b.thicknessMm && a.decals == b.decals && a.decalXforms == b.decalXforms
         && a.includeHandles == b.includeHandles && a.areaTreatments == b.areaTreatments
+        && a.baseRegions == b.baseRegions
     }
 
     private func applyConstruct(_ s: ConstructUndoState) {
@@ -257,9 +259,11 @@ extension AppState {
         let topologyChanged = (s.userFolds != constructUserFolds)
             || (s.includeHandles != constructIncludeHandles)
             || (s.areaTreatments != constructAreaTreatments)
+        let baseChanged = (s.baseRegions != constructBaseRegions)
         constructUserFolds = s.userFolds
         constructIncludeHandles = s.includeHandles
         constructAreaTreatments = s.areaTreatments
+        constructBaseRegions = s.baseRegions
         if selectedFoldId != nil && !constructFolds.contains(where: { $0.id == selectedFoldId }) {
             selectedFoldId = nil
         }
@@ -271,6 +275,7 @@ extension AppState {
             constructSeamStateToken += 1
             constructMaterialToken += 1
             constructDecalToken += 1
+            if baseChanged { constructBaseToken += 1 }
         }
     }
 
@@ -302,13 +307,28 @@ extension AppState {
         hasUnsavedChanges = true
     }
 
-    /// Pins a different panel to the ground plane.
-    func setConstructGround(_ panelId: Int) {
-        guard panelId != constructGroundPanel else { return }
+    /// Pins a panel as ground and, if a face point is given, sets that panel's base
+    /// region — the side that stays flat. Clicking a different face re-roots its fold
+    /// tree there ("creases create planes; pick which plane is the base").
+    func setConstructGround(_ panelId: Int, basePoint: [Double]? = nil) {
+        let sameGround = (panelId == constructGroundPanel)
+        let samebase = (basePoint == nil) || (constructBaseRegions[panelId] == basePoint)
+        guard !sameGround || !samebase else { return }
         pushConstructUndo()
         constructGroundPanel = panelId
+        if let bp = basePoint, bp.count == 2 { constructBaseRegions[panelId] = bp }
         constructFoldStateToken += 1   // ground is pushed alongside the fold angles
+        constructBaseToken += 1
         hasUnsavedChanges = true
+    }
+
+    /// {panelId: [x,y]} base-region points for the viewport to re-root fold trees.
+    var constructBaseJSON: String {
+        var obj: [String: [Double]] = [:]
+        for (pid, pt) in constructBaseRegions { obj[String(pid)] = pt }
+        guard let d = try? JSONSerialization.data(withJSONObject: obj),
+              let s = String(data: d, encoding: .utf8) else { return "{}" }
+        return s
     }
 
     /// Switches the active construct tool (changes click behavior in the viewport).

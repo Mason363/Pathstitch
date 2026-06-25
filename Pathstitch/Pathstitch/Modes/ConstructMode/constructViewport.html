@@ -134,6 +134,7 @@ let MODEL=null;           // {panels:[...], groundPanel}
 let PANELS=[];            // per-panel runtime: {rest, X, edges, regions, tree, mesh, foldLine, wire}
 let PANEL_BY_ID={};       // id -> panel
 let CONTROLS={ groundPanel:0, foldAngle:{}, foldRound:{} };  // foldAngle["pid-fid"]=deg, foldRound=0..1
+let BASE_PT={};           // panelId -> [x,y] base region point ("which side stays flat")
 let TOOL="select";
 let needsPose=false, hudT=0;
 
@@ -196,7 +197,7 @@ function makeUF(n){ const p=[...Array(n).keys()];
 
 // Partition a panel's faces into rigid regions separated by FOLD hinges, then
 // build the fold tree (root = ground/base region) used for forward folding.
-function buildRegions(panel, isGround){
+function buildRegions(panel, isGround, preferredPoint){
   const tris=panel.triangles, hinges=panel.hinges;
   const ekey=(a,b)=> a<b ? a+"_"+b : b+"_"+a;
   // fold edges (the cuts between regions) + their foldId
@@ -241,6 +242,16 @@ function buildRegions(panel, isGround){
   for(let i=1;i<region.length;i++){
     const di=radj[i].length, dr=radj[rootR].length;
     if(di>dr || (di===dr && region[i].verts.size>region[rootR].verts.size)) rootR=i;
+  }
+  // User override: the region containing the clicked base point stays flat (root).
+  if(preferredPoint){
+    const P=preferredPoint;
+    outer: for(let r=0;r<region.length;r++){
+      for(const fi of region[r].faces){ const t=tris[fi];
+        const bc=bary3([P[0],0,P[1]], [panel.v2d[t[0]][0],0,panel.v2d[t[0]][1]], [panel.v2d[t[1]][0],0,panel.v2d[t[1]][1]], [panel.v2d[t[2]][0],0,panel.v2d[t[2]][1]]);
+        if(bc[0]>=-1e-3 && bc[1]>=-1e-3 && bc[2]>=-1e-3){ rootR=r; break outer; }
+      }
+    }
   }
   // BFS tree
   const parent=region.map(()=>-1), parentFold=region.map(()=>-1), parentVerts=region.map(()=>null);
@@ -288,7 +299,7 @@ window.loadConstructModel=function(jsonStr){
     for(const e of pj.edges){ const a=e[0],b=e[1],k=a<b?a+"_"+b:b+"_"+a; if(!seen.has(k)){ seen.add(k); edges.push([a,b, len(sub(rest3[a],rest3[b]))]); } }
     panel.edges=edges;
     panel.asm=null;        // assembly transform {R,t} set by the stitch solver
-    panel.tree=buildRegions(panel, pj.id===(m.groundPanel||0));
+    panel.tree=buildRegions(panel, pj.id===(m.groundPanel||0), BASE_PT[panel.id]);
     // vertex adjacency + boundary (interior verts get crease-rounded; boundary
     // verts stay so the cut outline stays crisp).
     const nbr=panel.X.map(()=>new Set()), ec={};
@@ -997,6 +1008,14 @@ window.setConstructTool=function(t){
   if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); hideSnapIndicator(); }   // abandon a half-drawn crease
   if(PANELS.length) reportStretch();
 };
+// Per-panel base region ("which side stays flat"): re-root each panel's fold tree
+// at the region containing its base point, then re-pose.
+window.setConstructBase=function(jsonStr){
+  let d; try{ d=JSON.parse(jsonStr); }catch(e){ return; }
+  BASE_PT=d||{};
+  for(const p of PANELS){ p.tree=buildRegions(p, p.id===CONTROLS.groundPanel, BASE_PT[p.id]); }
+  needsPose=true;
+};
 window.setConstructSeams=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   SEAMS=c.seams||[];
@@ -1090,7 +1109,9 @@ renderer.domElement.addEventListener("pointerup",e=>{
   }
   if(TOOL==="ground" || TOOL==="glue"){
     const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
-    if(hit) post({op:"selectPanel", panelId:hit.object.userData.panelId});
+    if(hit){ const panel=PANEL_BY_ID[hit.object.userData.panelId];
+      const p2d=hitTo2D(panel, hit.face, hit.point);   // the clicked face → base region
+      post({op:"selectPanel", panelId:panel.id, p2d:p2d}); }
     return;
   }
   // select / fold → nearest fold edge
