@@ -15,7 +15,6 @@ struct ConstructModeView: View {
                     foldStateToken: state.constructFoldStateToken,
                     seamStateToken: state.constructSeamStateToken,
                     toolToken: state.constructToolToken,
-                    brushToken: state.constructBrushToken,
                     materialToken: state.constructMaterialToken,
                     decalToken: state.constructDecalToken,
                     homeToken: state.triggerConstructHomeToken,
@@ -89,11 +88,6 @@ struct ConstructModeView: View {
             }
             return ToolGuide(icon: "link", name: "Glue",
                              step: "Click two panels in turn to weld their meeting edges (glue tabs).")
-        case .drag:
-            let ax = state.constructDragAxis
-            let axName = ax == "screen" ? "free (view plane)" : "\(ax.uppercased()) axis"
-            return ToolGuide(icon: "hand.draw", name: "Bend",
-                             step: "Grab a panel and move it — bends as one stiff sheet, never stretches. Move: \(axName). Press X/Y/Z to lock an axis, F for free.")
         }
     }
 
@@ -171,7 +165,6 @@ struct ConstructModeView: View {
                     foldSection
                     seamSection
                     glueSection
-                    dragSection
                     materialSection
                     stretchSection
                 }
@@ -194,21 +187,6 @@ struct ConstructModeView: View {
     private var foldSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Folds")
-            // Fold softness — real leather bends over a radius, not a knife crease.
-            HStack {
-                Text("Stiffness").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                Spacer()
-                Text(state.constructStiffness > 0.85 ? "Crisp"
-                     : state.constructStiffness < 0.35 ? "Soft" : "Medium")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
-            }
-            Slider(
-                value: Binding(
-                    get: { state.constructStiffness },
-                    set: { state.setConstructStiffness($0) }),
-                in: 0...1, step: 0.05
-            )
-            .controlSize(.small)
             if state.constructFolds.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No fold lines yet. Two ways to add them:")
@@ -383,61 +361,6 @@ struct ConstructModeView: View {
         .padding(6)
         .background(Color.bg_selected.opacity(0.5))
         .cornerRadius(5)
-    }
-
-    // MARK: Drag brush — pose / drape the form without stretching
-
-    private let dragAxes: [(String, String)] = [
-        ("screen", "Free"), ("x", "X"), ("y", "Y"), ("z", "Z")
-    ]
-
-    private var dragSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Bend")
-            if state.constructTool == .drag {
-                Text("Grab the leather like a hand and move it — the sheet bends as one stiff piece and never stretches, so if you pull past its reach it just slips back.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
-            } else {
-                Button {
-                    state.setConstructTool(.drag)
-                } label: {
-                    HStack { Image(systemName: ConstructTool.drag.icon); Text("Bend tool") }
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PlasticityButtonStyle(isEnabled: true))
-            }
-
-            // Axis lock (Blender-style). "Free" moves on the screen plane; X/Y/Z
-            // constrain the grab to that world axis. Mirrored by the X/Y/Z keys.
-            Text("Move along").font(PlasticityFont.label).foregroundColor(.text_secondary)
-            Picker("", selection: Binding(
-                get: { state.constructDragAxis },
-                set: { state.setConstructDragAxis($0) })) {
-                ForEach(dragAxes, id: \.0) { key, label in Text(label).tag(key) }
-            }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
-            Text("Free = drag in the view plane. X / Y / Z lock to that axis (Z is up). You can also press X, Y, Z, or F while dragging.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
-
-            HStack {
-                Text("Grab size").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                Spacer()
-                Text("\(Int(state.constructBrushRadius)) mm")
-                    .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
-            }
-            Slider(
-                value: Binding(
-                    get: { state.constructBrushRadius },
-                    set: { state.setConstructBrushRadius($0) }),
-                in: 5...120, step: 1
-            )
-            .controlSize(.small)
-            Button { state.resetConstructDrape() } label: {
-                HStack { Image(systemName: "arrow.uturn.backward"); Text("Reset bend") }
-                    .font(PlasticityFont.label)
-            }
-            .buttonStyle(.plain).foregroundColor(.text_secondary)
-        }
     }
 
     // MARK: Mockup material — leather colour + thickness

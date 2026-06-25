@@ -128,24 +128,6 @@ extension AppState {
         triggerConstructHomeToken += 1
     }
 
-    /// Sets the drag-brush radius (mm) and pushes it live to the viewport.
-    func setConstructBrushRadius(_ r: Double) {
-        constructBrushRadius = r
-        constructBrushToken += 1
-    }
-
-    /// Sets the bend-grab axis ("screen" | "x" | "y" | "z") and pushes it live.
-    func setConstructDragAxis(_ axis: String) {
-        constructDragAxis = axis
-        constructBrushToken += 1   // rides the brush push
-    }
-
-    /// Sets fold stiffness (0 = round/soft bend, 1 = tight crease) and re-poses.
-    func setConstructStiffness(_ s: Double) {
-        constructStiffness = s
-        constructFoldStateToken += 1   // stiffness rides the controls push
-        hasUnsavedChanges = true
-    }
 
     /// Sets the mockup leather colour (hex like "8A5A2B") and pushes it live.
     func setConstructMaterialColor(_ hex: String) {
@@ -198,11 +180,6 @@ extension AppState {
         hasUnsavedChanges = true
     }
 
-    /// Re-poses from the folded rest state, clearing any brush drape.
-    func resetConstructDrape() {
-        constructFoldStateToken += 1   // re-applying controls re-solves from rest
-    }
-
     /// Adds a fold line drawn in 3D (2D segment in a panel's space) and rebuilds.
     func addConstructUserFold(panelId: Int, x0: Double, y0: Double, x1: Double, y1: Double) {
         guard hypot(x1 - x0, y1 - y0) > 1.0 else { return }   // ignore a stray double-click
@@ -252,7 +229,7 @@ extension AppState {
             ["panelId": $0.panelId, "foldId": $0.foldId, "angleDeg": $0.angleDeg] as [String: Any]
         }
         let payload: [String: Any] = ["groundPanel": constructGroundPanel,
-                                      "folds": folds, "stiffness": constructStiffness]
+                                      "folds": folds]
         guard let d = try? JSONSerialization.data(withJSONObject: payload),
               let s = String(data: d, encoding: .utf8) else { return "{}" }
         return s

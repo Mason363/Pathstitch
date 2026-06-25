@@ -14,7 +14,6 @@ enum ConstructTool: String, CaseIterable, Identifiable {
     case ground     // click a panel to pin it as the ground
     case stitch     // click chain A then chain B to sew them together
     case glue       // click two panels to glue (weld) their meeting edges
-    case drag       // no-stretch soft-bend brush
 
     var id: String { rawValue }
 
@@ -26,7 +25,6 @@ enum ConstructTool: String, CaseIterable, Identifiable {
         case .ground: return "Ground"
         case .stitch: return "Stitch"
         case .glue:   return "Glue"
-        case .drag:   return "Bend"
         }
     }
 
@@ -39,12 +37,11 @@ enum ConstructTool: String, CaseIterable, Identifiable {
         case .ground: return "square.grid.3x3.fill.square"
         case .stitch: return "point.topleft.down.to.point.bottomright.curvepath"
         case .glue:   return "link"
-        case .drag:   return "hand.draw"
         }
     }
 
     /// Tools shipped so far.
-    static var available: [ConstructTool] { [.select, .fold, .crease, .ground, .stitch, .glue, .drag] }
+    static var available: [ConstructTool] { [.select, .fold, .crease, .ground, .stitch, .glue] }
 }
 
 /// A fold line the user drew in 3D (two points in a panel's 2D space), re-fed to

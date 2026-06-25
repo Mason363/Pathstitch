@@ -1984,19 +1984,9 @@ class AppState {
     var selectedChainForStitch: Int? = nil     // first chain picked while creating a seam
     var constructShowThread: Bool = true       // render the stitching thread
 
-    // Drag brush (Phase 3): radius of the no-stretch grab brush, pushed live.
-    var constructBrushRadius: Double = 25
-    var constructBrushToken: Int = 0
-    // Bend-grab constraint axis: "screen" (free, view-plane) or "x"/"y"/"z" (locked
-    // to a world axis, Blender-style). Settable from the inspector or X/Y/Z keys.
-    var constructDragAxis: String = "screen"
     // Panel whose freshly-added crease should be auto-selected after the rebuild
     // (so the new fold's angle slider is highlighted as confirmation).
     var pendingCreaseSelectPanel: Int? = nil
-
-    // Fold stiffness 0…1: low rounds folds over a radius (soft bend), high keeps
-    // them tight. Real leather can't crease infinitely sharp.
-    var constructStiffness: Double = 0.6
 
     // Fold lines added in 3D (re-fed to the triangulator on rebuild) + glue joints.
     var constructUserFolds: [ConstructUserFold] = []
@@ -7027,7 +7017,6 @@ class AppState {
                         material: MaterialRef(source: "bundled", id: "",
                                               thicknessMm: constructThicknessMm,
                                               colorHex: constructMaterialHex),
-                        stiffness: constructStiffness,
                         seams: constructSeams.isEmpty ? nil : constructSeams,
                         holeChains: constructHoleChains.isEmpty ? nil : constructHoleChains,
                         userFolds: constructUserFolds.isEmpty ? nil : constructUserFolds,
@@ -7133,7 +7122,6 @@ class AppState {
             if let asm = validContainer.savedConstructAssembly {
                 self.constructGroundPanel = asm.groundPanel
                 self.constructFolds = asm.folds
-                self.constructStiffness = asm.stiffness ?? 0.6
                 self.constructSeams = asm.seams ?? []
                 self.constructHoleChains = asm.holeChains ?? []
                 self.constructUserFolds = asm.userFolds ?? []

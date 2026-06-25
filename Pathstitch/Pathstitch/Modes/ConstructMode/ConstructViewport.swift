@@ -15,7 +15,6 @@ struct ConstructViewport: NSViewRepresentable {
     let foldStateToken: Int
     let seamStateToken: Int
     let toolToken: Int
-    let brushToken: Int
     let materialToken: Int
     let decalToken: Int
     let homeToken: Int
@@ -55,7 +54,6 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushControls()
         context.coordinator.pushSeams()
         context.coordinator.pushTool()
-        context.coordinator.pushBrush()
         context.coordinator.pushMaterial()
         context.coordinator.pushDecals()
         context.coordinator.pushHome()
@@ -70,7 +68,6 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastFoldToken = -1
         private var lastSeamToken = -1
         private var lastToolToken = -1
-        private var lastBrushToken = -1
         private var lastMaterialToken = -1
         private var lastDecalToken = -1
         private var lastHomeToken = -1
@@ -92,14 +89,12 @@ struct ConstructViewport: NSViewRepresentable {
                     self.lastFoldToken = -1
                     self.lastSeamToken = -1
                     self.lastToolToken = -1
-                    self.lastBrushToken = -1
                     self.lastMaterialToken = -1
                     self.lastDecalToken = -1
                     self.pushModel()
                     self.pushControls()
                     self.pushSeams()
                     self.pushTool()
-                    self.pushBrush()
                     self.pushMaterial()
                     self.pushDecals()
                 }
@@ -142,14 +137,6 @@ struct ConstructViewport: NSViewRepresentable {
                         self.state.activeDecalPanel = panelId   // framing controls target it
                         self.lastDecalToken = self.state.constructDecalToken  // already applied in JS
                         self.state.hasUnsavedChanges = true
-                    }
-                }
-            case "dragAxis":
-                let axis = json["axis"] as? String ?? "screen"
-                DispatchQueue.main.async {
-                    if self.state.constructDragAxis != axis {
-                        self.state.constructDragAxis = axis           // reflect X/Y/Z keys in the UI
-                        self.lastBrushToken = self.state.constructBrushToken  // JS already has it
                     }
                 }
             case "selectChain":
@@ -205,14 +192,6 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastToolToken != state.constructToolToken else { return }
             lastToolToken = state.constructToolToken
             webView.evaluateJavaScript("setConstructTool('\(state.constructTool.rawValue)');", completionHandler: nil)
-        }
-
-        func pushBrush() {
-            guard ready, let webView = webView else { return }
-            guard lastBrushToken != state.constructBrushToken else { return }
-            lastBrushToken = state.constructBrushToken
-            webView.evaluateJavaScript("setConstructBrush(\(state.constructBrushRadius));", completionHandler: nil)
-            webView.evaluateJavaScript("setConstructDragAxis('\(state.constructDragAxis)');", completionHandler: nil)
         }
 
         func pushMaterial() {

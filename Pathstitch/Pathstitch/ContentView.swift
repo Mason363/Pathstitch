@@ -4396,7 +4396,6 @@ extension ContentView {
         case .ground: return "Ground — click a panel to pin it to the ground plane"
         case .stitch: return "Stitch — click one hole chain, then another, to sew them"
         case .glue:   return "Glue — click two panels to weld their meeting edges (glue tabs)"
-        case .drag:   return "Bend — soft-fold brush: drag a panel to pose it, never stretches"
         }
     }
 

@@ -143,15 +143,6 @@ let HOLE_SLOTS=[];        // per-instance {chainId, k} parallel to holeMesh
 let threadGroup=new THREE.Group(); scene.add(threadGroup);
 let seamReport=[];        // per-seam gap stats for the HUD
 
-// Drag brush (Phase 3) — Blender-style soft grab, never stretches -----------
-let BRUSH_R=25;           // brush radius (world mm)
-let DRAG=null;            // active drag: {panel, idxs, w, rest, n, P0}
-let DRAG_AXIS="screen";   // "screen" | "x" | "y" | "z" — grab constraint (Blender-like)
-let brushRing=null;       // hover ring showing the brush footprint
-// Fold stiffness 0..1: real leather can't crease infinitely sharp — low values
-// round the folds over a radius, high values keep them tight. Drives a
-// curvature smoothing pass after folding (bars re-projected → still 0% stretch).
-let STIFFNESS=0.6;
 // Mockup material (Phase 4): leather colour + thickness (mm) for the shell.
 let MATERIAL_COLOR=0x8a5a2b;
 let THICKNESS=2.0;
@@ -567,42 +558,8 @@ function foldPanel(panel){
     }
   }
 }
-// Soft folds: round the sharp creases by curvature (Laplacian) smoothing of
-// interior vertices, then re-project the bars so nothing stretches. Flat areas
-// have ~zero Laplacian so they don't move; only the creased band rounds out. The
-// number of passes scales with (1-stiffness): stiff = crisp crease, soft = wide bend.
-function roundCreases(panel){
-  if(STIFFNESS>=0.99 || !panel.nbr) return;
-  // Only round when this panel is actually folded — a flat panel has no crease to
-  // soften, and smoothing it would just nibble the silhouette (and add stretch).
-  let folded=false;
-  for(const h of panel.hinges){ if(h.foldId>=0 && Math.abs(CONTROLS.foldAngle[panel.id+"-"+h.foldId]||0)>3){ folded=true; break; } }
-  if(!folded) return;
-  const T=panel.tree, pinned=new Set(); T.region[T.rootR].verts.forEach(v=>pinned.add(v));
-  const rounds=Math.round((1-STIFFNESS)*16); if(rounds<=0) return;
-  const lambda=0.6, n=panel.X.length, tmp=panel.X.map(v=>v.slice());
-  for(let it=0; it<rounds; it++){
-    for(let i=0;i<n;i++){
-      if(pinned.has(i) || panel.boundary.has(i)){ tmp[i][0]=panel.X[i][0]; tmp[i][1]=panel.X[i][1]; tmp[i][2]=panel.X[i][2]; continue; }
-      const nb=panel.nbr[i]; if(!nb.length){ tmp[i][0]=panel.X[i][0]; tmp[i][1]=panel.X[i][1]; tmp[i][2]=panel.X[i][2]; continue; }
-      let cx=0,cy=0,cz=0; for(const j of nb){ cx+=panel.X[j][0]; cy+=panel.X[j][1]; cz+=panel.X[j][2]; } const m=nb.length;
-      tmp[i][0]=panel.X[i][0]+lambda*(cx/m-panel.X[i][0]);
-      tmp[i][1]=panel.X[i][1]+lambda*(cy/m-panel.X[i][1]);
-      tmp[i][2]=panel.X[i][2]+lambda*(cz/m-panel.X[i][2]);
-    }
-    for(let i=0;i<n;i++){ panel.X[i][0]=tmp[i][0]; panel.X[i][1]=tmp[i][1]; panel.X[i][2]=tmp[i][2]; }
-    for(let s=0;s<4;s++) for(const [a,b,rest] of panel.edges){
-      const wa=pinned.has(a)?0:1, wb=pinned.has(b)?0:1; const wsum=wa+wb; if(wsum===0) continue;
-      const dx=sub(panel.X[b],panel.X[a]); const d=len(dx)||1e-9; const sc=(d-rest)/d;
-      const ca=scl(dx,(wa/wsum)*sc), cb=scl(dx,(wb/wsum)*sc);
-      if(wa){ panel.X[a][0]+=ca[0]; panel.X[a][1]+=ca[1]; panel.X[a][2]+=ca[2]; }
-      if(wb){ panel.X[b][0]-=cb[0]; panel.X[b][1]-=cb[1]; panel.X[b][2]-=cb[2]; }
-    }
-  }
-}
 function recomputePose(){
-  for(const panel of PANELS) foldPanel(panel);   // each panel folds in place (sharp)
-  for(const panel of PANELS) roundCreases(panel); // soften creases per stiffness
+  for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically
   solveStitches();                                // seat & sew panels together
   for(const panel of PANELS) writePanelGeometry(panel);
   updateHoleInstances();
@@ -738,160 +695,6 @@ function reportStretch(){
     `construct · panels ${PANELS.length} · max stretch <span class="${cls}">${pct.toFixed(2)}%</span>${seamTxt} · tool ${TOOL}`;
 }
 
-// ---- drag brush (Phase 3): grab + ground-pinned no-stretch relax -----------
-// Vertices inside the brush radius are grabbed with a smooth falloff and pulled
-// toward the cursor (on a camera-facing plane). The inextensible bars propagate
-// the pull while the panel's base region stays pinned — so the surface bends and
-// drapes (open/close a wallet) but never stretches. Same solver as fold/stitch.
-function beginDrag(clientX, clientY){
-  setMouse(clientX, clientY); ray.setFromCamera(mouse,camera);
-  const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
-  if(!hit) return false;
-  const panel=PANEL_BY_ID[hit.object.userData.panelId]; if(!panel) return false;
-  const P0=[hit.point.x,hit.point.y,hit.point.z];
-  const cd=camera.getWorldDirection(new THREE.Vector3()); const n=[cd.x,cd.y,cd.z];
-  const idxs=[], w=[];
-  const dists=new Array(panel.X.length);
-  for(let i=0;i<panel.X.length;i++){
-    const d=len(sub(panel.X[i],P0)); dists[i]=[d,i];
-    if(d<=BRUSH_R){ const t=d/BRUSH_R; idxs.push(i); w.push((1-t*t)*(1-t*t)); }
-  }
-  if(!idxs.length) return false;
-  // Anchor the opposite side: the farthest ~12% of vertices stay put while the
-  // inextensible bars propagate the grab across the rest (flat plane → drapes,
-  // folded flap → swings about its fold; "ground stays, lead drags").
-  dists.sort((a,b)=>b[0]-a[0]);
-  const nAnchor=Math.max(1, Math.floor(panel.X.length*0.12));
-  const pinned=new Set(); for(let k=0;k<nAnchor;k++) pinned.add(dists[k][1]);
-  // Brush core: the strongly-grabbed verts lead the cursor and are held during
-  // the de-wrinkle smoothing so the surface bends *toward* the drag (a clean
-  // dynamic fold) instead of slumping back. Everything between core and anchor
-  // is free, so the smoothing rounds it into a smooth bend, not a wrinkled drag.
-  const core=new Set(); for(let k=0;k<idxs.length;k++){ if(w[k]>0.5) core.add(idxs[k]); }
-  DRAG={panel, idxs, w, n, P0, pinned, core, brushR:BRUSH_R, axis:DRAG_AXIS, lastP1:P0.slice()};
-  controls.enabled=false;
-  post({op:"dragAxis", axis:DRAG.axis});
-  return true;
-}
-// Where is the handle right now (centroid of the grabbed core)? Used to re-base
-// the target when the axis lock changes mid-drag so the handle doesn't jump.
-function coreCentroid(d){
-  let cx=0,cy=0,cz=0,n=0; d.core.forEach(i=>{ const p=d.panel.X[i]; cx+=p[0];cy+=p[1];cz+=p[2];n++; });
-  return n?[cx/n,cy/n,cz/n]:d.P0.slice();
-}
-// Closest point on the world line (P0 + t·A) to the mouse ray (o + s·rd). A,rd unit.
-function closestOnAxis(P0,A,o,rd){
-  const w0=sub(o,P0), b=dot(rd,A), dd=dot(rd,w0), e=dot(A,w0);
-  const den=1-b*b; if(Math.abs(den)<1e-6) return P0.slice();
-  return add(P0, scl(A,(e-b*dd)/den));
-}
-function setDragAxis(a){
-  if(!DRAG) { DRAG_AXIS=a; return; }
-  DRAG.axis=a; DRAG.lastP1=coreCentroid(DRAG);   // re-base so the handle stays put
-  DRAG.P0=DRAG.lastP1.slice();
-  post({op:"dragAxis", axis:a});
-}
-function moveDrag(clientX, clientY){
-  if(!DRAG) return;
-  setMouse(clientX, clientY); ray.setFromCamera(mouse,camera);
-  const o=[camera.position.x,camera.position.y,camera.position.z];
-  const rd=[ray.ray.direction.x, ray.ray.direction.y, ray.ray.direction.z];
-  let P1;
-  if(DRAG.axis==="x"||DRAG.axis==="y"||DRAG.axis==="z"){
-    // Blender-style axis lock: the handle slides only along this world axis.
-    const A = DRAG.axis==="x"?[1,0,0] : DRAG.axis==="y"?[0,1,0] : [0,0,1];
-    P1 = closestOnAxis(DRAG.P0, A, o, rd);
-  }else{
-    // free: move on the screen-facing plane through the grab point.
-    const denom=dot(rd,DRAG.n); if(Math.abs(denom)<1e-6) return;
-    const tt=dot(sub(DRAG.P0,o),DRAG.n)/denom;
-    P1=add(o,scl(rd,tt));
-  }
-  const inc=sub(P1, DRAG.lastP1); DRAG.lastP1=P1.slice();   // impulse since last move
-  applyDrag(DRAG, inc);
-  writePanelGeometry(DRAG.panel);
-  updateHoleInstances(); updateChainLines(); updateThread(); reportStretch();
-}
-// Distance relax: project every bar back to rest length (no-stretch), holding the
-// `pinned` (far anchor) verts. `extra` is an additional held set (the brush core)
-// so the cursor still leads while the bars settle.
-function relaxBars(panel, held, iters){
-  for(let it=0; it<iters; it++){
-    for(const [a,b,rest] of panel.edges){
-      const wa=held.has(a)?0:1, wb=held.has(b)?0:1; const wsum=wa+wb; if(wsum===0) continue;
-      const dx=sub(panel.X[b],panel.X[a]); const dd=len(dx)||1e-9; const s=(dd-rest)/dd;
-      const ca=scl(dx,(wa/wsum)*s), cb=scl(dx,(wb/wsum)*s);
-      if(wa){ panel.X[a][0]+=ca[0]; panel.X[a][1]+=ca[1]; panel.X[a][2]+=ca[2]; }
-      if(wb){ panel.X[b][0]-=cb[0]; panel.X[b][1]-=cb[1]; panel.X[b][2]-=cb[2]; }
-    }
-  }
-}
-// Laplacian smoothing of the free interior — turns local buckling into a smooth
-// bend. Boundary, the far anchor, and the brush core stay put so the panel keeps
-// its outline and still follows the cursor; only the in-between surface relaxes.
-function smoothBend(panel, held, passes, lambda){
-  const n=panel.X.length, tmp=panel.X.map(v=>v.slice());
-  for(let p=0;p<passes;p++){
-    for(let i=0;i<n;i++){
-      if(held.has(i) || panel.boundary.has(i)){ tmp[i][0]=panel.X[i][0]; tmp[i][1]=panel.X[i][1]; tmp[i][2]=panel.X[i][2]; continue; }
-      const nb=panel.nbr[i]; if(!nb.length){ tmp[i][0]=panel.X[i][0]; tmp[i][1]=panel.X[i][1]; tmp[i][2]=panel.X[i][2]; continue; }
-      let cx=0,cy=0,cz=0; for(const j of nb){ cx+=panel.X[j][0]; cy+=panel.X[j][1]; cz+=panel.X[j][2]; } const m=nb.length;
-      tmp[i][0]=panel.X[i][0]+lambda*(cx/m-panel.X[i][0]);
-      tmp[i][1]=panel.X[i][1]+lambda*(cy/m-panel.X[i][1]);
-      tmp[i][2]=panel.X[i][2]+lambda*(cz/m-panel.X[i][2]);
-    }
-    for(let i=0;i<n;i++){ panel.X[i][0]=tmp[i][0]; panel.X[i][1]=tmp[i][1]; panel.X[i][2]=tmp[i][2]; }
-  }
-}
-// Impulse grab: nudge the brush vertices by the cursor increment (falloff-weighted),
-// then alternately smooth the bend and re-project the bars. Smoothing kills the
-// wrinkles a raw grab+relax produces (leather bends over a radius, it doesn't
-// crumple); the final relax restores no-stretch. Fast jumps are sub-stepped.
-function applyDrag(d, inc){
-  const panel=d.panel, pinned=d.pinned;
-  // The far anchor is always held; the brush core is held only while smoothing so
-  // it leads the cursor without being rounded away.
-  const held=new Set(pinned); for(const i of d.core) held.add(i);
-  const subs=Math.max(1, Math.min(8, Math.ceil(len(inc)/(d.brushR*0.15))));
-  for(let ss=0; ss<subs; ss++){
-    for(let k=0;k<d.idxs.length;k++){
-      const i=d.idxs[k]; if(pinned.has(i)) continue;
-      const f=d.w[k]/subs;
-      panel.X[i][0]+=inc[0]*f; panel.X[i][1]+=inc[1]*f; panel.X[i][2]+=inc[2]*f;
-    }
-    relaxBars(panel, pinned, 8);
-    // Strong smoothing → the sheet behaves like stiff leather: the handle moves
-    // and the whole panel bends as one smooth surface, with almost no local
-    // denting/wrinkling around the grab.
-    smoothBend(panel, held, 4, 0.6);
-    relaxBars(panel, pinned, 14);      // restore inextensibility (no-stretch)
-  }
-}
-function endDrag(){ DRAG=null; controls.enabled=true; }
-
-function ensureBrushRing(){
-  if(brushRing) return;
-  const seg=48, pts=[];
-  for(let i=0;i<=seg;i++){ const a=i/seg*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(a),0,Math.sin(a))); }
-  const g=new THREE.BufferGeometry().setFromPoints(pts);
-  brushRing=new THREE.Line(g, new THREE.LineBasicMaterial({color:0x35c1ff, transparent:true, opacity:0.8}));
-  brushRing.visible=false; scene.add(brushRing);
-}
-function updateBrushRing(clientX, clientY){
-  ensureBrushRing();
-  if(TOOL!=="drag"){ brushRing.visible=false; return; }
-  setMouse(clientX, clientY); ray.setFromCamera(mouse,camera);
-  const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
-  if(!hit){ brushRing.visible=false; return; }
-  brushRing.visible=true;
-  brushRing.position.copy(hit.point);
-  // orient flat to the surface normal so the ring hugs the panel
-  const nrm=hit.face? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : new THREE.Vector3(0,1,0);
-  brushRing.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), nrm);
-  brushRing.scale.setScalar(BRUSH_R);
-}
-window.setConstructBrush=function(r){ BRUSH_R=(r&&r>0)?r:25; };
-window.setConstructDragAxis=function(a){ setDragAxis(a||"screen"); };
 // Mockup material controls (Phase 4).
 window.setConstructMaterial=function(hex){
   if(hex!=null) MATERIAL_COLOR=hex>>>0;
@@ -1009,14 +812,12 @@ function clearCreasePreview(){ if(creaseLine) creaseLine.visible=false; }
 window.setConstructControls=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   CONTROLS.groundPanel=c.groundPanel||0;
-  if(c.stiffness!=null) STIFFNESS=Math.max(0,Math.min(1,c.stiffness));
   CONTROLS.foldAngle={};
   for(const f of (c.folds||[])) CONTROLS.foldAngle[f.panelId+"-"+f.foldId]=f.angleDeg||0;
   needsPose=true;
 };
 window.setConstructTool=function(t){
   TOOL=t||"select";
-  if(TOOL!=="drag" && brushRing) brushRing.visible=false;
   if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); }   // abandon a half-drawn crease
   if(PANELS.length) reportStretch();
 };
@@ -1048,12 +849,9 @@ function setMouse(cx,cy){ mouse.x=(cx/window.innerWidth)*2-1; mouse.y=-(cy/windo
 let downXY=null;
 renderer.domElement.addEventListener("pointerdown",e=>{
   if(e.button!==0) return;
-  if(TOOL==="drag"){ if(beginDrag(e.clientX,e.clientY)) e.preventDefault(); return; }
   downXY=[e.clientX,e.clientY];
 });
 renderer.domElement.addEventListener("pointermove",e=>{
-  if(DRAG){ moveDrag(e.clientX,e.clientY); return; }
-  if(TOOL==="drag"){ updateBrushRing(e.clientX,e.clientY); return; }
   if(TOOL==="crease" && CREASE_PT){
     // live rubber-band to the cursor's point on the same panel
     mouse.x=(e.clientX/window.innerWidth)*2-1; mouse.y=-(e.clientY/window.innerHeight)*2+1;
@@ -1064,7 +862,6 @@ renderer.domElement.addEventListener("pointermove",e=>{
   }
 });
 renderer.domElement.addEventListener("pointerup",e=>{
-  if(DRAG){ endDrag(); return; }
   if(e.button!==0 || !downXY) return;
   const moved=Math.hypot(e.clientX-downXY[0], e.clientY-downXY[1]); downXY=null;
   if(moved>4) return; // a drag, not a click
@@ -1125,15 +922,6 @@ function tick(){
     renderer.render(scene,camera);
   }catch(e){ if(!window.__rerr){ window.__rerr=1; post({op:"consoleError", message:"RENDER: "+((e&&e.message)||e)+" @ "+((e&&e.stack)||"").slice(0,300)}); } }
 }
-// Blender-style axis keys: while bending, X / Y / Z lock the grab to that world
-// axis; F (or Esc) returns to free screen-plane move. Posts back so the inspector
-// segmented control stays in sync.
-window.addEventListener("keydown",e=>{
-  if(!DRAG) return;
-  const k=(e.key||"").toLowerCase();
-  if(k==="x"||k==="y"||k==="z"){ setDragAxis(k); e.preventDefault(); }
-  else if(k==="f"||k==="escape"){ setDragAxis("screen"); e.preventDefault(); }
-});
 window.addEventListener("resize",()=>{
   camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
