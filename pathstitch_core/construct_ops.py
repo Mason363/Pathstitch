@@ -152,6 +152,14 @@ def _triangulate_simple(poly: Polygon, step: float) -> Tuple[List[Pt], List[Tupl
         ext = ext[:-1]
     pts: List[Pt] = list(_resample_polyline(ext, step, closed=True))
 
+    # Sample interior rings too (cut-out windows) so the hole edge triangulates
+    # cleanly instead of being bridged and dropped by the centroid test below.
+    for ring in poly.interiors:
+        r = list(ring.coords)
+        if len(r) > 1 and r[0] == r[-1]:
+            r = r[:-1]
+        pts.extend(_resample_polyline(r, step, closed=True))
+
     minx, miny, maxx, maxy = poly.bounds
     inner = poly.buffer(-step * 0.25)  # keep grid off the boundary a touch
     gx = minx + step * 0.5
@@ -221,9 +229,12 @@ def _weld(verts: List[Pt], tris: List[Tuple[int, int, int]],
 
 def _triangulate_panel(outline: Sequence[Pt],
                        folds: Sequence[Sequence[Pt]],
-                       target_len: float) -> Dict[str, Any]:
-    """Triangulates a flat panel so fold lines fall on shared mesh edges."""
-    poly = Polygon(outline)
+                       target_len: float,
+                       holes: Optional[Sequence[Sequence[Pt]]] = None) -> Dict[str, Any]:
+    """Triangulates a flat panel so fold lines fall on shared mesh edges.
+
+    `holes` (optional) are interior rings to leave open — cut-out windows."""
+    poly = Polygon(outline, holes or [])
     if not poly.is_valid:
         poly = poly.buffer(0)
     if poly.is_empty or poly.area <= 1e-9:
@@ -562,8 +573,9 @@ def _entity_center(ent) -> Optional[Pt]:
 def _extract_from_dxf(input_path: str,
                       fold_layers: Optional[List[str]],
                       include_handles: Optional[set] = None
-                      ) -> Tuple[List[List[Pt]], List[List[Pt]], List[Pt]]:
-    """Reads panel outlines, fold-layer lines, and sewing-hole centers.
+                      ) -> Tuple[List[List[Pt]], List[List[Pt]], List[Pt], List[str]]:
+    """Reads panel outlines, fold-layer lines, sewing-hole centers, and the DXF
+    handle of each panel (parallel to `panels`).
 
     `include_handles` (optional) restricts which closed areas become panels — to
     their DXF entity handle — so the user can assemble just one selected area.
@@ -576,6 +588,7 @@ def _extract_from_dxf(input_path: str,
     fold_set = {s.upper() for s in (fold_layers or [])} | _FOLD_LAYERS
 
     panels: List[List[Pt]] = []
+    panel_handles: List[str] = []
     folds: List[List[Pt]] = []
     holes: List[Pt] = []
     for ent in msp:
@@ -606,7 +619,8 @@ def _extract_from_dxf(input_path: str,
                 if include_handles and str(ent.dxf.handle) not in include_handles:
                     continue  # only the user-chosen area(s) become panels
                 panels.append(pts)
-    return panels, folds, holes
+                panel_handles.append(str(ent.dxf.handle))
+    return panels, folds, holes, panel_handles
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +652,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     panels_in = args.get("panels")
     folds_in = args.get("folds") or []
     holes_in = args.get("holes") or []
+    panel_handles: List[str] = []
 
     if panels_in is None:
         input_path = args.get("input")
@@ -646,9 +661,11 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         inc = args.get("include_handles") or []
         inc_set = {str(h) for h in inc} if inc else None
         try:
-            panels_in, folds_in, holes_in = _extract_from_dxf(input_path, args.get("fold_layers"), inc_set)
+            panels_in, folds_in, holes_in, panel_handles = _extract_from_dxf(input_path, args.get("fold_layers"), inc_set)
         except Exception as e:
             return {"status": "error", "message": f"DXF read failed: {e}"}
+    if not panel_handles:
+        panel_handles = [str(i) for i in range(len(panels_in or []))]
 
     # Fold lines the user drew directly in 3D (two points on a panel) — appended
     # so they're triangulated as real hinges just like DXF FOLD-layer folds. A
@@ -682,14 +699,63 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     requested_len = float(args.get("target_len", 0) or 0)
     ground_panel = int(args.get("ground_panel", 0) or 0)
 
+    # Overlap handling: detect each area engulfed by a larger one and apply the
+    # user's per-area treatment (keyed by DXF handle). cutout → hole in the outer
+    # panel + drop inner; stamp → decorative surface outline on the outer + drop
+    # inner; patch → keep inner, tag it onto the outer (raised); independent / none
+    # → both stay normal panels. Engulfed pairs are reported so the UI can prompt.
+    norm_outlines: List[List[Pt]] = []
+    for outline in panels_in:
+        o = [(float(p[0]), float(p[1])) for p in outline]
+        if len(o) >= 2 and o[0] == o[-1]:
+            o = o[:-1]
+        norm_outlines.append(o)
+    area_polys: List[Optional[Polygon]] = []
+    for o in norm_outlines:
+        if len(o) < 3:
+            area_polys.append(None); continue
+        pg = Polygon(o)
+        if not pg.is_valid:
+            pg = pg.buffer(0)
+        area_polys.append(None if (pg.is_empty or pg.area <= 1e-9) else pg)
+
+    treatments = args.get("area_treatments") or {}
+    engulfed: List[Dict[str, str]] = []
+    container_of: Dict[int, int] = {}
+    for i, pi in enumerate(area_polys):
+        if pi is None:
+            continue
+        best, best_area = -1, float("inf")
+        for j, pj in enumerate(area_polys):
+            if i == j or pj is None or pj.area <= pi.area:
+                continue
+            if pj.buffer(1e-6).contains(pi) and pj.area < best_area:
+                best, best_area = j, pj.area
+        if best >= 0:
+            container_of[i] = best
+            engulfed.append({"inner": panel_handles[i], "outer": panel_handles[best]})
+
+    dropped: set = set()
+    holes_by_panel: Dict[int, List[List[Pt]]] = {}
+    stamps_src: Dict[int, List[List[Pt]]] = {}
+    patch_of: Dict[int, int] = {}
+    for i, j in container_of.items():
+        t = treatments.get(panel_handles[i], "independent")
+        if t == "cutout":
+            dropped.add(i); holes_by_panel.setdefault(j, []).append(norm_outlines[i])
+        elif t == "stamp":
+            dropped.add(i); stamps_src.setdefault(j, []).append(norm_outlines[i])
+        elif t == "patch":
+            patch_of[i] = j   # stays a panel, raised onto its container
+
     out_panels: List[Dict[str, Any]] = []
     all_pts: List[Pt] = []
     panel_polys: Dict[int, Polygon] = {}
     panel_meshes: Dict[int, Tuple[List[Pt], List[Tuple[int, int, int]]]] = {}
     for idx, outline in enumerate(panels_in):
-        outline = [(float(p[0]), float(p[1])) for p in outline]
-        if len(outline) >= 2 and outline[0] == outline[-1]:
-            outline = outline[:-1]
+        if idx in dropped:
+            continue
+        outline = norm_outlines[idx]
         if len(outline) < 3:
             continue
         # only fold lines that actually touch this panel
@@ -701,7 +767,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         my_folds = my_folds + extra_by_panel.get(idx, [])   # this panel's own creases
         tl = _auto_target_len(outline, requested_len)
         try:
-            mesh = _triangulate_panel(outline, my_folds, tl)
+            mesh = _triangulate_panel(outline, my_folds, tl, holes_by_panel.get(idx))
         except Exception as e:
             return {"status": "error", "message": f"Panel {idx} triangulation failed: {e}"}
 
@@ -713,6 +779,8 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         panel_meshes[idx] = (mesh["vertices2d"], mesh["triangles"])
         out_panels.append({
             "id": idx,
+            "handle": panel_handles[idx] if idx < len(panel_handles) else str(idx),
+            "patchOf": patch_of.get(idx, -1),
             "vertices": verts3d,
             "vertices2d": mesh["vertices2d"],
             "triangles": mesh["triangles"],
@@ -725,6 +793,21 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
 
     if not out_panels:
         return {"status": "error", "message": "No valid panels after triangulation."}
+
+    # Stamps: embed each engulfed outline into its container panel's mesh so the
+    # decorative outline rides the fold (like sewing holes). Visual-only.
+    stamps: List[Dict[str, Any]] = []
+    for j, outs in stamps_src.items():
+        if j not in panel_meshes:
+            continue
+        v2d, tris = panel_meshes[j]
+        for outline in outs:
+            pts = []
+            for (x, y) in outline:
+                ti, bary = _embed_point(x, y, v2d, tris)
+                pts.append({"tri": ti, "bary": bary})
+            if pts:
+                stamps.append({"panelId": j, "closed": True, "pts": pts})
 
     # Sewing holes → ordered chains, each hole embedded in its panel's mesh so it
     # rides the fold. This is the raw material the stitch flagship matches.
@@ -742,6 +825,8 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         "bbox": [minx, miny, maxx, maxy],
         "groundPanel": ground_panel,
         "holeChains": hole_chains,
+        "engulfed": engulfed,
+        "stamps": stamps,
     }}
 
 
