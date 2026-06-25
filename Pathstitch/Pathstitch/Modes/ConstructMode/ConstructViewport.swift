@@ -19,6 +19,8 @@ struct ConstructViewport: NSViewRepresentable {
     let decalToken: Int
     let stampToken: Int
     let baseToken: Int
+    let panelXfToken: Int
+    let transformModeToken: Int
     let snapActive: Bool   // mirrors the 2D snap toggle so changes re-push live
     let homeToken: Int
     var state: AppState
@@ -61,6 +63,8 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushDecals()
         context.coordinator.pushStamps()
         context.coordinator.pushBase()
+        context.coordinator.pushPanelXf()
+        context.coordinator.pushTransformMode()
         context.coordinator.pushSnap()
         context.coordinator.pushHome()
     }
@@ -78,6 +82,8 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastDecalToken = -1
         private var lastStampToken = -1
         private var lastBaseToken = -1
+        private var lastPanelXfToken = -1
+        private var lastTransformModeToken = -1
         private var lastSnap: Bool? = nil
         private var lastHomeToken = -1
 
@@ -102,6 +108,8 @@ struct ConstructViewport: NSViewRepresentable {
                     self.lastDecalToken = -1
                     self.lastStampToken = -1
                     self.lastBaseToken = -1
+                    self.lastPanelXfToken = -1
+                    self.lastTransformModeToken = -1
                     self.lastSnap = nil
                     self.pushModel()
                     self.pushControls()
@@ -111,6 +119,8 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushDecals()
                     self.pushStamps()
                     self.pushBase()
+                    self.pushPanelXf()
+                    self.pushTransformMode()
                     self.pushSnap()
                 }
             case "selectFold":
@@ -169,6 +179,17 @@ struct ConstructViewport: NSViewRepresentable {
             case "seamFit":
                 let fits = json["seams"] as? [[String: Any]] ?? []
                 DispatchQueue.main.async { self.state.applySeamFit(fits) }
+            case "panelXf":
+                let handle = json["handle"] as? String ?? ""
+                let t = json["t"] as? [Double] ?? []
+                let q = json["q"] as? [Double] ?? []
+                let s = json["s"] as? Double ?? 1
+                DispatchQueue.main.async {
+                    if !handle.isEmpty {
+                        self.lastPanelXfToken = self.state.constructPanelXfToken  // applied in JS already
+                        self.state.setPanelTransform(handle: handle, t: t, q: q, s: s)
+                    }
+                }
             case "consoleError":
                 let msg = json["message"] as? String ?? ""
                 let src = json["source"] as? String ?? ""
@@ -189,6 +210,7 @@ struct ConstructViewport: NSViewRepresentable {
             lastDecalToken = -1 // re-apply decals to the freshly loaded mesh
             lastStampToken = -1 // re-apply stamps to the freshly loaded mesh
             lastBaseToken = -1  // re-root base regions on the freshly loaded mesh
+            lastPanelXfToken = -1 // re-apply pose overrides on the freshly loaded mesh
             let esc = Self.escape(json)
             webView.evaluateJavaScript("loadConstructModel(\"\(esc)\");", completionHandler: nil)
         }
@@ -215,6 +237,21 @@ struct ConstructViewport: NSViewRepresentable {
             lastBaseToken = state.constructBaseToken
             let esc = Self.escape(state.constructBaseJSON)
             webView.evaluateJavaScript("setConstructBase(\"\(esc)\");", completionHandler: nil)
+        }
+
+        func pushPanelXf() {
+            guard ready, let webView = webView else { return }
+            guard lastPanelXfToken != state.constructPanelXfToken else { return }
+            lastPanelXfToken = state.constructPanelXfToken
+            let esc = Self.escape(state.constructPanelXfJSON)
+            webView.evaluateJavaScript("setConstructPanelXf(\"\(esc)\");", completionHandler: nil)
+        }
+
+        func pushTransformMode() {
+            guard ready, let webView = webView else { return }
+            guard lastTransformModeToken != state.constructTransformModeToken else { return }
+            lastTransformModeToken = state.constructTransformModeToken
+            webView.evaluateJavaScript("setConstructTransformMode('\(state.constructTransformMode)');", completionHandler: nil)
         }
 
         func pushControls() {

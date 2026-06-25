@@ -207,6 +207,7 @@ extension AppState {
                     if let ap = self.activeDecalPanel { self.activeDecalPanel = mapId(ap) }
                     self.constructIncludeHandles = self.constructIncludeHandles.intersection(allHandles)
                     self.constructAreaTreatments = self.constructAreaTreatments.filter { allHandles.contains($0.key) }
+                    self.constructPanelXf = self.constructPanelXf.filter { allHandles.contains($0.key) }
                     self.constructPanelHandles = newIdToHandle
 
                     self.constructModelJSON = modelStr
@@ -254,7 +255,8 @@ extension AppState {
                            decalXforms: constructDecalXforms,
                            includeHandles: constructIncludeHandles,
                            areaTreatments: constructAreaTreatments,
-                           baseRegions: constructBaseRegions)
+                           baseRegions: constructBaseRegions,
+                           panelXf: constructPanelXf)
     }
 
     /// Record the current assembly state before a mutating edit, so Cmd-Z can undo
@@ -272,7 +274,7 @@ extension AppState {
         && a.glues == b.glues && a.userFolds == b.userFolds && a.materialHex == b.materialHex
         && a.thicknessMm == b.thicknessMm && a.decals == b.decals && a.decalXforms == b.decalXforms
         && a.includeHandles == b.includeHandles && a.areaTreatments == b.areaTreatments
-        && a.baseRegions == b.baseRegions
+        && a.baseRegions == b.baseRegions && a.panelXf == b.panelXf
     }
 
     private func applyConstruct(_ s: ConstructUndoState) {
@@ -294,6 +296,8 @@ extension AppState {
         constructIncludeHandles = s.includeHandles
         constructAreaTreatments = s.areaTreatments
         constructBaseRegions = s.baseRegions
+        let xfChanged = (s.panelXf != constructPanelXf)
+        constructPanelXf = s.panelXf
         if selectedFoldId != nil && !constructFolds.contains(where: { $0.id == selectedFoldId }) {
             selectedFoldId = nil
         }
@@ -306,6 +310,7 @@ extension AppState {
             constructMaterialToken += 1
             constructDecalToken += 1
             if baseChanged { constructBaseToken += 1 }
+            if xfChanged { constructPanelXfToken += 1 }
         }
     }
 
@@ -359,6 +364,38 @@ extension AppState {
         guard let d = try? JSONSerialization.data(withJSONObject: obj),
               let s = String(data: d, encoding: .utf8) else { return "{}" }
         return s
+    }
+
+    /// {handle: [tx,ty,tz, qx,qy,qz,qw, s]} per-panel pose overrides for the viewport.
+    var constructPanelXfJSON: String {
+        guard let d = try? JSONSerialization.data(withJSONObject: constructPanelXf),
+              let s = String(data: d, encoding: .utf8) else { return "{}" }
+        return s
+    }
+
+    /// Stores a panel pose override reported by the gizmo (handle-keyed → survives
+    /// 2D edits). Pose only; the 2D sketch is untouched.
+    func setPanelTransform(handle: String, t: [Double], q: [Double], s: Double) {
+        guard t.count == 3, q.count == 4 else { return }
+        pushConstructUndo()
+        constructPanelXf[handle] = [t[0], t[1], t[2], q[0], q[1], q[2], q[3], s]
+        hasUnsavedChanges = true
+        // No token bump: the viewport already applied it live; this just persists.
+    }
+
+    /// Sets the transform gizmo mode (translate / rotate / scale) and pushes it.
+    func setConstructTransformMode(_ m: String) {
+        constructTransformMode = m
+        constructTransformModeToken += 1
+    }
+
+    /// Clears all per-panel pose overrides (back to the seated pose).
+    func clearConstructPanelTransforms() {
+        guard !constructPanelXf.isEmpty else { return }
+        pushConstructUndo()
+        constructPanelXf.removeAll()
+        constructPanelXfToken += 1   // push the (empty) set so the viewport resets
+        hasUnsavedChanges = true
     }
 
     /// Switches the active construct tool (changes click behavior in the viewport).

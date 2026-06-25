@@ -19,6 +19,8 @@ struct ConstructModeView: View {
                     decalToken: state.constructDecalToken,
                     stampToken: state.constructStampToken,
                     baseToken: state.constructBaseToken,
+                    panelXfToken: state.constructPanelXfToken,
+                    transformModeToken: state.constructTransformModeToken,
                     snapActive: state.snapActive,
                     homeToken: state.triggerConstructHomeToken,
                     state: state
@@ -65,6 +67,9 @@ struct ConstructModeView: View {
         case .select:
             return ToolGuide(icon: "cursorarrow", name: "Select",
                              step: "Drag to orbit. Click a fold line to adjust its angle.")
+        case .move:
+            return ToolGuide(icon: "move.3d", name: "Move",
+                             step: "Click a panel, then drag the gizmo to move / rotate / scale it (pose only — never edits the 2D sketch).")
         case .fold:
             if let id = state.selectedFoldId, state.constructFolds.contains(where: { $0.id == id }) {
                 return ToolGuide(icon: "arrow.uturn.up", name: "Fold",
@@ -222,6 +227,7 @@ struct ConstructModeView: View {
                     }
                     .buttonStyle(.plain).foregroundColor(.text_secondary).font(PlasticityFont.label)
 
+                    if state.constructTool == .move { moveSection }
                     groundSection
                     foldSection
                     seamSection
@@ -232,6 +238,31 @@ struct ConstructModeView: View {
                 .padding(14)
             }
             Spacer()
+        }
+    }
+
+    private let transformModes: [(String, String)] = [
+        ("translate", "Move"), ("rotate", "Rotate"), ("scale", "Scale")
+    ]
+
+    private var moveSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionHeader("Transform")
+            Text("Click a panel, then drag the gizmo. This poses the 3D object only — it never changes the 2D sketch, and edits in 2D still flow through.")
+                .font(PlasticityFont.label).foregroundColor(.text_secondary)
+            Picker("", selection: Binding(
+                get: { state.constructTransformMode },
+                set: { state.setConstructTransformMode($0) })) {
+                ForEach(transformModes, id: \.0) { key, label in Text(label).tag(key) }
+            }
+            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
+            if !state.constructPanelXf.isEmpty {
+                Button { state.clearConstructPanelTransforms() } label: {
+                    HStack { Image(systemName: "arrow.uturn.backward"); Text("Reset poses (\(state.constructPanelXf.count))") }
+                        .font(PlasticityFont.label)
+                }
+                .buttonStyle(.plain).foregroundColor(.text_secondary)
+            }
         }
     }
 

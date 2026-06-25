@@ -4391,6 +4391,7 @@ extension ContentView {
     private func constructToolHelp(_ tool: ConstructTool) -> String {
         switch tool {
         case .select: return "Select — orbit and pick folds"
+        case .move:   return "Move — click a panel, then move / rotate / scale it (pose only)"
         case .fold:   return "Fold — click a fold line, then set its angle"
         case .crease: return "Crease — click two points on a panel to add a fold line"
         case .ground: return "Ground — click a panel to pin it to the ground plane"

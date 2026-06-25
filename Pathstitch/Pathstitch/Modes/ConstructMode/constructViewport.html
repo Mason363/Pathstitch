@@ -15,6 +15,7 @@
 <!-- Same Three.js the 3D viewport uses (r128 global build + OrbitControls). -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
 </head>
 <body>
 <canvas id="c"></canvas>
@@ -68,6 +69,17 @@ controls.screenSpacePanning=true;   // pan moves the object across the screen, i
 // picking — only actual drags drive the camera.
 controls.mouseButtons={ LEFT:THREE.MOUSE.ROTATE, MIDDLE:THREE.MOUSE.DOLLY, RIGHT:THREE.MOUSE.PAN };
 controls.touches={ ONE:THREE.TOUCH.ROTATE, TWO:THREE.TOUCH.DOLLY_PAN };
+
+// Blender-style object transform gizmo (move/rotate/scale a panel in 3D). It's a
+// pose override stored per-panel — it never edits the 2D sketch — and the panel
+// stays live-linked (2D shape/fold edits rebuild and the override re-applies).
+const tcontrols=new THREE.TransformControls(camera, renderer.domElement);
+tcontrols.setSize(0.85);
+tcontrols.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value; if(!e.value) commitGizmo(true); });
+tcontrols.addEventListener('objectChange', ()=>{ applyGizmoLive(); });
+scene.add(tcontrols);
+const gizmoProxy=new THREE.Object3D(); scene.add(gizmoProxy);
+let gizmoPanel=null;
 
 // Image-based lighting from a small procedural sky/studio gradient (soft, free).
 function makeEnv(){
@@ -135,6 +147,7 @@ let PANELS=[];            // per-panel runtime: {rest, X, edges, regions, tree, 
 let PANEL_BY_ID={};       // id -> panel
 let CONTROLS={ groundPanel:0, foldAngle:{}, foldRound:{} };  // foldAngle["pid-fid"]=deg, foldRound=0..1
 let BASE_PT={};           // panelId -> [x,y] base region point ("which side stays flat")
+let USER_XF={};           // handle -> {t:[x,y,z], q:[x,y,z,w], s} pose override (move/rotate/scale)
 let TOOL="select";
 let needsPose=false, hudT=0;
 
@@ -182,6 +195,7 @@ function clearPanels(){
   if(holeMesh){ root.remove(holeMesh); holeMesh.geometry.dispose(); holeMesh.material.dispose(); holeMesh=null; }
   if(chainLineMesh){ root.remove(chainLineMesh); chainLineMesh.geometry.dispose(); chainLineMesh.material.dispose(); chainLineMesh=null; }
   if(stampMesh){ root.remove(stampMesh); stampMesh.geometry.dispose(); stampMesh.material.dispose(); stampMesh=null; }
+  if(typeof detachGizmo==="function") detachGizmo();
   HOLE_SLOTS=[];
   clearThread();
 }
@@ -290,9 +304,11 @@ window.loadConstructModel=function(jsonStr){
   MODEL=m; clearPanels();
   for(const pj of (m.panels||[])){
     const rest3=pj.vertices.map(v=>[v[0],v[1],v[2]]);
-    const panel={ id:pj.id, triangles:pj.triangles, hinges:pj.hinges, rest3,
+    const _hnd=(pj.handle!=null?String(pj.handle):String(pj.id));
+    const panel={ id:pj.id, handle:_hnd, triangles:pj.triangles, hinges:pj.hinges, rest3,
                   v2d:pj.vertices2d||pj.vertices.map(v=>[v[0],v[2]]),
                   patchOf:(pj.patchOf==null?-1:pj.patchOf),
+                  userXf:(USER_XF[_hnd]?{t:USER_XF[_hnd].t.slice(),q:USER_XF[_hnd].q.slice(),s:USER_XF[_hnd].s}:{t:[0,0,0],q:[0,0,0,1],s:1}),
                   X:rest3.map(v=>v.slice()) };
     // unique edges + rest lengths (the inextensible "bars")
     const seen=new Set(), edges=[];
@@ -644,6 +660,26 @@ function roundFolds(panel){
     }
   }
 }
+// Rotate vector v by quaternion q [x,y,z,w].
+function qrot(q,v){
+  const x=q[0],y=q[1],z=q[2],w=q[3];
+  const ix=w*v[0]+y*v[2]-z*v[1], iy=w*v[1]+z*v[0]-x*v[2], iz=w*v[2]+x*v[1]-y*v[0], iw=-x*v[0]-y*v[1]-z*v[2];
+  return [ix*w+iw*-x+iy*-z-iz*-y, iy*w+iw*-y+iz*-x-ix*-z, iz*w+iw*-z+ix*-y-iy*-x];
+}
+function centroidX(panel){ let c=[0,0,0]; for(const v of panel.X){ c[0]+=v[0];c[1]+=v[1];c[2]+=v[2]; } const n=panel.X.length||1; return [c[0]/n,c[1]/n,c[2]/n]; }
+// Bake a panel's user pose override (move/rotate/scale about its seated centroid)
+// into panel.X, so the mesh, holes, seams, stamps and export all ride it.
+function applyUserXf(panel){
+  panel.seatCentroid=centroidX(panel);            // pre-override centroid (for the gizmo)
+  const xf=panel.userXf; if(!xf) return;
+  const idT=(xf.t[0]===0&&xf.t[1]===0&&xf.t[2]===0), idQ=(xf.q[0]===0&&xf.q[1]===0&&xf.q[2]===0&&Math.abs(xf.q[3]-1)<1e-9), idS=Math.abs(xf.s-1)<1e-9;
+  if(idT&&idQ&&idS) return;
+  const c=panel.seatCentroid, s=xf.s;
+  for(const v of panel.X){
+    const r=qrot(xf.q,[(v[0]-c[0])*s,(v[1]-c[1])*s,(v[2]-c[2])*s]);
+    v[0]=c[0]+r[0]+xf.t[0]; v[1]=c[1]+r[1]+xf.t[1]; v[2]=c[2]+r[2]+xf.t[2];
+  }
+}
 function recomputePose(){
   for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically
   for(const panel of PANELS) roundFolds(panel);  // soften creases per-fold (no stretch)
@@ -651,6 +687,7 @@ function recomputePose(){
   // Raised patches sit just above their container (re-applied each pose, so no
   // drift). World-up offset reads right for the common flat-area pocket case.
   for(const panel of PANELS){ if(panel.patchOf>=0){ const dy=THICKNESS*1.5+0.4; for(const v of panel.X){ v[1]+=dy; } } }
+  for(const panel of PANELS) applyUserXf(panel);  // Blender-style move/rotate/scale override
   for(const panel of PANELS) writePanelGeometry(panel);
   updateHoleInstances();
   updateChainLines();
@@ -658,6 +695,13 @@ function recomputePose(){
   updateThread();
   reportStretch();
   postSeamFit();
+  // Keep the gizmo on its panel as the pose changes (but never while dragging it).
+  if(gizmoPanel && gizmoPanel.seatCentroid && !tcontrols.dragging){
+    const c=gizmoPanel.seatCentroid, xf=gizmoPanel.userXf;
+    gizmoProxy.position.set(c[0]+xf.t[0], c[1]+xf.t[1], c[2]+xf.t[2]);
+    gizmoProxy.quaternion.set(xf.q[0],xf.q[1],xf.q[2],xf.q[3]);
+    gizmoProxy.scale.setScalar(xf.s||1); gizmoProxy.userData.centroid=c;
+  }
 }
 
 // ---- hole markers + thread (ride the live folded mesh) ---------------------
@@ -1006,6 +1050,7 @@ window.setConstructControls=function(jsonStr){
 window.setConstructTool=function(t){
   TOOL=t||"select";
   if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); hideSnapIndicator(); }   // abandon a half-drawn crease
+  if(TOOL!=="move") detachGizmo();   // hide the transform gizmo outside the Move tool
   if(PANELS.length) reportStretch();
 };
 // Per-panel base region ("which side stays flat"): re-root each panel's fold tree
@@ -1014,6 +1059,43 @@ window.setConstructBase=function(jsonStr){
   let d; try{ d=JSON.parse(jsonStr); }catch(e){ return; }
   BASE_PT=d||{};
   for(const p of PANELS){ p.tree=buildRegions(p, p.id===CONTROLS.groundPanel, BASE_PT[p.id]); }
+  needsPose=true;
+};
+// ---- object transform gizmo (move / rotate / scale a panel) -----------------
+function attachGizmo(panel){
+  gizmoPanel=panel; const c=panel.seatCentroid||centroidX(panel); const xf=panel.userXf;
+  gizmoProxy.position.set(c[0]+xf.t[0], c[1]+xf.t[1], c[2]+xf.t[2]);
+  gizmoProxy.quaternion.set(xf.q[0],xf.q[1],xf.q[2],xf.q[3]);
+  gizmoProxy.scale.setScalar(xf.s||1);
+  gizmoProxy.userData.centroid=c;
+  tcontrols.attach(gizmoProxy);
+}
+function detachGizmo(){ tcontrols.detach(); gizmoPanel=null; }
+// While dragging: read the proxy back into the panel's override + re-pose live.
+function applyGizmoLive(){
+  if(!gizmoPanel) return;
+  const c=gizmoProxy.userData.centroid;
+  gizmoPanel.userXf={ t:[gizmoProxy.position.x-c[0], gizmoProxy.position.y-c[1], gizmoProxy.position.z-c[2]],
+                      q:[gizmoProxy.quaternion.x,gizmoProxy.quaternion.y,gizmoProxy.quaternion.z,gizmoProxy.quaternion.w],
+                      s:gizmoProxy.scale.x };
+  USER_XF[gizmoPanel.handle]=gizmoPanel.userXf;
+  needsPose=true;
+}
+// On drag end: persist to Swift (handle-keyed → survives 2D edits/rebuilds).
+function commitGizmo(persist){
+  if(!gizmoPanel) return; const xf=gizmoPanel.userXf;
+  if(persist) post({op:"panelXf", handle:gizmoPanel.handle, t:xf.t, q:xf.q, s:xf.s});
+}
+window.setConstructTransformMode=function(m){
+  if(m==="off"){ detachGizmo(); return; }
+  if(["translate","rotate","scale"].includes(m)) tcontrols.setMode(m);
+};
+// Persisted overrides pushed from Swift {handle:[tx,ty,tz,qx,qy,qz,qw,s]}.
+window.setConstructPanelXf=function(jsonStr){
+  let d; try{ d=JSON.parse(jsonStr); }catch(e){ return; }
+  USER_XF={};
+  for(const h in (d||{})){ const a=d[h]; if(a&&a.length>=8) USER_XF[h]={t:[a[0],a[1],a[2]], q:[a[3],a[4],a[5],a[6]], s:a[7]}; }
+  for(const p of PANELS){ p.userXf=USER_XF[p.handle]?{t:USER_XF[p.handle].t.slice(),q:USER_XF[p.handle].q.slice(),s:USER_XF[p.handle].s}:{t:[0,0,0],q:[0,0,0,1],s:1}; }
   needsPose=true;
 };
 window.setConstructSeams=function(jsonStr){
@@ -1112,6 +1194,11 @@ renderer.domElement.addEventListener("pointerup",e=>{
     if(hit){ const panel=PANEL_BY_ID[hit.object.userData.panelId];
       const p2d=hitTo2D(panel, hit.face, hit.point);   // the clicked face → base region
       post({op:"selectPanel", panelId:panel.id, p2d:p2d}); }
+    return;
+  }
+  if(TOOL==="move"){
+    const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
+    if(hit) attachGizmo(PANEL_BY_ID[hit.object.userData.panelId]); else detachGizmo();
     return;
   }
   // select / fold → nearest fold edge

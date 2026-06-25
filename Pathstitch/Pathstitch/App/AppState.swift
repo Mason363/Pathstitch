@@ -2007,6 +2007,15 @@ class AppState {
     // panel ids). Not persisted — rebuilt every assemble.
     var constructPanelHandles: [Int: String] = [:]
 
+    // Blender-style per-panel pose override (move/rotate/scale), keyed by stable
+    // DXF handle → [tx,ty,tz, qx,qy,qz,qw, scale]. Pose only — never edits the 2D
+    // sketch; survives 2D edits. Persisted in the assembly.
+    var constructPanelXf: [String: [Double]] = [:]
+    var constructPanelXfToken: Int = 0
+    // Transform gizmo mode while the Move tool is active.
+    var constructTransformMode: String = "translate"   // translate | rotate | scale
+    var constructTransformModeToken: Int = 0
+
     // Overlap handling: per-engulfed-area treatment (inner DXF handle → "stamp" |
     // "patch" | "cutout" | "independent"). Persisted. `pendingEngulfed` holds the
     // detected nestings the user hasn't decided yet (drives the chooser).
@@ -7065,7 +7074,8 @@ class AppState {
                                          && constructGlues.isEmpty && constructDecals.isEmpty
                                          && constructIncludeHandles.isEmpty
                                          && constructAreaTreatments.isEmpty
-                                         && constructBaseRegions.isEmpty) ? nil :
+                                         && constructBaseRegions.isEmpty
+                                         && constructPanelXf.isEmpty) ? nil :
                     ConstructAssembly(
                         groundPanel: constructGroundPanel,
                         folds: constructFolds,
@@ -7083,7 +7093,8 @@ class AppState {
                         includeHandles: constructIncludeHandles.isEmpty ? nil : Array(constructIncludeHandles),
                         areaTreatments: constructAreaTreatments.isEmpty ? nil : constructAreaTreatments,
                         baseRegions: constructBaseRegions.isEmpty ? nil :
-                            Dictionary(uniqueKeysWithValues: constructBaseRegions.map { (String($0.key), $0.value) }))
+                            Dictionary(uniqueKeysWithValues: constructBaseRegions.map { (String($0.key), $0.value) }),
+                        panelXf: constructPanelXf.isEmpty ? nil : constructPanelXf)
             )
 
             let encoder = JSONEncoder()
@@ -7197,6 +7208,7 @@ class AppState {
                 self.constructAreaTreatments = asm.areaTreatments ?? [:]
                 self.constructBaseRegions = Dictionary(uniqueKeysWithValues:
                     (asm.baseRegions ?? [:]).compactMap { k, v in Int(k).map { ($0, v) } })
+                self.constructPanelXf = asm.panelXf ?? [:]
             }
             self.logEntries = validContainer.logEntries
             self.canvasScale = CGFloat(validContainer.canvasScale)

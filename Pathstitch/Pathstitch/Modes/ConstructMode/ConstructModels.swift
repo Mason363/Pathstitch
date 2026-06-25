@@ -9,6 +9,7 @@ import Foundation
 /// Tools available in construct mode (its own set, not the 2D `TwoDTool`).
 enum ConstructTool: String, CaseIterable, Identifiable {
     case select     // orbit + pick panels/folds
+    case move       // move / rotate / scale a panel with a 3D gizmo (pose only)
     case fold       // click a fold edge, then set its angle
     case crease     // click two points on a panel to add a new fold line in 3D
     case ground     // click a panel to pin it as the ground
@@ -20,6 +21,7 @@ enum ConstructTool: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .select: return "Select"
+        case .move:   return "Move"
         case .fold:   return "Fold"
         case .crease: return "Crease"
         case .ground: return "Ground"
@@ -32,6 +34,7 @@ enum ConstructTool: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .select: return "cursorarrow"
+        case .move:   return "move.3d"
         case .fold:   return "arrow.uturn.up"
         case .crease: return "scribble.variable"
         case .ground: return "square.grid.3x3.fill.square"
@@ -41,7 +44,7 @@ enum ConstructTool: String, CaseIterable, Identifiable {
     }
 
     /// Tools shipped so far.
-    static var available: [ConstructTool] { [.select, .fold, .crease, .ground, .stitch, .glue] }
+    static var available: [ConstructTool] { [.select, .move, .fold, .crease, .ground, .stitch, .glue] }
 }
 
 /// A fold line the user drew in 3D (two points in a panel's 2D space), re-fed to
@@ -189,6 +192,9 @@ struct ConstructAssembly: Codable {
     var areaTreatments: [String: String]? = nil
     /// Per-panel base region ("which side stays flat"): panelId (as string) → [x,y].
     var baseRegions: [String: [Double]]? = nil
+    /// Per-panel pose override (move/rotate/scale): DXF handle → [tx,ty,tz, qx,qy,
+    /// qz,qw, scale]. Pose only — never edits the 2D sketch.
+    var panelXf: [String: [Double]]? = nil
 }
 
 /// A full snapshot of the editable assembly state for the panel's own undo/redo
@@ -206,6 +212,7 @@ struct ConstructUndoState {
     var includeHandles: Set<String>
     var areaTreatments: [String: String]
     var baseRegions: [Int: [Double]]
+    var panelXf: [String: [Double]]
 }
 
 /// A glue/weld join: panel B is seated onto panel A where their edges meet and
