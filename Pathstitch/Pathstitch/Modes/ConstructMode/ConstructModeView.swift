@@ -7,6 +7,10 @@ import SwiftUI
 struct ConstructModeView: View {
     @Bindable var state: AppState
 
+    /// Display-only settings (shading + cutting mat) are tucked into a collapsed
+    /// disclosure so the inspector leads with the active tool, not view chrome.
+    @State private var showDisplay = false
+
     var body: some View {
         HStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
@@ -76,17 +80,13 @@ struct ConstructModeView: View {
         switch state.constructTool {
         case .select:
             return ToolGuide(icon: "cursorarrow", name: "Select",
-                             step: "Drag to orbit. Click a fold line to adjust its angle.")
+                             step: "Drag to orbit. Click a fold or panel to select it. Use Fold to drag-fold.")
         case .move:
             return ToolGuide(icon: "move.3d", name: "Move",
                              step: "Click a panel, then drag the gizmo to move / rotate / scale it (pose only — never edits the 2D sketch).")
         case .fold:
-            if let id = state.selectedFoldId, state.constructFolds.contains(where: { $0.id == id }) {
-                return ToolGuide(icon: "arrow.uturn.up", name: "Fold",
-                                 step: "Drag the angle slider in the panel → to fold. Or click another fold line.")
-            }
             return ToolGuide(icon: "arrow.uturn.up", name: "Fold",
-                             step: "Click a fold line on the model, then set its angle in the panel →.")
+                             step: "Drag a flap to fold it — snaps to 15/45/90°, hold ⇧ for free. Drag empty space to orbit; the slider → fine-tunes.")
         case .crease:
             return ToolGuide(icon: "scribble.variable", name: "Crease",
                              step: "Click a start point, then an end point across a panel — the dashed preview becomes a new fold.")
@@ -226,21 +226,30 @@ struct ConstructModeView: View {
                     // lighting (presentation) controls.
                     renderModeSection
 
-                    // Shading + cutting mat — display aids that apply in both Edit
-                    // and Mockup, so they sit above the mode-specific controls.
-                    shadingSection
-                    matSection
-
+                    // Controls-first: the active tool's options lead the inspector.
                     if state.constructArtworkMode {
                         artworkPanel
                     } else if state.constructRenderMode == "mockup" {
                         materialSection
                         ConstructLightingView(state: state)
                     } else {
-                        // Contextual: only the active tool's options (left rail picks the tool).
                         stepCard
                         toolOptions
                         stretchSection
+                    }
+
+                    // Display-only aids (shading + cutting mat), collapsed by default
+                    // so they don't crowd the tool controls. Apply in Edit and Mockup.
+                    Divider().background(Color.border_subtle)
+                    DisclosureGroup(isExpanded: $showDisplay) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            shadingSection
+                            matSection
+                        }
+                        .padding(.top, 8)
+                    } label: {
+                        Text("DISPLAY OPTIONS").font(PlasticityFont.label)
+                            .foregroundColor(.text_secondary).tracking(1)
                     }
                 }
                 .padding(14)
@@ -261,11 +270,6 @@ struct ConstructModeView: View {
                 ForEach(renderModes, id: \.0) { key, label in Text(label).tag(key) }
             }
             .pickerStyle(.segmented).controlSize(.small).labelsHidden()
-            Text(state.constructRenderMode == "mockup"
-                 ? "Mockup — clean render with editing overlays hidden. Tune the leather and lighting below."
-                 : "Edit — fold lines, holes and gizmos shown for building. Switch to Mockup for a beauty render.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -496,11 +500,11 @@ struct ConstructModeView: View {
     private var foldSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader("Folds")
-            // Always shown — answers "what actually makes a line a fold?" A plain
-            // line crossing a shape is NOT auto-folded (that would bend cut lines and
-            // guides too); you mark it, so folds are deliberate.
-            Text("A fold line is a line on the **FOLD / CREASE layer**, or one you draw with the **Crease tool**. A plain line crossing a panel stays just a line until you mark it.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
+            // Lead with the primary interaction (drag-to-fold); the "what is a fold
+            // line" explainer follows for when there are none yet.
+            Label("Drag a flap in 3D to fold it. Snaps to 15/45/90° — hold ⇧ for free.",
+                  systemImage: "hand.draw")
+                .font(PlasticityFont.label).foregroundColor(.accent)
                 .fixedSize(horizontal: false, vertical: true)
             if state.constructFolds.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {

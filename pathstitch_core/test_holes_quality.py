@@ -180,6 +180,45 @@ def test_open_path_even():
     print(f"Open path OK: {len(holes)} holes, even gaps ~{sum(gaps)/len(gaps):.2f} mm")
 
 
+def test_end_modes():
+    """End-placement modes on an open line. ends -> a hole on both window tips
+    (legacy even spread); fill -> fixed pitch anchored at the start with the
+    remainder margin at the far end; even -> fixed pitch centred (equal margins)."""
+    def _xs(**extra):
+        out = tempfile.NamedTemporaryFile(suffix=".dxf", delete=False); out.close()
+        doc = ezdxf.new(dxfversion="R2010"); m = doc.modelspace()
+        ln = m.add_lwpolyline([(0, 0), (95, 0)], dxfattribs={"closed": False})
+        path = _save(doc)
+        holes = _run(ln.dxf.handle, path, out.name, hole_spacing=10.0, side="left",
+                     corner_holes=False, enable_variable_spacing=False,
+                     enable_proximity_filter=False,
+                     enable_line_proximity_filter=False, **extra)
+        return sorted(x for x, _ in holes)
+
+    ends = _xs(end_mode="ends")
+    assert ends[0] < 1.0 and ends[-1] > 94.0, f"ends mode not anchored to tips: {ends}"
+
+    fill = _xs(end_mode="fill")
+    assert fill[0] < 1.0, f"fill should start at the near tip: {fill}"
+    fgaps = [fill[i + 1] - fill[i] for i in range(len(fill) - 1)]
+    assert all(abs(g - 10.0) < 0.5 for g in fgaps), f"fill pitch not fixed at 10: {fgaps}"
+    start_margin, end_margin = fill[0], 95.0 - fill[-1]
+    assert end_margin > start_margin + 3.0, \
+        f"fill remainder not at far end: {start_margin:.2f}/{end_margin:.2f}"
+
+    even = _xs(end_mode="even")
+    egaps = [even[i + 1] - even[i] for i in range(len(even) - 1)]
+    assert all(abs(g - 10.0) < 0.5 for g in egaps), f"even pitch not fixed at 10: {egaps}"
+    assert abs(even[0] - (95.0 - even[-1])) < 0.6, \
+        f"even margins unequal: {even[0]:.2f} vs {95.0 - even[-1]:.2f}"
+
+    fin = _xs(end_mode="fill", start_inset=10.0)
+    assert fin[0] > 9.0, f"start_inset ignored in fill mode: {fin}"
+    print(f"End modes OK: ends {ends[0]:.1f}/{ends[-1]:.1f}, "
+          f"fill margins {start_margin:.1f}/{end_margin:.1f}, "
+          f"even margins {even[0]:.1f}/{95.0 - even[-1]:.1f}")
+
+
 def test_concave_in_band_even():
     """An L-shaped (concave) contour must keep holes in the offset band and evenly
     spaced — the old side-flip/scatter bug hit concave shapes hardest."""
@@ -323,6 +362,7 @@ def run():
     test_corner_threshold_45()
     test_saddle_rows()
     test_open_path_even()
+    test_end_modes()
     test_iron_shapes_emit_closed_paths()
     test_iron_oval_is_ellipse()
     test_iron_slit_orientation()

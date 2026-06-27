@@ -185,11 +185,24 @@ struct ConstructViewport: NSViewRepresentable {
             case "selectPanel":
                 let panelId = json["panelId"] as? Int ?? 0
                 let p2d = json["p2d"] as? [Double]
+                let side = json["side"] as? Double ?? 0
                 DispatchQueue.main.async {
                     switch self.state.constructTool {
                     case .ground: self.state.setConstructGround(panelId, basePoint: p2d)
-                    case .glue:   self.state.pickPanelForGlue(panelId, p2d)
+                    case .glue:   self.state.pickPanelForGlue(panelId, p2d, side)
                     default: break
+                    }
+                }
+            case "setFoldAngle":
+                // Direct drag-to-fold in 3D reports the final angle on release.
+                let panelId = json["panelId"] as? Int ?? -1
+                let foldId = json["foldId"] as? Int ?? -1
+                let deg = json["deg"] as? Double ?? 0
+                DispatchQueue.main.async {
+                    if panelId >= 0 && foldId >= 0 {
+                        // No token suppression needed: the setter doesn't bump the push
+                        // token (the viewport already applied the fold live).
+                        self.state.setConstructFoldAngleByIds(panelId: panelId, foldId: foldId, deg: deg)
                     }
                 }
             case "addFold":

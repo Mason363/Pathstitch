@@ -984,16 +984,18 @@ class AppState {
                 pickingPatternPath = false
             }
             if currentTool == .addHoles {
-                // The sewing tool starts in single-segment selection — NOT chain
-                // select. We remember the chain-select state on entry so that a
-                // chain-select the user toggles ON *while in the tool* reverts when
-                // they leave, instead of leaking into every other tool. If chain
-                // select was already on before entering, it's left untouched on exit.
+                // The sewing tool ALWAYS starts in single-segment selection — NOT
+                // chain select — so a click grabs only the line the user picked and
+                // holes land on that individual line (per-end insets apply). We snap-
+                // shot the prior chain state on entry and force it off, decoupling the
+                // tool from the global flag (the Offset tool, for instance, turns chain
+                // ON). The user can still toggle chain ON *while in the tool* (A key /
+                // link button); on exit we restore the snapshot so that choice never
+                // leaks into any other tool.
                 holesEntryChainSelection = chainSelectionEnabled
+                chainSelectionEnabled = false
             } else if oldValue == .addHoles {
-                if holesEntryChainSelection == false {
-                    chainSelectionEnabled = false
-                }
+                chainSelectionEnabled = holesEntryChainSelection ?? false
                 holesEntryChainSelection = nil
             }
         }
@@ -1203,6 +1205,10 @@ class AppState {
     /// the (slow) two-call Python hole pipeline on every frame; the accurate hole
     /// pattern is computed once when the drag ends.
     var isDraggingHoleOffset: Bool = false
+    /// Same fast-path while dragging a START/END tip handle (sewing-hole inset): show
+    /// an instant native ghost instead of the slow Python pipeline; the real pattern
+    /// resolves on drag-end.
+    var isDraggingHoleInset: Bool = false
     var holeDiameter: Double = 1.0
     var holeSpacing: Double = 4.0
     // Distribution: "spacing" fills the contour at a fixed pitch (variable spacing
@@ -1235,6 +1241,18 @@ class AppState {
     // perimeter and holes run all the way around.
     var holeStartInset: Double = 0.0
     var holeEndInset: Double = 0.0
+    // End-placement mode for the single-line run (open paths only). "ends" = legacy:
+    // pitch flexes so a hole lands on both tips of the [start, end] window (even
+    // spread). "fill" = hold the exact spacing from the start tip, remainder margin
+    // at the far end. "even" = hold the exact spacing but centre the run so both end
+    // margins are equal. Default "ends" preserves the historical layout.
+    var holeEndMode: String = "ends"
+    // When linked (default), one "Margin" field drives BOTH start & end insets; the
+    // user can unlink to set the two ends independently.
+    var holeInsetLinked: Bool = true
+    // Unit the inset/margin fields are typed in: "mm" or "pitch" (× the stitch
+    // spacing). Canonical storage stays in mm; the UI converts for display/entry.
+    var holeInsetUnit: String = "mm"
     // Corner treatment of the offset stitch line: false = sharp (mitre, default),
     // true = filleted (rounded) corners on the offset.
     var holeOffsetCornerFillet: Bool = false
@@ -2089,7 +2107,7 @@ class AppState {
     var constructModelJSON: String?
     var constructModelToken: Int = 0          // bump to force the viewport to (re)load the model
     var isBuildingConstructModel: Bool = false
-    var constructTool: ConstructTool = .select
+    var constructTool: ConstructTool = .fold   // Fold is the primary action (drag a flap in 3D to fold it)
     var constructGroundPanel: Int = 0         // panel pinned to the ground plane
     var constructFolds: [FoldSpec] = []       // controllable folds (one per panel/foldId group)
     var constructFoldStateToken: Int = 0      // bump to push ground + fold angles to the viewport
@@ -2176,6 +2194,7 @@ class AppState {
     var constructGlues: [GlueJoint] = []
     var selectedPanelForGlue: Int? = nil   // first panel picked while gluing
     var selectedGluePoint: [Double]? = nil // first pick's clicked face/edge point
+    var selectedGlueSide: Double = 0       // first pick's clicked side (±1, winding-relative)
     var constructGlueMode: String = "panel" // panel | face | edge (how the bond seats)
     var constructGlueModeToken: Int = 0
 
@@ -5260,6 +5279,7 @@ class AppState {
             "chain_selection": chainSelectionEnabled,
             "start_inset": holeStartInset,
             "end_inset": holeEndInset,
+            "end_mode": holeEndMode,
             "offset_corner_fillet": holeOffsetCornerFillet,
             "enable_variable_spacing": holeEnableVariableSpacing,
             "enable_proximity_filter": holeEnableProximityFilter,
@@ -5280,6 +5300,20 @@ class AppState {
             "snap_to_chisel": snapToChisel,
             "chisel_prongs": selectedIronBladeCount
         ]
+    }
+
+    /// Divisor used when margins are entered in "× pitch" units (the stitch
+    /// spacing). Guarded so a zero spacing never blows up the conversion.
+    var holeInsetPitchDivisor: Double { holeSpacing > 0.001 ? holeSpacing : 1.0 }
+    /// Suffix shown on the margin field labels for the active unit.
+    var holeInsetUnitLabel: String { holeInsetUnit == "pitch" ? "× pitch" : "mm" }
+    /// Convert a canonical mm inset to the value shown in the field (mm or × pitch).
+    func holeInsetToDisplay(_ mm: Double) -> Double {
+        holeInsetUnit == "pitch" ? mm / holeInsetPitchDivisor : mm
+    }
+    /// Convert a typed field value (mm or × pitch) back to canonical mm.
+    func holeInsetFromDisplay(_ shown: Double) -> Double {
+        max(0.0, holeInsetUnit == "pitch" ? shown * holeInsetPitchDivisor : shown)
     }
 
     /// Prong count of the currently-selected pricking iron (1 if none matches).
@@ -6086,10 +6120,10 @@ class AppState {
             return
         }
 
-        // While the margin handle is being dragged, skip the slow Python hole
-        // pipeline and show an instant native offset path so the ghost tracks the
-        // handle in real time. The full hole pattern is computed on drag-end.
-        if isDraggingHoleOffset {
+        // While the margin or tip (inset) handle is being dragged, skip the slow
+        // Python hole pipeline and show an instant native offset path so the ghost
+        // tracks the handle in real time. The full hole pattern is computed on drag-end.
+        if isDraggingHoleOffset || isDraggingHoleInset {
             let selected = entities.filter { selectedHandles.contains($0.handle) }
             self.previewEntities = OffsetGeometry.preview(
                 selected: selected,

@@ -339,6 +339,18 @@ extension AppState {
         hasUnsavedChanges = true
     }
 
+    /// Sets a fold's angle by (panelId, foldId) — used by direct drag-to-fold in 3D,
+    /// which reports the final angle on release. The viewport already applied it live
+    /// (and the inspector slider reads `angleDeg` directly via @Observable), so we do
+    /// NOT bump the push token — no redundant re-pose round-trip (mirrors panelXf).
+    func setConstructFoldAngleByIds(panelId: Int, foldId: Int, deg: Double) {
+        guard let i = constructFolds.firstIndex(where: { $0.panelId == panelId && $0.foldId == foldId }),
+              abs(constructFolds[i].angleDeg - deg) > 1e-6 else { return }
+        pushConstructUndo()                 // snapshot is pre-drag (Swift held the old angle until now)
+        constructFolds[i].angleDeg = deg
+        hasUnsavedChanges = true
+    }
+
     /// Sets a fold's roundness (0 sharp … 1 round) and re-poses.
     func setConstructFoldRoundness(_ id: FoldSpec.ID, _ r: Double) {
         guard let i = constructFolds.firstIndex(where: { $0.id == id }) else { return }
@@ -787,33 +799,43 @@ extension AppState {
     }
 
     /// Glue tool: pick a face/edge on panel A, then on panel B → bond per the
-    /// current glue mode. `p2d` is the clicked point (selects the face/edge).
-    func pickPanelForGlue(_ panelId: Int, _ p2d: [Double]? = nil) {
+    /// current glue mode. `p2d` is the clicked point (selects the face/edge);
+    /// `side` is which visible side was clicked (±1, winding-relative).
+    func pickPanelForGlue(_ panelId: Int, _ p2d: [Double]? = nil, _ side: Double = 0) {
         if let first = selectedPanelForGlue {
             let firstPt = selectedGluePoint
-            selectedPanelForGlue = nil; selectedGluePoint = nil
-            if first != panelId { addGlue(panelA: first, panelB: panelId, aPt: firstPt, bPt: p2d) }
+            let firstSide = selectedGlueSide
+            selectedPanelForGlue = nil; selectedGluePoint = nil; selectedGlueSide = 0
+            if first != panelId {
+                addGlue(panelA: first, panelB: panelId, aPt: firstPt, bPt: p2d,
+                        aSide: firstSide, bSide: side)
+            }
             constructSeamStateToken += 1
         } else {
             selectedPanelForGlue = panelId
             selectedGluePoint = p2d
+            selectedGlueSide = side
             constructSeamStateToken += 1
         }
     }
 
-    /// Sets the glue mode (panel / face / edge) for the next bond.
+    /// Sets the glue mode (panel / face / edge) for the next bond. Bumps the seam
+    /// token too so the viewport re-pushes (the live highlight is mode-aware).
     func setConstructGlueMode(_ m: String) {
         constructGlueMode = m
         constructGlueModeToken += 1
+        constructSeamStateToken += 1
     }
 
-    func addGlue(panelA: Int, panelB: Int, aPt: [Double]? = nil, bPt: [Double]? = nil) {
+    func addGlue(panelA: Int, panelB: Int, aPt: [Double]? = nil, bPt: [Double]? = nil,
+                 aSide: Double = 0, bSide: Double = 0) {
         guard !constructGlues.contains(where: {
             ($0.panelA == panelA && $0.panelB == panelB) ||
             ($0.panelA == panelB && $0.panelB == panelA) }) else { return }
         pushConstructUndo()
         constructGlues.append(GlueJoint(panelA: panelA, panelB: panelB,
-                                        mode: constructGlueMode, aPt: aPt, bPt: bPt))
+                                        mode: constructGlueMode, aPt: aPt, bPt: bPt,
+                                        aSide: aSide, bSide: bSide))
         constructSeamStateToken += 1
         hasUnsavedChanges = true
     }
@@ -1027,13 +1049,21 @@ extension AppState {
              "anchors": s.anchors ?? []]
         }
         let glues = constructGlues.map { g -> [String: Any] in
-            var o: [String: Any] = ["panelA": g.panelA, "panelB": g.panelB, "mode": g.mode]
+            var o: [String: Any] = ["panelA": g.panelA, "panelB": g.panelB, "mode": g.mode,
+                                    "aSide": g.aSide, "bSide": g.bSide]
             if let a = g.aPt { o["aPt"] = a }
             if let b = g.bPt { o["bPt"] = b }
             return o
         }
-        var payload: [String: Any] = ["seams": seams, "glues": glues, "showThread": constructShowThread]
+        var payload: [String: Any] = ["seams": seams, "glues": glues, "showThread": constructShowThread,
+                                      "glueMode": constructGlueMode]
         if let sel = selectedChainForStitch { payload["selectedChain"] = sel }
+        // Live first-pick highlight for the glue tool (drawn green in the viewport).
+        if let gp = selectedPanelForGlue {
+            var gs: [String: Any] = ["panelId": gp, "side": selectedGlueSide]
+            if let pt = selectedGluePoint { gs["p2d"] = pt }
+            payload["glueSel"] = gs
+        }
         guard let d = try? JSONSerialization.data(withJSONObject: payload),
               let str = String(data: d, encoding: .utf8) else { return "{}" }
         return str

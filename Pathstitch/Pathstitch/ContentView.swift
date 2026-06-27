@@ -387,6 +387,7 @@ struct ContentView: View {
         .onChange(of: state.chainSelectionEnabled) { _ in state.updateLivePreview() }
         .onChange(of: state.holeStartInset) { _ in state.updateLivePreview() }
         .onChange(of: state.holeEndInset) { _ in state.updateLivePreview() }
+        .onChange(of: state.holeEndMode) { _ in state.updateLivePreview() }
         .onChange(of: state.holeOffsetCornerFillet) { _ in state.updateLivePreview() }
         .onChange(of: state.holeEnableVariableSpacing) { _ in
             // Entering Variable mode: target the band's lower bound so the spacing
@@ -1493,6 +1494,93 @@ extension ContentView {
         .onChange(of: state.snapToChisel) { _ in state.updateLivePreview() }
     }
 
+    /// Single-line (chain-off) endpoint controls for the sewing tool: how the run is
+    /// anchored between the tips (end-placement mode) and how far the first / last
+    /// holes sit in from each tip (margin, in mm or × pitch, linked or per-end).
+    @ViewBuilder
+    private var holeSingleLineControls: some View {
+        // Canonical insets stay in mm; these bindings convert for the active unit.
+        let startMargin = Binding<Double>(
+            get: { state.holeInsetToDisplay(state.holeStartInset) },
+            set: { state.holeStartInset = state.holeInsetFromDisplay($0) })
+        let endMargin = Binding<Double>(
+            get: { state.holeInsetToDisplay(state.holeEndInset) },
+            set: { state.holeEndInset = state.holeInsetFromDisplay($0) })
+        // Linked: one field writes BOTH ends.
+        let bothMargin = Binding<Double>(
+            get: { state.holeInsetToDisplay(state.holeStartInset) },
+            set: {
+                let mm = state.holeInsetFromDisplay($0)
+                state.holeStartInset = mm
+                state.holeEndInset = mm
+            })
+
+        HStack {
+            Text("End placement")
+                .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+            Spacer()
+            Picker("", selection: $state.holeEndMode) {
+                Text("Spread").tag("ends")
+                Text("From start").tag("fill")
+                Text("Centered").tag("even")
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .frame(width: 200)
+            .help("How holes are anchored between the line's two ends. Spread: evenly distributed with a hole on each tip (spacing flexes to fit). From start: exact spacing from the start tip, the leftover gap falls at the far end. Centered: exact spacing with equal margins at both ends.")
+        }
+
+        HStack {
+            Text("Margin unit")
+                .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+            Spacer()
+            Picker("", selection: $state.holeInsetUnit) {
+                Text("mm").tag("mm")
+                Text("× pitch").tag("pitch")
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .frame(width: 120)
+            .help("Type the margins in millimetres, or as a multiple of the stitch spacing (e.g. 0.5× = half a stitch).")
+        }
+
+        if state.holeInsetLinked {
+            HStack {
+                Text("Margin (\(state.holeInsetUnitLabel))")
+                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                Spacer()
+                TextField("Margin", value: bothMargin, format: .number)
+                    .frame(width: 60).textFieldStyle(.roundedBorder)
+            }
+            .help("How far the first AND last holes sit in from each tip of the line.")
+            Toggle("Set ends separately", isOn: Binding(
+                get: { !state.holeInsetLinked },
+                set: { state.holeInsetLinked = !$0 }))
+                .toggleStyle(.checkbox)
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+        } else {
+            HStack {
+                Text("Start (\(state.holeInsetUnitLabel))")
+                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                Spacer()
+                TextField("Start", value: startMargin, format: .number)
+                    .frame(width: 60).textFieldStyle(.roundedBorder)
+            }
+            .help("How far the FIRST hole sits in from the line's start point.")
+            HStack {
+                Text("End (\(state.holeInsetUnitLabel))")
+                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                Spacer()
+                TextField("End", value: endMargin, format: .number)
+                    .frame(width: 60).textFieldStyle(.roundedBorder)
+            }
+            .help("How far the LAST hole sits in from the line's end point.")
+            Toggle("Link both ends", isOn: $state.holeInsetLinked)
+                .toggleStyle(.checkbox)
+                .font(PlasticityFont.label)
+                .foregroundColor(Color.text_secondary)
+        }
+    }
+
     @ViewBuilder
     private var holesSewingSection: some View {
         if state.currentTool == .select || state.currentTool == .addHoles {
@@ -1666,22 +1754,7 @@ extension ContentView {
                             .help("Place a stitch on — or as near as possible to — every corner sharper than ~45°, flexing the spacing between holes so one lands on each corner. On by default.")
 
                         if !state.chainSelectionEnabled {
-                            HStack {
-                                Text("Start inset (mm)")
-                                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
-                                Spacer()
-                                TextField("Start", value: $state.holeStartInset, format: .number)
-                                    .frame(width: 60).textFieldStyle(.roundedBorder)
-                            }
-                            .help("How far the FIRST hole sits in from the line's start point.")
-                            HStack {
-                                Text("End inset (mm)")
-                                    .font(PlasticityFont.label).foregroundColor(Color.text_primary)
-                                Spacer()
-                                TextField("End", value: $state.holeEndInset, format: .number)
-                                    .frame(width: 60).textFieldStyle(.roundedBorder)
-                            }
-                            .help("How far the LAST hole sits in from the line's end point.")
+                            holeSingleLineControls
                         }
 
                         HStack {
@@ -4420,7 +4493,7 @@ extension ContentView {
         switch tool {
         case .select: return "Select — orbit and pick folds"
         case .move:   return "Move — click a panel, then move / rotate / scale it (pose only)"
-        case .fold:   return "Fold — click a fold line, then set its angle"
+        case .fold:   return "Fold — drag a flap to fold it (snaps to 15/45/90°, ⇧ for free)"
         case .crease: return "Crease — click two points on a panel to add a fold line"
         case .ground: return "Ground — click a panel to pin it to the ground plane"
         case .stitch: return "Stitch — click one hole chain, then another, to sew them"

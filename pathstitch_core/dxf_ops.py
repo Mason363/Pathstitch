@@ -2579,6 +2579,15 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
     # from the start / end. Ignored on closed loops (no endpoints).
     start_inset = max(0.0, float(args.get("start_inset", 0.0) or 0.0))
     end_inset = max(0.0, float(args.get("end_inset", 0.0) or 0.0))
+    # End-placement mode: how the run is anchored inside the [start_inset, L-end_inset]
+    # window on an OPEN path (ignored on closed loops). "fill" = legacy: first hole at
+    # the start inset, march at the target pitch, any remainder falls at the far end.
+    # "even" = split the remainder so both end margins are equal (balanced look).
+    # "ends" = land a hole exactly on both window ends, flexing the pitch to fit a
+    # whole number of gaps between them.
+    end_mode = str(args.get("end_mode", "fill")).lower()
+    if end_mode not in ("fill", "even", "ends"):
+        end_mode = "fill"
 
     # Pricking-iron shape (Pricking Iron Toolbox). Each stitch is emitted as a real,
     # closed cut-path oriented to the local stitch-line tangent + the iron's own
@@ -2858,21 +2867,33 @@ def op_add_holes(args: Dict[str, Any]) -> Dict[str, Any]:
                     emit(a + run * (k / n))
             if not is_loop:
                 emit(hi)
+        elif is_loop:
+            N = _even_count(L)
+            step = L / N
+            for i in range(N):
+                emit(i * step + phase * step)
+        elif end_mode == "ends":
+            # Default. Flex the pitch to WL/N so a hole lands exactly on both ends of
+            # the window (= legacy behaviour: evenly spread, anchored at each tip).
+            N = _even_count(WL)
+            step = WL / N
+            d = lo + phase * step
+            while d <= hi + 1e-6:
+                emit(d)
+                d += step
         else:
-            N = _even_count(WL if not is_loop else L)
-            step = (WL if not is_loop else L) / N
-            if is_loop:
-                for i in range(N):
-                    emit(i * step + phase * step)
-            else:
-                start = lo + phase * step
-                i = 0
-                while True:
-                    d = start + i * step
-                    if d > hi + 1e-6:
-                        break
+            # Hold the EXACT target pitch (no flex / chisel snap) and lay the run out
+            # inside the window. "fill" anchors the first hole at the start inset and
+            # lets the remainder fall at the far end; "even" centres the run so both
+            # end margins are equal. The saddle second row is staggered by phase*pitch.
+            p = spacing_target
+            k = max(1, int(math.floor(WL / p + 1e-9)) + 1)   # holes that fit at pitch p
+            used = (k - 1) * p
+            base = lo + ((WL - used) / 2.0 if end_mode == "even" else 0.0) + phase * p
+            for i in range(k):
+                d = base + i * p
+                if lo - 1e-6 <= d <= hi + 1e-6:
                     emit(d)
-                    i += 1
         return out
 
     for path in paths:

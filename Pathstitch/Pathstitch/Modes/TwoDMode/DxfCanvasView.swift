@@ -79,6 +79,9 @@ struct DxfCanvasView: View {
     @State private var isDraggingStartOffset = false
     @State private var isHoveringEndOffset = false
     @State private var isDraggingEndOffset = false
+    // Sewing-hole start/end margin (inset) tip handles — single-line mode only.
+    @State private var isHoveringHoleStart = false
+    @State private var isHoveringHoleEnd = false
 
     // Free vertex editing + right-click Expand menu (MAS-62)
     @State private var editingVertexHandle: String? = nil
@@ -963,6 +966,87 @@ struct DxfCanvasView: View {
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.purple.opacity(0.9)))
                     .position(x: handleScreen.x + 40, y: handleScreen.y - 14)
                     .allowsHitTesting(false)
+            }
+
+            // Add Holes — START / END margin (inset) tip handles. Single-line mode
+            // only (chain-off) and only when a single open line is selected: drag the
+            // teal markers along the line to set how far the first / last holes sit in
+            // from each tip. Teal keeps them distinct from the purple offset handle.
+            if state.currentTool == .addHoles,
+               !state.chainSelectionEnabled,
+               let ent = getSelectedLineEntity(),
+               let s = ent.start, let e = ent.end {
+                let p1 = CGPoint(x: s[0], y: s[1])
+                let p2 = CGPoint(x: e[0], y: e[1])
+                let dx = p2.x - p1.x
+                let dy = p2.y - p1.y
+                let L = hypot(dx, dy)
+                if L >= 0.1 {
+                    let ux = dx / L
+                    let uy = dy / L
+                    let startIn = CGFloat(state.holeStartInset)
+                    let endIn = CGFloat(state.holeEndInset)
+                    let h1Model = CGPoint(x: p1.x + startIn * ux, y: p1.y + startIn * uy)
+                    let h2Model = CGPoint(x: p2.x - endIn * ux, y: p2.y - endIn * uy)
+                    let h1Screen = toScreen(dx: Double(h1Model.x), dy: Double(h1Model.y), size: viewSize, bounds: modelBounds)
+                    let h2Screen = toScreen(dx: Double(h2Model.x), dy: Double(h2Model.y), size: viewSize, bounds: modelBounds)
+
+                    // Start margin handle
+                    Circle()
+                        .fill(isHoveringHoleStart || state.isDraggingHoleInset ? Color.teal.opacity(0.8) : Color.teal)
+                        .frame(width: 14, height: 14)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        .shadow(radius: 2)
+                        .scaleEffect(isHoveringHoleStart ? 1.25 : 1.0)
+                        .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isHoveringHoleStart)
+                        .position(h1Screen)
+                        .onHover { isHoveringHoleStart = $0 }
+                        .gesture(
+                            DragGesture(coordinateSpace: .named("canvas"))
+                                .onChanged { val in
+                                    state.isDraggingHoleInset = true
+                                    let modelPt = toModel(point: val.location, size: viewSize, bounds: modelBounds)
+                                    let proj = (modelPt.x - p1.x) * ux + (modelPt.y - p1.y) * uy
+                                    // Linked: keep both ends equal; clamped so the two
+                                    // margins never cross (leave ~1 mm of run).
+                                    let other = state.holeInsetLinked ? 0.0 : state.holeEndInset
+                                    state.holeStartInset = max(0.0, min(Double(L) - other - 1.0, Double(proj)))
+                                    if state.holeInsetLinked { state.holeEndInset = state.holeStartInset }
+                                    state.updateLivePreview()
+                                }
+                                .onEnded { _ in
+                                    state.isDraggingHoleInset = false
+                                    state.updateLivePreview()
+                                }
+                        )
+
+                    // End margin handle
+                    Circle()
+                        .fill(isHoveringHoleEnd || state.isDraggingHoleInset ? Color.teal.opacity(0.8) : Color.teal)
+                        .frame(width: 14, height: 14)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        .shadow(radius: 2)
+                        .scaleEffect(isHoveringHoleEnd ? 1.25 : 1.0)
+                        .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isHoveringHoleEnd)
+                        .position(h2Screen)
+                        .onHover { isHoveringHoleEnd = $0 }
+                        .gesture(
+                            DragGesture(coordinateSpace: .named("canvas"))
+                                .onChanged { val in
+                                    state.isDraggingHoleInset = true
+                                    let modelPt = toModel(point: val.location, size: viewSize, bounds: modelBounds)
+                                    let proj = (p2.x - modelPt.x) * ux + (p2.y - modelPt.y) * uy
+                                    let other = state.holeInsetLinked ? 0.0 : state.holeStartInset
+                                    state.holeEndInset = max(0.0, min(Double(L) - other - 1.0, Double(proj)))
+                                    if state.holeInsetLinked { state.holeStartInset = state.holeEndInset }
+                                    state.updateLivePreview()
+                                }
+                                .onEnded { _ in
+                                    state.isDraggingHoleInset = false
+                                    state.updateLivePreview()
+                                }
+                        )
+                }
             }
 
             // Glue Tab Start/End Offset Drag Handles

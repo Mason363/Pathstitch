@@ -683,9 +683,10 @@ def _auto_target_len(outline: Sequence[Pt], requested: float) -> float:
         return requested
     minx, miny, maxx, maxy = _bbox(outline)
     span = max(maxx - minx, maxy - miny, 1.0)
-    # ~24 cells across the larger dimension — fine enough that folds and brush
-    # bends read as smooth curves, not faceted ridges. (Floor keeps tiny tabs sane.)
-    return max(span / 24.0, 0.8)
+    # ~44 cells across the larger dimension so folds — and especially rounded fillets
+    # — read as smooth curves rather than faceted ridges. The bar-and-hinge PBD pass
+    # is cheap, so this density is affordable; the floor keeps tiny tabs sane.
+    return max(span / 44.0, 0.6)
 
 
 def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:

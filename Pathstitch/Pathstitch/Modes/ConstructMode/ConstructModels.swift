@@ -240,11 +240,17 @@ struct GlueJoint: Codable, Identifiable, Hashable {
     var mode: String = "panel"
     var aPt: [Double]? = nil
     var bPt: [Double]? = nil
+    // Which visible side of each panel the user clicked (±1, relative to the
+    // region's winding normal). 0 = unknown → seats on the winding side (legacy).
+    var aSide: Double = 0
+    var bSide: Double = 0
 
-    init(panelA: Int, panelB: Int, mode: String = "panel", aPt: [Double]? = nil, bPt: [Double]? = nil) {
+    init(panelA: Int, panelB: Int, mode: String = "panel", aPt: [Double]? = nil, bPt: [Double]? = nil,
+         aSide: Double = 0, bSide: Double = 0) {
         self.panelA = panelA; self.panelB = panelB; self.mode = mode; self.aPt = aPt; self.bPt = bPt
+        self.aSide = aSide; self.bSide = bSide
     }
-    // Tolerant decode so older .stch glues (no mode/aPt/bPt) still load.
+    // Tolerant decode so older .stch glues (no mode/aPt/bPt/side) still load.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
@@ -253,6 +259,8 @@ struct GlueJoint: Codable, Identifiable, Hashable {
         mode = (try? c.decode(String.self, forKey: .mode)) ?? "panel"
         aPt = try? c.decode([Double].self, forKey: .aPt)
         bPt = try? c.decode([Double].self, forKey: .bPt)
+        aSide = (try? c.decode(Double.self, forKey: .aSide)) ?? 0
+        bSide = (try? c.decode(Double.self, forKey: .bSide)) ?? 0
     }
 }
 

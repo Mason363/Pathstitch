@@ -21,6 +21,7 @@
 <canvas id="c"></canvas>
 <div id="hud">construct · drop a .dxf / .stch, or fold the active sketch</div>
 <div id="snaptag" style="position:absolute;pointer-events:none;display:none;font:11px -apple-system,sans-serif;color:#0b0c0e;background:rgba(255,255,255,0.92);padding:1px 5px;border-radius:3px;transform:translate(12px,12px);white-space:nowrap;z-index:5;"></div>
+<div id="foldhud" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(255,154,60,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
 <script>
 "use strict";
 
@@ -78,6 +79,17 @@ tcontrols.setSize(0.85);
 tcontrols.addEventListener('dragging-changed', e=>{ controls.enabled=!e.value; if(!e.value) commitGizmo(true); });
 tcontrols.addEventListener('objectChange', ()=>{ applyGizmoLive(); });
 scene.add(tcontrols);
+// CAD-grade snapping: 5mm grid moves, 15° rotations, 0.1 scale steps. Hold Shift
+// for free (continuous) drag. Without this the gizmo felt loose and imprecise.
+const GIZ_T=5, GIZ_R=15*Math.PI/180, GIZ_S=0.1;
+function setGizmoSnap(on){
+  tcontrols.setTranslationSnap(on?GIZ_T:null);
+  tcontrols.setRotationSnap(on?GIZ_R:null);
+  tcontrols.setScaleSnap(on?GIZ_S:null);
+}
+setGizmoSnap(true);
+window.addEventListener("keydown", e=>{ if(e.key==="Shift") setGizmoSnap(false); });
+window.addEventListener("keyup",   e=>{ if(e.key==="Shift") setGizmoSnap(true);  });
 const gizmoProxy=new THREE.Object3D(); scene.add(gizmoProxy);
 let gizmoPanel=null;
 
@@ -291,7 +303,9 @@ let needsPose=false, hudT=0;
 let CHAINS=[];            // [{id, panelId, closed, holes:[{x,y,tri,bary}]}]
 let CHAIN_BY_ID={};
 let SEAMS=[];             // [{id, chainA, chainB, mode, pairs:[[a,b]], reversed}]
-let GLUES=[];             // [{panelA, panelB}] — rigid weld where panel edges meet
+let GLUES=[];             // [{panelA, panelB, mode, aPt, bPt, aSide, bSide}] — rigid weld
+let GLUE_MODE="panel";    // current glue seat mode (panel | face | edge) for live highlight
+let GLUE_SEL=null;        // first pick pending a partner {panelId, p2d, side}
 let SHOW_THREAD=true;
 let SELECTED_CHAIN=-1;    // chain the user has picked (first half of a stitch)
 let CREASE_PT=null;       // first clicked point of a new fold being drawn in 3D
@@ -724,12 +738,12 @@ function solveStitches(){
   // Glue (weld): seat panel B onto panel A along their *closest* boundary run —
   // exactly mating a glue tab to the panel it's glued onto. Rigid, no thread.
   for(const g of GLUES){
-    let A=g.panelA, B=g.panelB, aPt=g.aPt, bPt=g.bPt;
-    if(B===ground && A!==ground){ const t=A; A=B; B=t; const tp=aPt; aPt=bPt; bPt=tp; }
+    let A=g.panelA, B=g.panelB, aPt=g.aPt, bPt=g.bPt, aSide=g.aSide, bSide=g.bSide;
+    if(B===ground && A!==ground){ const t=A; A=B; B=t; const tp=aPt; aPt=bPt; bPt=tp; const ts=aSide; aSide=bSide; bSide=ts; }
     const pa=PANEL_BY_ID[A], pb=PANEL_BY_ID[B]; if(!pa||!pb||A===B) continue;
     const mode=g.mode||"panel";
-    if(mode==="face") seatFaceGlue(pa, pb, aPt, bPt);
-    else if(mode==="edge") seatEdgeGlue(pa, pb, aPt, bPt);
+    if(mode==="face") seatFaceGlue(pa, pb, aPt, bPt, aSide, bSide);
+    else if(mode==="edge") seatEdgeGlue(pa, pb, aPt, bPt, aSide, bSide);
     else seatPanelGlue(pa, pb);
   }
 }
@@ -756,10 +770,17 @@ function regionPlane(panel, reg){
   const t0=panel.triangles[reg.faces[0]]; const A=panel.X[t0[0]],B=panel.X[t0[1]],C=panel.X[t0[2]];
   return { c, n:norm(cross(sub(B,A),sub(C,A))) };
 }
+// Boundary edge nearest the clicked point — point-to-segment distance (not the
+// crude midpoint test), so clicking anywhere along a long edge picks that edge.
 function nearestBoundaryEdge(panel, p2d){
   if(!p2d) return null; let best=null, bd=1e18;
-  for(const [a,b] of panel.boundaryEdges){ const m=[(panel.v2d[a][0]+panel.v2d[b][0])/2,(panel.v2d[a][1]+panel.v2d[b][1])/2];
-    const d=(m[0]-p2d[0])**2+(m[1]-p2d[1])**2; if(d<bd){ bd=d; best=[a,b]; } }
+  for(const [a,b] of panel.boundaryEdges){
+    const A=panel.v2d[a], B=panel.v2d[b];
+    const dx=B[0]-A[0], dy=B[1]-A[1], L2=dx*dx+dy*dy||1e-9;
+    let t=((p2d[0]-A[0])*dx+(p2d[1]-A[1])*dy)/L2; t=t<0?0:(t>1?1:t);
+    const d=(p2d[0]-(A[0]+dx*t))**2+(p2d[1]-(A[1]+dy*t))**2;
+    if(d<bd){ bd=d; best=[a,b]; }
+  }
   return best;
 }
 // Shortest-arc quaternion rotating unit a → unit b.
@@ -769,27 +790,47 @@ function quatFromTo(a,b){
   if(d<-0.999999){ let ax=cross([1,0,0],a); if(len(ax)<1e-6) ax=cross([0,1,0],a); ax=norm(ax); return [ax[0],ax[1],ax[2],0]; }
   const c=cross(a,b); const w=1+d; const l=Math.hypot(c[0],c[1],c[2],w)||1; return [c[0]/l,c[1]/l,c[2]/l,w/l];
 }
-// Face glue: lay B's chosen face flat on A's chosen face (planes coincident,
-// normals opposed, offset by thickness) — "glue the two planes together".
-function seatFaceGlue(pa, pb, aPt, bPt){
+// Face glue: lay B's clicked face flat on A's clicked face (planes coincident,
+// the two *clicked* sides touching, offset by thickness) — "glue the two faces
+// you pointed at together". aSide/bSide (±1) record which visible side the user
+// clicked relative to each region's winding normal, so B lands on the side you
+// actually see — not the geometry's arbitrary winding side.
+function seatFaceGlue(pa, pb, aPt, bPt, aSide, bSide){
   const rA=regionOfPoint(pa,aPt)||(pa.tree&&pa.tree.region[pa.tree.rootR]);
   const rB=regionOfPoint(pb,bPt)||(pb.tree&&pb.tree.region[pb.tree.rootR]); if(!rA||!rB) return seatPanelGlue(pa,pb);
   const PA=regionPlane(pa,rA), PB=regionPlane(pb,rB);
-  const q=quatFromTo(PB.n, scl(PA.n,-1));
+  const nA=scl(PA.n, aSide||1), nB=scl(PB.n, bSide||1);   // clicked-side outward normals
+  // rotate B so its clicked face opposes A's clicked face (the two faces meet)
+  const q=quatFromTo(nB, scl(nA,-1));
   for(const v of pb.X){ const r=qrot(q,sub(v,PB.c)); v[0]=PB.c[0]+r[0]; v[1]=PB.c[1]+r[1]; v[2]=PB.c[2]+r[2]; }
-  const target=add(PA.c, scl(PA.n, THICKNESS)); const d=sub(target, PB.c);
+  const target=add(PA.c, scl(nA, THICKNESS)); const d=sub(target, PB.c);
   for(const v of pb.X){ v[0]+=d[0]; v[1]+=d[1]; v[2]+=d[2]; }
 }
-// Edge glue: align B's chosen boundary edge onto A's, panels continuing in the
-// same surface direction (Kabsch on the two endpoints + a normal-direction point).
-function seatEdgeGlue(pa, pb, aPt, bPt){
+// Kabsch fit + its residual, so we can pick the better of two endpoint pairings.
+function kabschFit(src,dst){
+  const RT=kabsch(src,dst); if(!RT) return null; let s=0;
+  for(let i=0;i<src.length;i++){ const x=src[i];
+    const r=[RT.R[0]*x[0]+RT.R[1]*x[1]+RT.R[2]*x[2]+RT.t[0],
+             RT.R[3]*x[0]+RT.R[4]*x[1]+RT.R[5]*x[2]+RT.t[1],
+             RT.R[6]*x[0]+RT.R[7]*x[1]+RT.R[8]*x[2]+RT.t[2]];
+    s+=len(sub(r,dst[i]))**2; }
+  return {RT, resid:s};
+}
+// Edge glue: align B's clicked boundary edge onto A's, the two clicked sides
+// continuing in the same direction. Tries both endpoint pairings and keeps the
+// tighter fit (the shared edge runs opposite in each panel's loop, so the order
+// can't be assumed).
+function seatEdgeGlue(pa, pb, aPt, bPt, aSide, bSide){
   const eA=nearestBoundaryEdge(pa,aPt), eB=nearestBoundaryEdge(pb,bPt); if(!eA||!eB) return seatPanelGlue(pa,pb);
   const A0=pa.X[eA[0]],A1=pa.X[eA[1]], B0=pb.X[eB[0]],B1=pb.X[eB[1]];
   const rA=regionOfPoint(pa,aPt), rB=regionOfPoint(pb,bPt);
-  const nA=rA?regionPlane(pa,rA).n:[0,1,0], nB=rB?regionPlane(pb,rB).n:[0,1,0];
+  const nA=rA?scl(regionPlane(pa,rA).n, aSide||1):[0,1,0], nB=rB?scl(regionPlane(pb,rB).n, bSide||1):[0,1,0];
   const mA=scl(add(A0,A1),0.5), mB=scl(add(B0,B1),0.5);
-  const src=[B0,B1, add(mB,nB)], dst=[A0,A1, add(mA,nA)];
-  const RT=kabsch(src,dst); if(RT) applyRigidInPlace(pb, RT.R, RT.t);
+  const dst=[A0,A1, add(mA,nA)];
+  const f1=kabschFit([B0,B1, add(mB,nB)], dst);          // B0→A0, B1→A1
+  const f2=kabschFit([B1,B0, add(mB,nB)], dst);          // B0→A1, B1→A0
+  const best=(f1&&f2)?(f1.resid<=f2.resid?f1:f2):(f1||f2);
+  if(best) applyRigidInPlace(pb, best.RT.R, best.RT.t);
 }
 
 // ---- pose: forward fold (rigid origami) + PBD relax, then stitch solve ------
@@ -909,7 +950,7 @@ window.gatherConstructExport=function(){
     for(const region of p.tree.region){ const r=regionLoops(p, region); if(r && r.outer.length>=3) regs.push(r); } }
   return JSON.stringify({ regions:regs, thickness:THICKNESS });
 };
-function recomputePose(){
+function recomputePose(silent){
   for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically (rounded fillets included)
   solveStitches();                                // seat & sew panels together
   // Raised patches sit just above their container (re-applied each pose, so no
@@ -921,11 +962,12 @@ function recomputePose(){
   updateChainLines();
   updateStamps();
   updateThread();
-  reportStretch();
-  postSeamFit();
-  postReadouts();
+  // Drag-start fold calibration re-poses twice; stay silent so it doesn't spam the
+  // readout / seam-fit / stretch messages back to Swift mid-gesture.
+  if(!silent){ reportStretch(); postSeamFit(); postReadouts(); }
   if(typeof applyRenderMode==="function") applyRenderMode();   // re-hide overlays in mockup
   if(typeof updateFoldHi==="function") updateFoldHi();         // fold-side tint rides the pose
+  if(typeof updateGlueSelHi==="function") updateGlueSelHi();   // glue first-pick highlight rides the pose
   // Keep the gizmo on its panel as the pose changes (but never while dragging it).
   if(gizmoPanel && gizmoPanel.seatCentroid && !tcontrols.dragging){
     const c=gizmoPanel.seatCentroid, xf=gizmoPanel.userXf;
@@ -1395,6 +1437,7 @@ window.setConstructTool=function(t){
   if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); hideSnapIndicator(); }   // abandon a half-drawn crease
   if(TOOL!=="move") detachGizmo();   // hide the transform gizmo outside the Move tool
   if(typeof clearHover==="function") clearHover();   // drop stale hover highlight
+  if(typeof updateGlueSelHi==="function") updateGlueSelHi();   // glue first-pick tint follows the tool
   if(typeof updateFoldHi==="function") updateFoldHi();   // show/hide crease endpoint handles
   if(PANELS.length) reportStretch();
 };
@@ -1447,6 +1490,9 @@ window.setConstructSeams=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   SEAMS=c.seams||[];
   GLUES=c.glues||[];
+  GLUE_MODE=c.glueMode||"panel";
+  GLUE_SEL=c.glueSel||null;   // {panelId, p2d, side} of the locked first pick
+  if(typeof updateGlueSelHi==="function") updateGlueSelHi();
   SHOW_THREAD=c.showThread!==false;
   SELECTED_CHAIN=(c.selectedChain==null?-1:c.selectedChain);
   // Index the alignment pins so anchor holes light up + draw the pin links.
@@ -1490,7 +1536,94 @@ function setHoverPanel(pid){
   hoverPanelId=pid;
   if(pid>=0){ const p=PANEL_BY_ID[pid]; if(p&&p.mat){ hoverPanelEmis=p.mat.emissive.clone(); p.mat.emissive.setHex(0x16384a); } }
 }
-function clearHover(){ clearHoverLine(); setHoverPanel(-1); renderer.domElement.style.cursor="default"; }
+function clearHover(){ clearHoverLine(); setHoverPanel(-1); clearGlueHoverHi(); renderer.domElement.style.cursor="default"; }
+
+// ---- glue highlight: show exactly what a glue click will grab -----------------
+// CYAN = what's under the cursor (will be picked); GREEN = the locked first pick
+// waiting for its partner. Mode-aware: a face overlay for Faces, an edge ribbon
+// for Edges, the whole-panel tint for Pieces. depthTest off so it reads on top.
+const GLUE_HI_HOVER=0x00b4ff, GLUE_HI_SEL=0x12c46a;   // saturated so they read over pale leather
+let glueHoverHi=null, glueSelHi=null;
+function disposeHi(o){ if(o){ scene.remove(o);
+  o.traverse(c=>{ if(c.geometry) c.geometry.dispose(); if(c.material) c.material.dispose(); }); } return null; }
+// Filled overlay of a triangle list (region for Faces mode, whole panel for Pieces),
+// rimmed with a bright boundary so the highlighted face reads crisply.
+function makeTriHi(panel, faceIdx, colorHex){
+  const pos=[];
+  for(const fi of faceIdx){ const t=panel.triangles[fi];
+    for(const vi of t){ const v=panel.X[vi]; pos.push(v[0],v[1],v[2]); } }
+  if(!pos.length) return null;
+  const g=new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos,3));
+  const m=new THREE.MeshBasicMaterial({color:colorHex, transparent:true, opacity:0.45,
+    side:THREE.DoubleSide, depthTest:false, depthWrite:false});
+  const mesh=new THREE.Mesh(g,m); mesh.renderOrder=7; scene.add(mesh);
+  // crisp boundary rim of the highlighted triangle set (edges shared by one face only)
+  const ec={}; const ek=(a,b)=>a<b?a+"_"+b:b+"_"+a;
+  for(const fi of faceIdx){ const t=panel.triangles[fi];
+    for(const [a,b] of [[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){ const k=ek(a,b); ec[k]=(ec[k]||0)+1; } }
+  const lp=[]; for(const k in ec){ if(ec[k]===1){ const [a,b]=k.split("_").map(Number);
+    const A=panel.X[a],B=panel.X[b]; lp.push(A[0],A[1],A[2], B[0],B[1],B[2]); } }
+  if(lp.length){ const lg=new THREE.BufferGeometry(); lg.setAttribute("position", new THREE.Float32BufferAttribute(lp,3));
+    const lm=new THREE.LineBasicMaterial({color:colorHex, transparent:true, opacity:0.95}); lm.depthTest=false;
+    const rim=new THREE.LineSegments(lg,lm); rim.renderOrder=10; mesh.add(rim); }
+  return mesh;
+}
+function makeFaceHi(panel, region, colorHex){ return makeTriHi(panel, region.faces, colorHex); }
+function makePanelHi(panel, colorHex){
+  const all=[]; for(let i=0;i<panel.triangles.length;i++) all.push(i);
+  return makeTriHi(panel, all, colorHex);
+}
+// Bright ribbon along a boundary edge (Edges mode) — a thin quad so it reads at
+// any zoom, unlike a 1px line. Widened across the region's in-plane perpendicular.
+function makeEdgeHi(panel, edge, region, colorHex){
+  const A=panel.X[edge[0]], B=panel.X[edge[1]];
+  let n=region?regionPlane(panel,region).n:[0,1,0];
+  let dir=norm(sub(B,A)); let perp=norm(cross(n,dir)); if(len(perp)<1e-6) perp=[0,0,1];
+  const w=Math.min(6, Math.max(2, len(sub(B,A))*0.06));   // scale ribbon to the edge so it's always visible
+  const p0=add(A,scl(perp,w)), p1=add(A,scl(perp,-w)), p2=add(B,scl(perp,-w)), p3=add(B,scl(perp,w));
+  const pos=[p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2],
+            p0[0],p0[1],p0[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2]];
+  const g=new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(pos,3));
+  const m=new THREE.MeshBasicMaterial({color:colorHex, transparent:true, opacity:0.85,
+    side:THREE.DoubleSide, depthTest:false, depthWrite:false});
+  const mesh=new THREE.Mesh(g,m); mesh.renderOrder=9; scene.add(mesh); return mesh;
+}
+// Build a mode-appropriate highlight for (panel, p2d). Whole-panel "Pieces" mode
+// returns null and tints the panel via setHoverPanel instead (handled by caller).
+function makeGlueHi(panel, p2d, colorHex){
+  if(GLUE_MODE==="face"){
+    const reg=regionOfPoint(panel,p2d)||(panel.tree&&panel.tree.region[panel.tree.rootR]);
+    return reg?makeFaceHi(panel,reg,colorHex):null;
+  }
+  if(GLUE_MODE==="edge"){
+    const e=nearestBoundaryEdge(panel,p2d); if(!e) return null;
+    return makeEdgeHi(panel,e,regionOfPoint(panel,p2d),colorHex);
+  }
+  return null;   // panel mode → caller tints the whole panel
+}
+function clearGlueHoverHi(){ glueHoverHi=disposeHi(glueHoverHi); }
+// Hover highlight under the cursor (cyan) — mode-aware. Returns the panel hit.
+function updateGlueHoverHi(cx,cy){
+  glueHoverHi=disposeHi(glueHoverHi);
+  const hit=panelHitAt(cx,cy);
+  if(!hit){ setHoverPanel(-1); renderer.domElement.style.cursor="default"; return null; }
+  const panel=PANEL_BY_ID[hit.object.userData.panelId];
+  renderer.domElement.style.cursor="pointer";
+  if(GLUE_MODE==="panel"){ setHoverPanel(panel.id); return hit; }
+  setHoverPanel(-1);
+  const p2d=hitTo2D(panel, hit.face, hit.point);
+  glueHoverHi=makeGlueHi(panel, p2d, GLUE_HI_HOVER);
+  if(!glueHoverHi) setHoverPanel(panel.id);   // no region/edge → fall back to panel tint
+  return hit;
+}
+// Persistent highlight (green) of the locked first pick. Rides every re-pose.
+function updateGlueSelHi(){
+  glueSelHi=disposeHi(glueSelHi);
+  if(TOOL!=="glue" || !GLUE_SEL){ return; }
+  const panel=PANEL_BY_ID[GLUE_SEL.panelId]; if(!panel) return;
+  glueSelHi=(GLUE_MODE==="panel") ? makePanelHi(panel, GLUE_HI_SEL)
+                                  : makeGlueHi(panel, GLUE_SEL.p2d, GLUE_HI_SEL);
+}
 function segScreenDist(px,py,A,B){
   const dx=B[0]-A[0], dy=B[1]-A[1], L2=dx*dx+dy*dy||1e-9;
   let t=((px-A[0])*dx+(py-A[1])*dy)/L2; t=Math.max(0,Math.min(1,t));
@@ -1544,8 +1677,12 @@ function regionFaceMesh(panel, ri, colHex){
   for(const fi of reg.faces){ const t=panel.triangles[fi]; for(const vi of t){ const X=panel.X[vi]; verts.push(X[0],X[1],X[2]); } }
   if(!verts.length) return null;
   const g=new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(verts,3)); g.computeVertexNormals();
-  const m=new THREE.MeshBasicMaterial({color:colHex, transparent:true, opacity:0.30, side:THREE.DoubleSide, depthWrite:false});
-  const mesh=new THREE.Mesh(g,m); mesh.renderOrder=5; return mesh;
+  // depthTest OFF (+polygonOffset) so the tint always shows: the overlay is exactly
+  // coplanar with the leather and would otherwise z-fight itself into invisibility
+  // (this was the "ground/fold highlight doesn't show" bug).
+  const m=new THREE.MeshBasicMaterial({color:colHex, transparent:true, opacity:0.34, side:THREE.DoubleSide,
+    depthWrite:false, depthTest:false, polygonOffset:true, polygonOffsetFactor:-4, polygonOffsetUnits:-4});
+  const mesh=new THREE.Mesh(g,m); mesh.renderOrder=7; return mesh;
 }
 function updateFoldHi(){
   clearFoldHi();
@@ -1662,7 +1799,89 @@ window.recenterCamera=function(){
 const ray=new THREE.Raycaster(); ray.params.Line.threshold=3.0;
 const mouse=new THREE.Vector2();
 function setMouse(cx,cy){ mouse.x=(cx/window.innerWidth)*2-1; mouse.y=-(cy/window.innerHeight)*2+1; }
-let downXY=null, artDrag=false, foldDrag=null;
+let downXY=null, artDrag=false, foldDrag=null, foldGesture=null;
+
+// ---- direct drag-to-fold (grab a flap, swing it about its hinge) ------------
+// The flagship interaction: with the Fold tool, press on a foldable region and
+// drag — the flap rotates about its real hinge, the angle reads out live, and it
+// soft-snaps to common detents (15/30/45/90…). Press on the base or empty space
+// still orbits. The slider in the inspector stays as a precise fallback.
+const FOLD_DETENTS=[0,15,30,45,60,90,120,135,150,180];
+function snapFoldDeg(d){
+  const s=d<0?-1:1, a=Math.abs(d);
+  for(const t of FOLD_DETENTS){ if(Math.abs(a-t)<5) return {deg:s*t, snapped:true}; }
+  return {deg:d, snapped:false};
+}
+// The foldable region under the cursor (a non-root region with a parent fold), or
+// null for the base / empty space (which should orbit instead).
+function foldableUnder(cx,cy){
+  setMouse(cx,cy); ray.setFromCamera(mouse,camera);
+  const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
+  if(!hit || hit.faceIndex==null) return null;
+  const panel=PANEL_BY_ID[hit.object.userData.panelId]; if(!panel||!panel.tree) return null;
+  const T=panel.tree, ri=T.regOf[hit.faceIndex];
+  if(ri==null || ri===T.rootR || T.parent[ri]<0) return null;   // base/root → not foldable
+  const fid=T.parentFold[ri]; if(fid<0) return null;
+  return {panel, regIdx:ri, foldId:fid, hit};
+}
+const _FPV=new THREE.Vector3();
+function beginFoldGesture(info){
+  const panel=info.panel, T=panel.tree, ri=info.regIdx, fid=info.foldId;
+  const ax=T.parentVerts[ri]; if(!ax) return false;
+  const key=panel.id+"-"+fid;
+  const o=panel.X[ax[0]].slice();
+  let u=sub(panel.X[ax[1]], o); if(len(u)<1e-6) return false; u=norm(u);
+  // in-plane basis (e1,e2 ⟂ hinge u), e1 toward the moving region's centroid.
+  const sub_=T.subtree[ri];
+  const cen=v=>{ let c=[0,0,0],n=0; sub_.forEach(i=>{ c=add(c,panel.X[i]); n++; }); return scl(c,1/Math.max(n,1)); };
+  const c0=cen();
+  let e1=sub(c0,o); e1=sub(e1, scl(u,dot(e1,u)));
+  if(len(e1)<1e-6){ e1=cross(u,[0,1,0]); if(len(e1)<1e-6) e1=cross(u,[1,0,0]); }
+  e1=norm(e1); const e2=norm(cross(u,e1));
+  const startDeg=CONTROLS.foldAngle[key]||0;
+  // sign calibration: nudge +2° and see which way the centroid swings in (e1,e2),
+  // so dragging always folds the way the cursor goes regardless of hinge winding.
+  const ang=p=>Math.atan2(dot(sub(p,o),e2), dot(sub(p,o),e1));
+  const a0=ang(c0);
+  CONTROLS.foldAngle[key]=startDeg+2; recomputePose(true);
+  const a1=ang(cen());
+  CONTROLS.foldAngle[key]=startDeg; recomputePose(true);
+  let dC=a1-a0; while(dC>Math.PI)dC-=2*Math.PI; while(dC<-Math.PI)dC+=2*Math.PI;
+  const s=dC>=0?1:-1;
+  const hp=info.hit.point;
+  foldGesture={panel, key, panelId:panel.id, foldId:fid, o,u,e1,e2,s, startDeg,
+               lastA:ang([hp.x,hp.y,hp.z]), acc:0, moved:false, deg:startDeg,
+               plane:new THREE.Plane(new THREE.Vector3(u[0],u[1],u[2]), -(u[0]*o[0]+u[1]*o[1]+u[2]*o[2]))};
+  controls.enabled=false;
+  SEL_FOLD={panelId:panel.id, foldId:fid}; updateFoldHi();   // green base / orange flap live
+  post({op:"selectFold", panelId:panel.id, foldId:fid});     // inspector follows the grab
+  return true;
+}
+function updateFoldGesture(cx,cy,shift){
+  const g=foldGesture; setMouse(cx,cy); ray.setFromCamera(mouse,camera);
+  if(!ray.ray.intersectPlane(g.plane,_FPV)) return;          // grazing angle → skip frame
+  const rel=[_FPV.x-g.o[0], _FPV.y-g.o[1], _FPV.z-g.o[2]];
+  let da=Math.atan2(dot(rel,g.e2), dot(rel,g.e1)) - g.lastA;
+  while(da>Math.PI)da-=2*Math.PI; while(da<-Math.PI)da+=2*Math.PI;
+  g.acc+=da; g.lastA+=da;   // keep accumulating from the grab anchor (no jump on commit)
+  // Ignore click jitter: a small press that selects the flap shouldn't nudge the
+  // angle. Once a real drag starts we apply the absolute angle from the anchor.
+  if(!g.moved && downXY && Math.hypot(cx-downXY[0],cy-downXY[1])<3) return;
+  let deg=Math.max(-180, Math.min(180, g.startDeg + g.s*g.acc*180/Math.PI));
+  const sn=shift?{deg,snapped:false}:snapFoldDeg(deg);
+  g.deg=sn.deg; g.moved=true;
+  CONTROLS.foldAngle[g.key]=sn.deg; needsPose=true;
+  const fh=document.getElementById("foldhud");
+  if(fh){ const sp=worldToScreen(g.o); fh.textContent=Math.round(sn.deg)+"°"+(sn.snapped?" ⦿":"");
+    fh.style.borderColor=sn.snapped?"rgba(110,224,110,0.95)":"rgba(255,154,60,0.8)";
+    fh.style.left=sp[0]+"px"; fh.style.top=sp[1]+"px"; fh.style.display="block"; }
+}
+function endFoldGesture(){
+  const g=foldGesture; foldGesture=null; controls.enabled=true;
+  const fh=document.getElementById("foldhud"); if(fh) fh.style.display="none";
+  if(g && g.moved) post({op:"setFoldAngle", panelId:g.panelId, foldId:g.foldId, deg:g.deg});
+}
+
 renderer.domElement.addEventListener("pointerdown",e=>{
   if(e.button!==0) return;
   downXY=[e.clientX,e.clientY]; artDrag=false; foldDrag=null;
@@ -1679,9 +1898,16 @@ renderer.domElement.addEventListener("pointerdown",e=>{
     const h=ray.intersectObjects(foldHandles,false)[0];
     if(h){ foldDrag={end:h.object.userData.foldEnd, p2d:null}; controls.enabled=false; }
   }
+  // direct drag-to-fold: grab a flap (Fold tool) to swing it about its hinge.
+  if(!foldDrag && TOOL==="fold" && !ARTWORK_MODE){
+    const info=foldableUnder(e.clientX,e.clientY);
+    if(info && beginFoldGesture(info)) return;
+  }
 });
 renderer.domElement.addEventListener("pointermove",e=>{
   const cx=e.clientX, cy=e.clientY;
+  // direct drag-to-fold in progress → swing the flap to the cursor
+  if(foldGesture){ updateFoldGesture(cx,cy,e.shiftKey); return; }
   // dragging a crease endpoint handle → follow the cursor on its panel
   if(foldDrag){ const p=PANEL_BY_ID[SEL_FOLD.panelId];
     if(p){ setMouse(cx,cy); ray.setFromCamera(mouse,camera); const hit=ray.intersectObject(p.mesh,false)[0];
@@ -1714,7 +1940,9 @@ renderer.domElement.addEventListener("pointermove",e=>{
     const f=pickFoldAt(cx,cy);
     if(f){ showHoverPts([f.a,f.b]); setHoverPanel(-1); renderer.domElement.style.cursor="pointer"; }
     else { clearHoverLine(); const hit=panelHitAt(cx,cy); setHoverPanel(hit?hit.object.userData.panelId:-1); renderer.domElement.style.cursor="default"; }
-  } else if(TOOL==="ground" || TOOL==="glue" || TOOL==="move"){
+  } else if(TOOL==="glue"){
+    clearHoverLine(); updateGlueHoverHi(cx,cy);   // mode-aware face/edge/piece highlight
+  } else if(TOOL==="ground" || TOOL==="move"){
     clearHoverLine(); const hit=panelHitAt(cx,cy); setHoverPanel(hit?hit.object.userData.panelId:-1);
     renderer.domElement.style.cursor=hit?"pointer":"default";
   } else if(TOOL==="stitch"){
@@ -1725,6 +1953,8 @@ renderer.domElement.addEventListener("pointermove",e=>{
 });
 renderer.domElement.addEventListener("pointerup",e=>{
   if(e.button!==0) return;
+  // finish a direct drag-to-fold → persist the new angle to Swift (one undo step)
+  if(foldGesture){ endFoldGesture(); downXY=null; return; }
   // finish a crease-endpoint drag → write the moved fold line back to the 2D sketch
   if(foldDrag){ const fd=foldDrag; foldDrag=null; controls.enabled=true; clearCreasePreview(); downXY=null;
     if(fd.p2d && SEL_FOLD && SEL_FOLD.a2d && SEL_FOLD.b2d){
@@ -1773,7 +2003,16 @@ renderer.domElement.addEventListener("pointerup",e=>{
   if(TOOL==="ground" || TOOL==="glue"){
     const hit=panelHitAt(e.clientX,e.clientY);
     if(hit){ const panel=PANEL_BY_ID[hit.object.userData.panelId];
-      post({op:"selectPanel", panelId:panel.id, p2d:hitTo2D(panel, hit.face, hit.point)}); }
+      const p2d=hitTo2D(panel, hit.face, hit.point);
+      // Which visible side did the cursor land on? Sign the hit triangle's winding
+      // normal against the view ray so glue seats on the face the user sees — fixes
+      // bonds landing on the opposite (back) side of the material.
+      let side=0;
+      const t=hit.face, A=panel.X[t.a], B=panel.X[t.b], C=panel.X[t.c];
+      const wn=norm(cross(sub(B,A),sub(C,A)));
+      const toCam=sub([camera.position.x,camera.position.y,camera.position.z],[hit.point.x,hit.point.y,hit.point.z]);
+      side = dot(wn,toCam)>=0 ? 1 : -1;
+      post({op:"selectPanel", panelId:panel.id, p2d:p2d, side:side}); }
     return;
   }
   if(TOOL==="move"){
