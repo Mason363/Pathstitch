@@ -11,6 +11,10 @@ struct ConstructModeView: View {
     /// disclosure so the inspector leads with the active tool, not view chrome.
     @State private var showDisplay = false
 
+    /// Overlap chooser: apply the picked treatment to every undecided area at once
+    /// (a whole row of holes/areas) rather than one prompt at a time.
+    @State private var overlapApplyToAll = false
+
     var body: some View {
         HStack(spacing: 0) {
             ZStack(alignment: .topLeading) {
@@ -156,12 +160,24 @@ struct ConstructModeView: View {
     @ViewBuilder
     private func overlapChooser(_ e: [String: String]) -> some View {
         let inner = e["inner"] ?? ""
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Overlapping area").font(PlasticityFont.label.weight(.semibold))
+        let count = state.pendingEngulfed.count
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(count > 1 ? "Overlapping areas (\(count))" : "Overlapping area")
+                .font(PlasticityFont.label.weight(.semibold))
                 .foregroundColor(.text_primary).tracking(1)
-            Text("An area sits inside another. How should the inner one be treated?")
+            Text(count > 1
+                 ? "\(count) areas sit inside others. How should they be treated?"
+                 : "An area sits inside another. How should the inner one be treated?")
                 .font(PlasticityFont.label).foregroundColor(.text_secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if count > 1 {
+                Toggle(isOn: $overlapApplyToAll) {
+                    Text("Apply my choice to all \(count) areas")
+                        .font(PlasticityFont.label).foregroundColor(.text_primary)
+                }
+                .toggleStyle(.checkbox)
+            }
+            overlapOption(inner, "sew", "Sewing holes", "Treat the area as a stitch hole — joins the hole chains like any hole on the SEWING_HOLES layer.")
             overlapOption(inner, "stamp", "Decoration stamp", "Printed/tooled outline on the surface — never cut, rides the fold.")
             overlapOption(inner, "patch", "Raised patch", "A separate piece sitting on top (pocket / overlay).")
             overlapOption(inner, "cutout", "Cut-out window", "A real hole through the outer panel.")
@@ -176,7 +192,7 @@ struct ConstructModeView: View {
     }
 
     private func overlapOption(_ inner: String, _ mode: String, _ title: String, _ blurb: String) -> some View {
-        Button { state.setAreaTreatment(inner: inner, mode: mode) } label: {
+        Button { state.setAreaTreatment(inner: inner, mode: mode, all: overlapApplyToAll) } label: {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(PlasticityFont.label.weight(.semibold)).foregroundColor(.text_primary)
                 Text(blurb).font(PlasticityFont.label).foregroundColor(.text_secondary)
@@ -819,6 +835,30 @@ struct ConstructModeView: View {
                         .font(.system(size: 11))
                         .foregroundColor((seam.flip ?? false) ? .accent : .text_secondary)
                 }.buttonStyle(.plain).help("Reverse seam direction")
+            }
+
+            // Stitch phase: shift which holes line up by N along chain B. Pins fix
+            // the alignment exactly, so the shift is disabled while any pin is set.
+            let pinned = !(seam.anchors ?? []).isEmpty
+            HStack(spacing: 8) {
+                Text("Stitch phase").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                Spacer()
+                Button { state.shiftSeam(seam.id, by: -1) } label: {
+                    Image(systemName: "minus").font(.system(size: 10, weight: .bold))
+                }.buttonStyle(.plain).disabled(pinned).help("Shift one hole back")
+                let sh = seam.shift ?? 0
+                Text(sh > 0 ? "+\(sh)" : "\(sh)")
+                    .font(PlasticityFont.label.monospacedDigit())
+                    .foregroundColor(sh != 0 ? .accent : .text_primary)
+                    .frame(minWidth: 22)
+                Button { state.shiftSeam(seam.id, by: 1) } label: {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                }.buttonStyle(.plain).disabled(pinned).help("Shift one hole forward")
+            }
+            .opacity(pinned ? 0.4 : 1.0)
+            if pinned {
+                Text("Remove pins to shift the stitch phase.")
+                    .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
             }
             if pinning {
                 Text("Click a hole on one row, then its partner on the other. The seam re-matches around your pins.")

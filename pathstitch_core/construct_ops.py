@@ -31,8 +31,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.spatial import Delaunay
+import shapely
 from shapely.geometry import Polygon, Point, LineString
-from shapely.ops import split as shapely_split
+from shapely.ops import split as shapely_split, polygonize, unary_union
 
 Pt = Tuple[float, float]
 
@@ -520,10 +521,13 @@ def op_match_chains(args: Dict[str, Any]) -> Dict[str, Any]:
     args: chainA / chainB = [[x,y], ...] ordered hole centers; closedA/closedB.
     Optional `anchors` = [[aIdx, bIdx], ...] user alignment pins (Fusion-Loft style):
     the chains are split at the pins and each run between is filled proportionally, so
-    every pin maps exactly. Optional `flip` forces chain B reversed. With no anchors it
+    every pin maps exactly. Optional `flip` forces chain B reversed. Optional `shift`
+    (int) phases the correspondence by N holes: every A hole sews to the B hole N
+    further along (wrapping for a closed loop, clamped for an open run) — lets the user
+    rotate which holes line up when the auto start is off by a few. With no anchors it
     falls back to automatic arc-length pairing (auto-detecting reversal).
     Returns matched index pairs, the two seam lengths, the perimeter mismatch ratio,
-    whether B was reversed, and the recommended policy.
+    whether B was reversed, the applied shift, and the recommended policy.
     """
     A = [(float(p[0]), float(p[1])) for p in args.get("chainA", [])]
     B = [(float(p[0]), float(p[1])) for p in args.get("chainB", [])]
@@ -533,6 +537,10 @@ def op_match_chains(args: Dict[str, Any]) -> Dict[str, Any]:
     closedB = bool(args.get("closedB", False))
     anchors_in = args.get("anchors") or []
     flip = bool(args.get("flip", False))
+    try:
+        shift = int(args.get("shift", 0) or 0)
+    except (TypeError, ValueError):
+        shift = 0
     nA, nB = len(A), len(B)
 
     pa, lenA = _arc_params(A, closedA)
@@ -581,10 +589,22 @@ def op_match_chains(args: Dict[str, Any]) -> Dict[str, Any]:
         else:
             pairs = fwd; reversed_ = False
 
+    # Phase the correspondence by `shift` holes. Pins already fix the alignment
+    # exactly, so a shift would only fight them — apply it to the auto pairings only.
+    applied_shift = 0
+    if shift and not anchors_in:
+        applied_shift = (shift % nB) if closedB else shift
+        if closedB:
+            pairs = sorted({(i, (j + applied_shift) % nB) for (i, j) in pairs})
+        else:
+            pairs = sorted({(i, min(max(j + applied_shift, 0), nB - 1))
+                            for (i, j) in pairs})
+
     return {"status": "ok", "data": {
         "pairs": [[i, j] for (i, j) in pairs],
         "lenA": lenA, "lenB": lenB,
         "mismatch": mismatch, "reversed": reversed_, "policy": policy,
+        "shift": applied_shift,
     }}
 
 
@@ -641,6 +661,12 @@ def _extract_from_dxf(input_path: str,
     all_handles: List[str] = []
     folds: List[List[Pt]] = []
     holes: List[Pt] = []
+    # Loose open geometry (separate LINEs, ARCs, open polylines / splines) that does
+    # NOT itself enclose an area. Imported CAD outlines almost always arrive this way
+    # — as a pile of unconnected segments — so on its own none of it became a panel
+    # and the whole import "didn't show up". We collect it here, then stitch it into
+    # closed loops below so those outlines surface as real panels.
+    open_edges: List[LineString] = []
     for ent in msp:
         layer = (ent.dxf.layer or "").upper()
         et = ent.dxftype()
@@ -649,12 +675,16 @@ def _extract_from_dxf(input_path: str,
             if c is not None:
                 holes.append(c)
             continue
+        if layer in _SKIP_LAYERS:
+            continue
         if et == "LINE":
             seg = [(ent.dxf.start.x, ent.dxf.start.y), (ent.dxf.end.x, ent.dxf.end.y)]
             if layer in fold_set:
                 folds.append(seg)
+            elif math.hypot(seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]) > 1e-9:
+                open_edges.append(LineString(seg))
             continue
-        if et in ("LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE"):
+        if et in ("ARC", "LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE", "CIRCLE"):
             try:
                 path = make_path(ent)
                 pts = [(p.x, p.y) for p in path.flattening(distance=0.2)]
@@ -662,15 +692,61 @@ def _extract_from_dxf(input_path: str,
                 continue
             if len(pts) < 2:
                 continue
-            closed = bool(getattr(ent, "closed", False) or getattr(ent, "is_closed", False))
+            closed = bool(getattr(ent, "closed", False) or getattr(ent, "is_closed", False)
+                          or et in ("CIRCLE", "ELLIPSE")
+                          or math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]) < 1e-6)
             if layer in fold_set:
                 folds.append(pts)
-            elif closed and layer not in _SKIP_LAYERS:
+            elif closed:
                 all_handles.append(str(ent.dxf.handle))   # every area, pre-filter
                 if include_handles and str(ent.dxf.handle) not in include_handles:
                     continue  # only the user-chosen area(s) become panels
                 panels.append(pts)
                 panel_handles.append(str(ent.dxf.handle))
+            else:
+                open_edges.append(LineString(pts))
+
+    # Assemble loose edges into closed panels. Snapping first closes the hairline
+    # gaps imports leave between segment endpoints; `polygonize` then finds every
+    # minimal closed face the noded network bounds. include_handles filters by DXF
+    # handle, which these synthesized panels have none of — so they are only added
+    # when the user hasn't restricted assembly to specific picked areas.
+    if open_edges and not include_handles:
+        try:
+            network = unary_union(open_edges)
+            # `polygonize` only closes a face when the bounding edges share EXACTLY
+            # coincident nodes; imported arcs/lines meet with floating-point dust
+            # (e.g. 9.999999999999998 vs 10) that leaves the ring technically open.
+            # Snapping the whole network to a fine grid welds those endpoints into
+            # shared nodes — the grid (0.01 mm) is far below any real leather feature,
+            # so nothing distinct is merged. Re-node with unary_union afterwards.
+            try:
+                network = unary_union(shapely.set_precision(network, 0.01))
+            except Exception:
+                pass
+            for poly in polygonize(network):
+                if poly.is_empty or poly.area <= 1e-6:
+                    continue
+                ring = list(poly.exterior.coords)
+                if len(ring) >= 2 and ring[0] == ring[-1]:
+                    ring = ring[:-1]
+                if len(ring) < 3:
+                    continue
+                # A loop assembled from loose lines has no DXF handle of its own. Key
+                # it on its centroid (rounded to 0.1 mm) instead of an enumeration
+                # index: `polygonize` order is NOT stable across rebuilds, and an
+                # index-based handle would churn every build — so any per-area choice
+                # (overlap treatment, panel transform, decal) keyed to it would be
+                # lost and, e.g., the Overlapping-area prompt would never dismiss.
+                c = poly.representative_point()
+                # Area disambiguates concentric loops that share a centroid.
+                h = f"loop:{round(c.x, 1)}:{round(c.y, 1)}:{round(poly.area, 1)}"
+                panels.append([(float(x), float(y)) for x, y in ring])
+                panel_handles.append(h)
+                all_handles.append(h)
+        except Exception:
+            pass
+
     return panels, folds, holes, panel_handles, all_handles
 
 
@@ -794,6 +870,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     holes_by_panel: Dict[int, List[List[Pt]]] = {}
     stamps_src: Dict[int, List[List[Pt]]] = {}
     patch_of: Dict[int, int] = {}
+    holes_from_areas: List[Pt] = []   # engulfed areas the user tagged as sew holes
     for i, j in container_of.items():
         t = treatments.get(panel_handles[i], "independent")
         if t == "cutout":
@@ -802,6 +879,15 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
             dropped.add(i); stamps_src.setdefault(j, []).append(norm_outlines[i])
         elif t == "patch":
             patch_of[i] = j   # stays a panel, raised onto its container
+        elif t in ("sew", "holes", "sewhole"):
+            # The inner area IS a sewing hole: drop it as a panel and feed its centre
+            # into the hole pipeline so it chains/stitches/exports like a hole drawn
+            # on the SEWING_HOLES layer. A row of such areas becomes a stitch chain.
+            dropped.add(i)
+            o = norm_outlines[i]
+            if o:
+                holes_from_areas.append((sum(p[0] for p in o) / len(o),
+                                         sum(p[1] for p in o) / len(o)))
 
     out_panels: List[Dict[str, Any]] = []
     all_pts: List[Pt] = []
@@ -867,10 +953,10 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     # Sewing holes → ordered chains, each hole embedded in its panel's mesh so it
     # rides the fold. This is the raw material the stitch flagship matches.
     hole_chains: List[Dict[str, Any]] = []
-    if holes_in:
+    all_holes = [(float(h[0]), float(h[1])) for h in holes_in] + holes_from_areas
+    if all_holes:
         try:
-            hole_chains = _build_hole_chains(
-                [(float(h[0]), float(h[1])) for h in holes_in], panel_polys, panel_meshes)
+            hole_chains = _build_hole_chains(all_holes, panel_polys, panel_meshes)
         except Exception as e:
             hole_chains = []  # holes are additive; never fail the whole build
 

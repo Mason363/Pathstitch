@@ -88,12 +88,22 @@ extension AppState {
         if created == 0 { errorMessage = "No clearly-matching seams found. Stitch chains manually." }
     }
 
-    /// Assigns how an engulfed area is treated ("stamp" | "patch" | "cutout" |
-    /// "independent") and rebuilds so it takes effect. Drives the overlap chooser.
-    func setAreaTreatment(inner: String, mode: String) {
+    /// Assigns how an engulfed area is treated ("sew" | "stamp" | "patch" |
+    /// "cutout" | "independent") and rebuilds so it takes effect. Drives the
+    /// overlap chooser. When `all` is set, the same choice is applied to every
+    /// still-undecided overlapping area in one go — the common case of a whole row
+    /// of holes/areas, so the prompt clears with a single click instead of N.
+    func setAreaTreatment(inner: String, mode: String, all: Bool = false) {
         pushConstructUndo()
-        constructAreaTreatments[inner] = mode
-        pendingEngulfed.removeAll { $0["inner"] == inner }
+        if all {
+            for e in pendingEngulfed {
+                if let h = e["inner"] { constructAreaTreatments[h] = mode }
+            }
+            pendingEngulfed.removeAll()
+        } else {
+            constructAreaTreatments[inner] = mode
+            pendingEngulfed.removeAll { $0["inner"] == inner }
+        }
         hasUnsavedChanges = true
         buildConstructModel()
     }
@@ -1027,18 +1037,20 @@ extension AppState {
         let ptsB = cb.holes.map { [$0.x, $0.y] }
         let anchors = seam.anchors ?? []
         let flip = seam.flip ?? false
+        let shift = seam.shift ?? 0
         do {
             let res = try await PythonBridge.shared.run(
                 module: "construct_ops", op: "match_chains",
                 args: ["chainA": ptsA, "chainB": ptsB,
                        "closedA": ca.closed, "closedB": cb.closed,
-                       "anchors": anchors, "flip": flip])
+                       "anchors": anchors, "flip": flip, "shift": shift])
             guard let data = res["data"] as? [String: Any] else { return }
             let pairs = (data["pairs"] as? [[Int]]) ?? []
             let lenA = (data["lenA"] as? Double) ?? 0
             let lenB = (data["lenB"] as? Double) ?? 0
             let mismatch = (data["mismatch"] as? Double) ?? 0
             let reversed = (data["reversed"] as? Bool) ?? false
+            let appliedShift = (data["shift"] as? Int) ?? 0
             let nA = ca.holes.count, nB = cb.holes.count
             await MainActor.run {
                 guard let i = self.constructSeams.firstIndex(where: { $0.id == seamId }) else { return }
@@ -1047,6 +1059,9 @@ extension AppState {
                 self.constructSeams[i].lenB = lenB
                 self.constructSeams[i].mismatch = mismatch
                 self.constructSeams[i].reversed = reversed
+                // Normalize the stored shift to the value actually applied (wrapped),
+                // so the stepper readout matches what the seam really did.
+                self.constructSeams[i].shift = appliedShift == 0 ? nil : appliedShift
                 self.constructSeams[i].holesA = nA   // counts known now; gap fills after pose
                 self.constructSeams[i].holesB = nB
                 self.constructSeamStateToken += 1
@@ -1151,6 +1166,29 @@ extension AppState {
         constructSeams[si].flip = !(constructSeams[si].flip ?? false)
         hasUnsavedChanges = true
         rematchSeam(seamId)
+    }
+
+    /// Phases a seam by `delta` holes (rotate which holes line up). Wraps within the
+    /// number of holes on chain B so the stored value never runs away; the matcher
+    /// then re-pairs and normalizes it to the value it actually applied.
+    func shiftSeam(_ seamId: StitchSeam.ID, by delta: Int) {
+        guard delta != 0,
+              let si = constructSeams.firstIndex(where: { $0.id == seamId }),
+              let cb = constructHoleChains.first(where: { $0.id == constructSeams[si].chainB }),
+              cb.holes.count > 1 else { return }
+        pushConstructUndo()
+        let n = cb.holes.count
+        var s = (constructSeams[si].shift ?? 0) + delta
+        if cb.closed { s = ((s % n) + n) % n }          // 0…n-1 on a loop
+        else { s = max(-(n - 1), min(n - 1, s)) }       // clamp on an open run
+        constructSeams[si].shift = s == 0 ? nil : s
+        hasUnsavedChanges = true
+        rematchSeam(seamId)
+    }
+
+    /// The current stitch phase (holes) of a seam, for the inspector readout.
+    func seamShift(_ seamId: StitchSeam.ID) -> Int {
+        constructSeams.first { $0.id == seamId }?.shift ?? 0
     }
 
     /// Count of pins on a seam (for the inspector label).

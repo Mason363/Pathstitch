@@ -132,6 +132,10 @@ struct StitchSeam: Codable, Identifiable, Hashable {
     // chain B reversed. Optional so older `.stch` seams still decode.
     var anchors: [[Int]]? = nil
     var flip: Bool? = nil
+    // Phases the correspondence by N holes (rotate which holes line up): wraps on a
+    // closed loop, slides on an open run. Ignored while pins are set. Optional so
+    // older `.stch` seams still decode.
+    var shift: Int? = nil
     // Live fit, reported by the viewport after seating (recomputed each pose).
     var holesA: Int = 0
     var holesB: Int = 0
