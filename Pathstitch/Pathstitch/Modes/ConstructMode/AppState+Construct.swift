@@ -516,6 +516,35 @@ extension AppState {
         constructMaterialId.flatMap { LeatherStore.shared.material(id: $0) }
     }
 
+    // MARK: Multi-material (Phase 2) — per-panel leather
+
+    /// The leather a panel is made of — its per-panel override, else nil (the panel
+    /// uses the assembly default). Keyed by DXF handle so it survives 2D edits.
+    func leatherForPanel(_ panelId: Int) -> LeatherMaterial? {
+        guard let handle = constructPanelHandles[panelId],
+              let id = constructPanelMaterials[handle] else { return nil }
+        return LeatherStore.shared.material(id: id)
+    }
+
+    /// Assigns (leatherId) or clears (nil) a panel's leather and re-pushes material.
+    func setConstructPanelMaterial(_ panelId: Int, _ leatherId: String?) {
+        guard let handle = constructPanelHandles[panelId] else { return }
+        if let id = leatherId, !id.isEmpty { constructPanelMaterials[handle] = id }
+        else { constructPanelMaterials.removeValue(forKey: handle) }
+        constructMaterialToken += 1
+        hasUnsavedChanges = true
+    }
+
+    /// Bend inputs (thickness, K-factor, min radius) for a fold — the fold's panel
+    /// material when set (multi-material), else the assembly default. So a firm
+    /// stiffener patch folds to its own radius, not the soft body's.
+    private func bendParams(for spec: FoldSpec) -> (t: Double, k: Double, minR: Double) {
+        if let m = leatherForPanel(spec.panelId) {
+            return (m.thicknessMm, m.kFactor, m.minBendRadiusMm)
+        }
+        return (constructThicknessMm, constructKFactor, constructMinBendRadiusMm)
+    }
+
     /// One fold's inside bend radius, derived from its roundness and the leather:
     /// even a "sharp" leather fold has a natural inside radius near half the
     /// thickness (you can't crease thick stock to a knife edge), and rounding it
@@ -523,32 +552,35 @@ extension AppState {
     /// allowance and the min-radius check. (The Python `fold_metrics` op is pure
     /// physics and takes this radius explicitly; this is the app-side policy.)
     func constructFoldRadius(_ spec: FoldSpec) -> Double {
-        let comfortable = max(constructMinBendRadiusMm * 4, constructThicknessMm * 3)
-        return max(constructThicknessMm * 0.5, spec.roundness * comfortable)
+        let p = bendParams(for: spec)
+        let comfortable = max(p.minR * 4, p.t * 3)
+        return max(p.t * 0.5, spec.roundness * comfortable)
     }
 
     /// Bend allowance for one fold — the developed neutral-axis arc, mm. Mirrors
     /// `construct_ops.bend_allowance`: BA = θ·(R + K·T).
     func constructBendAllowance(_ spec: FoldSpec) -> Double {
+        let p = bendParams(for: spec)
         let theta = abs(spec.angleDeg) * .pi / 180.0
-        return theta * (constructFoldRadius(spec) + constructKFactor * constructThicknessMm)
+        return theta * (constructFoldRadius(spec) + p.k * p.t)
     }
 
     /// Bend deduction for one fold — flat length = outside flange sum − BD. Mirrors
     /// `construct_ops.bend_deduction`.
     func constructBendDeduction(_ spec: FoldSpec) -> Double {
+        let p = bendParams(for: spec)
         let a = min(abs(spec.angleDeg), 179.0) * .pi / 180.0
         let r = constructFoldRadius(spec)
-        let ossb = tan(a / 2.0) * (r + constructThicknessMm)
+        let ossb = tan(a / 2.0) * (r + p.t)
         return 2.0 * ossb - constructBendAllowance(spec)
     }
 
-    /// True when a fold's inside radius meets the leather's minimum (a flat fold is
-    /// trivially safe). A soft check — surfaced as a warning, never a hard block.
+    /// True when a fold's inside radius meets its panel's leather minimum (a flat
+    /// fold is trivially safe). A soft check — surfaced as a warning, never a block.
     func constructFoldRadiusOK(_ spec: FoldSpec) -> Bool {
         if abs(spec.angleDeg) <= 1e-6 { return true }
-        return constructMinBendRadiusMm <= 0
-            || constructFoldRadius(spec) + 1e-9 >= constructMinBendRadiusMm
+        let p = bendParams(for: spec)
+        return p.minR <= 0 || constructFoldRadius(spec) + 1e-9 >= p.minR
     }
 
     /// Bent folds whose inside radius is tighter than the leather minimum.

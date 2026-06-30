@@ -219,6 +219,9 @@ struct ConstructAssembly: Codable {
     var lights: [ConstructLight]? = nil
     var ambient: Double? = nil
     var renderMode: String? = nil   // "edit" | "mockup"
+    /// Multi-material (Phase 2): panel DXF handle → LeatherStore id. Optional →
+    /// older files are single-material.
+    var panelMaterials: [String: String]? = nil
 }
 
 /// A full snapshot of the editable assembly state for the panel's own undo/redo

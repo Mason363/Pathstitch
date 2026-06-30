@@ -3822,6 +3822,32 @@ extension ContentView {
             }
 
             Divider()
+            // Assembly nets (Phase 2): fold-up templates — outline + fold lines that
+            // fold into a 3D object in Assembly mode.
+            Text("ASSEMBLIES (fold-up nets)")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(Color.text_secondary)
+            Text("Insert a net (outline + fold lines), then switch to Assembly mode and it folds up.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            ForEach(AssemblyNet.builtins) { net in
+                Button {
+                    let g = net.build()
+                    state.insertNet(net.name, panels: g.panels, folds: g.folds)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(net.name).font(PlasticityFont.label).foregroundColor(Color.text_primary)
+                            Text(net.detail).font(.system(size: 9)).foregroundColor(Color.text_secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "plus.circle").foregroundColor(Color.accent)
+                    }
+                    .padding(6).background(Color.bg_input).cornerRadius(5)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+
+            Divider()
             Button("Done") { state.currentTool = .select }.buttonStyle(.bordered)
         }
     }
@@ -4280,6 +4306,21 @@ extension ContentView {
                 .buttonStyle(PlasticityButtonStyle(isEnabled: state.selectionHasConvertibleLines))
                 .disabled(!state.selectionHasConvertibleLines)
                 .help("Replace the selected straight lines with the chosen style")
+            }
+
+            Divider().background(Color.border_subtle)
+            // Edge finish (Phase 2): treatments that change the cut pattern.
+            Text("EDGE FINISH (selected edge)")
+                .font(PlasticityFont.label).fontWeight(.bold).foregroundColor(Color.accent)
+            Text("Turn = a folded-over hem (adds material + a crease). Bind = a binding strip sized to wrap the edge.")
+                .font(.system(size: 10)).foregroundColor(Color.text_secondary)
+            numberField("Allowance (mm)", $state.edgeFinishAllowanceMm)
+            quickValues([4, 6, 8, 10, 12], $state.edgeFinishAllowanceMm, unit: " mm")
+            HStack {
+                Button("Turn edge") { state.applyEdgeTreatment("turn") }
+                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+                Button("Bind edge") { state.applyEdgeTreatment("bind") }
+                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
             }
         }
     }

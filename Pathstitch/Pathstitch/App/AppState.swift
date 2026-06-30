@@ -1332,6 +1332,8 @@ class AppState {
     var boxJointDepth: Double = 5.0
     var boxJointKerf: Double = 0.2
     var boxJointMate: Bool = true
+    // Edge treatments (Phase 2): folded-over hem / bound edge on the selected edge.
+    var edgeFinishAllowanceMm: Double = 8.0
     var goldenKind: String = "spiral"             // spiral | rectangle | centerline
     var goldenWidth: Double = 100.0
     var goldenHeight: Double = 60.0
@@ -2250,6 +2252,12 @@ class AppState {
     var constructThicknessOz: Double = 0        // weight in oz (display)
     var constructKFactor: Double = 0.45         // neutral-axis K-factor for bend allowance
     var constructMinBendRadiusMm: Double = 1.5  // fold-radius DFM threshold (mm)
+
+    // Multi-material assemblies (Phase 2): panel DXF handle → LeatherStore id. A
+    // panel with no entry uses the assembly default above. Persisted in .stch;
+    // drives per-panel bend allowance (a stiff stiffener folds differently than
+    // its soft body). Keyed by handle so it survives 2D edits / rebuilds.
+    var constructPanelMaterials: [String: String] = [:]
 
     // Custom artwork decals (Phase 4): panelId → image data URL. Visual-only,
     // ride the folded mesh, never touch the 2D cut geometry. Persisted in .stch.
@@ -5802,6 +5810,58 @@ class AppState {
         }
     }
 
+    /// Insert a fold-up net (Phase 2 assembly template): stamp panel outline(s) +
+    /// fold lines so switching to Construct mode folds the blank into the object.
+    func insertNet(_ name: String, panels: [[[Double]]], folds: [[[Double]]]) {
+        saveToHistory()
+        let activeDxfURL = ensureActiveDXFFileExists()
+        isProcessing = true
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(
+                    module: "dxf_ops", op: "insert_net",
+                    args: ["input": activeDxfURL.path, "output": activeDxfURL.path,
+                           "panels": panels, "folds": folds])
+                await MainActor.run { self.reloadDXF(); self.isProcessing = false }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
+    /// Apply an edge treatment (Phase 2) to the selected straight edge: "turn" adds
+    /// a folded-over hem (extra material + a FOLD crease); "bind" emits a binding
+    /// strip sized to wrap the edge. Mirrors `applyBoxJoint`'s edge picking.
+    func applyEdgeTreatment(_ mode: String) {
+        guard let edge = selectedEdgeEndpoints() else {
+            errorMessage = "Select a straight edge (a line, or a shape) to finish."
+            return
+        }
+        saveToHistory()
+        let activeDxfURL = ensureActiveDXFFileExists()
+        isProcessing = true
+        let p1 = edge.p1, p2 = edge.p2
+        let dx = p2[0] - p1[0], dy = p2[1] - p1[1]
+        let len = max(1e-6, (dx * dx + dy * dy).squareRoot())
+        let nx = -dy / len, ny = dx / len   // left normal = outward (the off-panel side)
+        let args: [String: Any] = [
+            "input": activeDxfURL.path, "output": activeDxfURL.path,
+            "edge": [p1, p2], "mode": mode,
+            "allowance": edgeFinishAllowanceMm, "thickness": constructThicknessMm,
+            "outward": [nx, ny]
+        ]
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "edge_treatment", args: args)
+                await MainActor.run { self.reloadDXF(); self.isProcessing = false }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
     /// Insert Hardware (Phase 2) — stamp a part's footprint (the holes / slots it
     /// cuts) onto the HARDWARE layer at the origin. The cuts double as stitch
     /// keep-outs, so the saddle stitch automatically gives the part a wide berth.
@@ -7442,7 +7502,8 @@ class AppState {
                         panelXf: constructPanelXf.isEmpty ? nil : constructPanelXf,
                         lights: constructLights.isEmpty ? nil : constructLights,
                         ambient: constructAmbient,
-                        renderMode: constructRenderMode)
+                        renderMode: constructRenderMode,
+                        panelMaterials: constructPanelMaterials.isEmpty ? nil : constructPanelMaterials)
             )
 
             let encoder = JSONEncoder()
@@ -7562,6 +7623,7 @@ class AppState {
                 if let lights = asm.lights, !lights.isEmpty { self.constructLights = lights }
                 if let amb = asm.ambient { self.constructAmbient = amb }
                 self.constructRenderMode = asm.renderMode ?? "edit"
+                self.constructPanelMaterials = asm.panelMaterials ?? [:]
                 self.constructDecals = Dictionary(uniqueKeysWithValues:
                     (asm.decals ?? [:]).compactMap { k, v in Int(k).map { ($0, v) } })
                 self.constructDecalXforms = Dictionary(uniqueKeysWithValues:

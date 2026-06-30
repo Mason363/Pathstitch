@@ -126,3 +126,30 @@ final class TemplateStore {
                        diameter: nil, sides: nil, note: "ISO 216"),
     ]
 }
+
+/// A parametric fold-up net (Phase 2 assembly template): a flat blank with fold
+/// lines that folds into a 3D object in Construct mode. `build` returns closed
+/// panel outlines + fold segments (mm), ready for `dxf_ops.insert_net`.
+struct AssemblyNet: Identifiable {
+    let id: String
+    let name: String
+    let detail: String
+    let build: () -> (panels: [[[Double]]], folds: [[[Double]]])
+
+    static let builtins: [AssemblyNet] = [
+        AssemblyNet(id: "sleeve", name: "Card Sleeve", detail: "70 × 100 mm · folds in half") {
+            (panels: [[[0, 0], [140, 0], [140, 100], [0, 100]]],
+             folds: [[[70, 0], [70, 100]]])
+        },
+        AssemblyNet(id: "tray", name: "Open Tray", detail: "80 mm base · 30 mm walls") {
+            (panels: [[[30, 0], [110, 0], [110, 30], [140, 30], [140, 110], [110, 110],
+                       [110, 140], [30, 140], [30, 110], [0, 110], [0, 30], [30, 30]]],
+             folds: [[[30, 30], [110, 30]], [[30, 110], [110, 110]],
+                     [[30, 30], [30, 110]], [[110, 30], [110, 110]]])
+        },
+        AssemblyNet(id: "flap-pouch", name: "Flap Pouch", detail: "90 × 120 body + 50 mm flap") {
+            (panels: [[[0, 0], [90, 0], [90, 170], [0, 170]]],
+             folds: [[[0, 120], [90, 120]]])
+        },
+    ]
+}

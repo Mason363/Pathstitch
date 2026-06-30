@@ -961,6 +961,134 @@ def op_place_hardware(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Failed to place hardware: {e}"}
 
 
+def op_edge_treatment(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Applies a leather edge treatment that *changes the cut pattern* (Phase 2).
+
+    args:
+      input, output
+      edge      : [[x0,y0],[x1,y1]] the straight edge to finish
+      mode      : "turn" (folded-over edge — add a fold-back hem + a crease) |
+                  "bind" (bound edge — emit a separate binding strip + creases)
+      allowance : mm — turn: hem depth; bind: wrap width per side (default 8)
+      thickness : mm — leather thickness the binding wraps (default 2)
+      outward   : [nx,ny] normal pointing OFF the panel (default = left of the
+                  directed edge); the hem / strip is built on that side.
+
+    A turned edge adds material to the blank (the fold-back) and a FOLD crease on
+    the original line; a bound edge produces a strip panel sized to wrap the edge.
+    Returns the new entity handles.
+    """
+    input_path = args.get("input")
+    output_path = args.get("output")
+    if not input_path or not output_path:
+        return {"status": "error", "message": "Input and output paths are required."}
+    edge = args.get("edge") or []
+    if len(edge) < 2:
+        return {"status": "error", "message": "An edge needs two endpoints."}
+    mode = args.get("mode", "turn")
+    allowance = float(args.get("allowance", 8.0) or 0.0)
+    thickness = float(args.get("thickness", 2.0) or 0.0)
+    p0 = (float(edge[0][0]), float(edge[0][1]))
+    p1 = (float(edge[1][0]), float(edge[1][1]))
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    L = math.hypot(dx, dy)
+    if L < 1e-9:
+        return {"status": "error", "message": "Degenerate edge (zero length)."}
+    ux, uy = dx / L, dy / L
+    out = args.get("outward")
+    if out and len(out) >= 2:
+        nx, ny = float(out[0]), float(out[1])
+        nl = math.hypot(nx, ny) or 1.0
+        nx, ny = nx / nl, ny / nl
+    else:
+        nx, ny = -uy, ux  # left normal of the directed edge
+
+    doc = ezdxf.new(dxfversion="R2010") if not os.path.exists(input_path) else ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+    for lname, col in (("FOLD", 5), ("EDGE_TURN", 4), ("BINDING", 3)):
+        if lname not in doc.layers:
+            doc.layers.new(lname, dxfattribs={"color": col})
+
+    def off(p, dist):
+        return (p[0] + nx * dist, p[1] + ny * dist)
+
+    handles: List[str] = []
+    try:
+        if mode == "turn":
+            quad = [p0, p1, off(p1, allowance), off(p0, allowance)]
+            e = msp.add_lwpolyline(quad, dxfattribs={"layer": "EDGE_TURN", "closed": True})
+            handles.append(e.dxf.handle)
+            c = msp.add_line(start=p0, end=p1, dxfattribs={"layer": "FOLD"})
+            handles.append(c.dxf.handle)
+        elif mode == "bind":
+            W = 2.0 * allowance + thickness
+            strip = [p0, p1, off(p1, W), off(p0, W)]
+            e = msp.add_lwpolyline(strip, dxfattribs={"layer": "BINDING", "closed": True})
+            handles.append(e.dxf.handle)
+            for d in (allowance, allowance + thickness):  # the two wrap creases
+                c = msp.add_line(start=off(p0, d), end=off(p1, d), dxfattribs={"layer": "FOLD"})
+                handles.append(c.dxf.handle)
+        else:
+            return {"status": "error", "message": f"Unknown edge treatment: {mode}"}
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"handles": handles, "count": len(handles),
+                                         "mode": mode, "edgeLength": L}}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to apply edge treatment: {e}"}
+
+
+def op_insert_net(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamps a fold-up *net* — panel outline(s) + fold lines — into the sketch
+    (Phase 2 parametric assembly templates). The outlines are closed panels and the
+    fold lines land on the FOLD layer, so switching to Construct mode folds the net
+    up into the 3D object (a tray, a sleeve, a flap pouch …).
+
+    args: input, output,
+          panels = [[[x,y], ...], ...]  closed outlines,
+          folds  = [[[x0,y0],[x1,y1]], ...]  fold segments,
+          outline_layer (default "ORIGINAL"), fold_layer (default "FOLD").
+    Returns the new entity handles.
+    """
+    input_path = args.get("input")
+    output_path = args.get("output")
+    if not input_path or not output_path:
+        return {"status": "error", "message": "Input and output paths are required."}
+    panels = args.get("panels") or []
+    folds = args.get("folds") or []
+    if not panels:
+        return {"status": "error", "message": "A net needs at least one panel outline."}
+    outline_layer = sanitize_layer_name(args.get("outline_layer", "ORIGINAL"))
+    fold_layer = sanitize_layer_name(args.get("fold_layer", "FOLD"))
+
+    doc = ezdxf.new(dxfversion="R2010") if not os.path.exists(input_path) else ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+    if fold_layer not in doc.layers:
+        doc.layers.new(fold_layer, dxfattribs={"color": 5})  # blue creases
+
+    handles: List[str] = []
+    try:
+        for outline in panels:
+            pts = [(float(p[0]), float(p[1])) for p in outline if len(p) >= 2]
+            if len(pts) < 3:
+                continue
+            e = msp.add_lwpolyline(pts, dxfattribs={"layer": outline_layer, "closed": True})
+            handles.append(e.dxf.handle)
+        for seg in folds:
+            if len(seg) < 2:
+                continue
+            c = msp.add_line(start=(float(seg[0][0]), float(seg[0][1])),
+                             end=(float(seg[1][0]), float(seg[1][1])),
+                             dxfattribs={"layer": fold_layer})
+            handles.append(c.dxf.handle)
+        if not handles:
+            return {"status": "error", "message": "Net produced no geometry."}
+        doc.saveas(output_path)
+        return {"status": "ok", "data": {"handles": handles, "count": len(handles),
+                                         "panels": len(panels), "folds": len(folds)}}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to insert net: {e}"}
+
+
 def get_entities_bounds(msp, handles: List[str]) -> Optional[Tuple[float, float, float, float]]:
     """Calculates bounds of specific entity handles in modelspace, or all if empty."""
     from ezdxf.path import make_path
@@ -6783,6 +6911,8 @@ OPERATIONS = {
     "chain_select": op_chain_select,
     "add_entity": op_add_entity,
     "place_hardware": op_place_hardware,
+    "edge_treatment": op_edge_treatment,
+    "insert_net": op_insert_net,
     "offset_bbox": op_offset_bbox,
     "update_entity": op_update_entity,
     "set_layer": op_set_layer,

@@ -865,6 +865,28 @@ struct ConstructModeView: View {
                     .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
             }
 
+            // Multi-material: give individual panels their own leather (e.g. a firm
+            // stiffener patch on a soft body). Empty = the assembly default above.
+            if state.constructPanelHandles.count >= 2 {
+                DisclosureGroup {
+                    ForEach(state.constructPanelHandles.keys.sorted(), id: \.self) { pid in
+                        HStack {
+                            Text("Panel \(pid)").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                            Spacer()
+                            Picker(selection: Binding<String>(
+                                get: { state.leatherForPanel(pid)?.id ?? "" },
+                                set: { state.setConstructPanelMaterial(pid, $0.isEmpty ? nil : $0) })) {
+                                Text("Assembly default").tag("")
+                                ForEach(LeatherStore.shared.all) { m in Text(m.name).tag(m.id) }
+                            } label: { EmptyView() }
+                            .labelsHidden().controlSize(.small).frame(maxWidth: 160)
+                        }
+                    }
+                } label: {
+                    Text("Per-panel material").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                }
+            }
+
             Text("Tint").font(PlasticityFont.label).foregroundColor(.text_secondary).tracking(1)
             HStack(spacing: 8) {
                 ForEach(leatherSwatches, id: \.0) { hex, name in
