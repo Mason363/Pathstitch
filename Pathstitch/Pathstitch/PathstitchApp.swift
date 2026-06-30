@@ -349,6 +349,13 @@ struct PathstitchApp: App {
                 .disabled((NSApp.activeAppState?.selectedHandles.isEmpty ?? true))
             }
 
+            // Manufacturing menu (Phase 3) — BOM/costing, DFM validation, hide
+            // nesting. Resolve activeAppState at click time (same pattern as View).
+            CommandMenu("Manufacturing") {
+                Button("Bill of Materials & Validate") { NSApp.activeAppState?.runManufactureReport() }
+                Button("Nest on Hide (cutting-mat size)") { NSApp.activeAppState?.nestOnHide() }
+            }
+
             // View ▸ Zoom controls. The 2D canvas owns the view size, so these
             // bump request tokens it observes (zoom about the viewport center,
             // or fit-all). No `.disabled` here: NSApp.activeAppState isn't an

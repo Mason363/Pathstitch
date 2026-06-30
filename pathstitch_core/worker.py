@@ -44,6 +44,10 @@ def _get_operations(module):
         from pathstitch_core import construct_ops
         _MODULES[module] = construct_ops.OPERATIONS
         return _MODULES[module]
+    if module == "manufacture_ops":
+        from pathstitch_core import manufacture_ops
+        _MODULES[module] = manufacture_ops.OPERATIONS
+        return _MODULES[module]
     return None
 
 

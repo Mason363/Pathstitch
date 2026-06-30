@@ -5810,6 +5810,69 @@ class AppState {
         }
     }
 
+    // MARK: - Manufacturing output (Phase 3): BOM / DFM / hide nesting
+
+    /// Runs the bill-of-materials + DFM checks and surfaces a one-line summary
+    /// (also appended to the log). Read-only — the engines live in `manufacture_ops`.
+    func runManufactureReport() {
+        let url = ensureActiveDXFFileExists()
+        isProcessing = true
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                let bom = try await PythonBridge.shared.run(module: "manufacture_ops", op: "bom",
+                    args: ["input": url.path, "thread_waste": 1.4])
+                let dfm = try await PythonBridge.shared.run(module: "manufacture_ops", op: "validate_dfm",
+                    args: ["input": url.path, "min_hole_edge": 3.0])
+                await MainActor.run {
+                    self.isProcessing = false
+                    let b = (bom["data"] as? [String: Any]) ?? [:]
+                    let d = (dfm["data"] as? [String: Any]) ?? [:]
+                    func dbl(_ k: String, _ m: [String: Any]) -> Double { (m[k] as? NSNumber)?.doubleValue ?? 0 }
+                    func int(_ k: String, _ m: [String: Any]) -> Int { (m[k] as? NSNumber)?.intValue ?? 0 }
+                    var s = String(format: "BOM — %.2f dm² (%.2f sq ft) leather, cut %.0f mm, %d holes, thread ≈ %.0f mm, %d hardware cut(s).",
+                                   dbl("areaDm2", b), dbl("areaSqFt", b), dbl("cutLengthMm", b),
+                                   int("holeCount", b), dbl("threadLengthMm", b), int("hardwareCount", b))
+                    let warns = (d["warnings"] as? [String]) ?? []
+                    s += warns.isEmpty ? "  DFM: no issues." : "  DFM: " + warns.joined(separator: " ")
+                    self.logEntries.append(LogEntry(action: "Manufacturing report", details: s))
+                    self.errorMessage = s
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
+    /// Nests the panels onto a hide the size of the current cutting mat (grain-
+    /// aligned, defect-free baseline), bakes the layout, and reloads.
+    func nestOnHide() {
+        let url = ensureActiveDXFFileExists()
+        isProcessing = true
+        let hw = matWidthMm, hh = matHeightMm
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                let res = try await PythonBridge.shared.run(module: "manufacture_ops", op: "nest",
+                    args: ["input": url.path, "output": url.path, "apply": true,
+                           "hide_w": hw, "hide_h": hh, "gap": 4.0, "margin": 5.0])
+                await MainActor.run {
+                    self.reloadDXF(); self.isProcessing = false
+                    let d = (res["data"] as? [String: Any]) ?? [:]
+                    let placed = (d["placed"] as? NSNumber)?.intValue ?? 0
+                    let unplaced = (d["unplaced"] as? NSNumber)?.intValue ?? 0
+                    let yld = ((d["yield"] as? NSNumber)?.doubleValue ?? 0) * 100
+                    var s = String(format: "Nested %d panel(s) on a %.0f×%.0f mm hide — %.0f%% yield.", placed, hw, hh, yld)
+                    if unplaced > 0 { s += " \(unplaced) didn't fit." }
+                    self.logEntries.append(LogEntry(action: "Nest on hide", details: s))
+                    self.errorMessage = s
+                }
+            } catch {
+                await MainActor.run { self.errorMessage = error.localizedDescription; self.isProcessing = false }
+            }
+        }
+    }
+
     /// Insert a fold-up net (Phase 2 assembly template): stamp panel outline(s) +
     /// fold lines so switching to Construct mode folds the blank into the object.
     func insertNet(_ name: String, panels: [[[Double]]], folds: [[[Double]]]) {
