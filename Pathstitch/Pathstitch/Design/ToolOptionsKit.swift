@@ -82,9 +82,11 @@ struct TOToolTitle: View {
                 Spacer(minLength: 6)
                 if help != nil {
                     Button { withAnimation(.easeInOut(duration: 0.15)) { helpOpen.toggle() } } label: {
-                        Text("i")
-                            .font(.system(size: 11, weight: .semibold, design: .serif))
-                            .italic()
+                        // SF Symbol "info" is optically centered in its frame, so the
+                        // glyph sits dead-center in the ring (a plain italic "i" does
+                        // not — its slant + metrics push it down-left).
+                        Image(systemName: "info")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(helpOpen ? Color.to_accent : Color.to_textTer)
                             .frame(width: 19, height: 19)
                             .overlay(Circle().stroke(helpOpen ? Color.to_accent : Color.to_textTer.opacity(0.55),

@@ -247,8 +247,12 @@ struct ContentView: View {
     @State private var rotationAngle: Double = 90.0
     @State private var leftSidebarTopHeight: CGFloat = 350
     // Resizable panel widths (MAS-131). Right inspector drag-resizes; left tool
-    // sidebar widens in whole-column steps.
-    @State private var rightPanelWidth: CGFloat = 240
+    // sidebar widens in whole-column steps. The minimum matches the decluttered-
+    // shell reference width (380pt card + the 6pt resize grabber) so the tool
+    // options — segmented controls, summaries, the Default badge — never clip;
+    // the user can still drag wider.
+    static let rightPanelMinWidth: CGFloat = 386
+    @State private var rightPanelWidth: CGFloat = ContentView.rightPanelMinWidth
     @State private var leftToolbarWidth: CGFloat = 48
     // Active-tool option panels are always fully expanded — no collapse chevron
     // or sub-menu feel (MAS-60). Their options render directly in the panel.
@@ -3847,9 +3851,11 @@ extension ContentView {
                     .gesture(
                         DragGesture()
                             .onChanged { val in
-                                // Drag left → wider. Clamp to a sane range; content
-                                // scales to fit, text stays the same size (MAS-131).
-                                rightPanelWidth = min(520, max(200, rightPanelWidth - val.translation.width))
+                                // Drag left → wider. The minimum is the width that
+                                // fits the tool options exactly; the user can widen
+                                // up to a generous cap (MAS-131).
+                                rightPanelWidth = min(640, max(ContentView.rightPanelMinWidth,
+                                                               rightPanelWidth - val.translation.width))
                             }
                     )
 
