@@ -2311,6 +2311,11 @@ class AppState {
     // and a token that tells the viewport to drop the tape.
     var constructMeasureMm: Double = -1
     var constructMeasureClearToken: Int = 0
+    // straight = 3D chord; surface = exact flat-pattern distance across folds
+    // (same panel only — the viewport falls back to straight across panels).
+    var constructMeasureMode: String = "straight"
+    var constructMeasureModeToken: Int = 0
+    var constructMeasureIsSurface: Bool = false   // what the viewport actually used
     // How panels are shaded, independent of edit/mockup: wireframe | solid (flat
     // unlit) | flat (flat-shaded lit) | realistic (PBR leather, default).
     var constructShaderMode: String = "realistic"

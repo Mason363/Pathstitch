@@ -1280,7 +1280,38 @@ function updateHardware(){
 // the distance re-reads live as the model folds, seats, or explodes.
 const COL_MEASURE=0x50c8ff;
 let MEASURE={a:null, b:null};       // anchors {panelId, tri, bary}
+let MEASURE_MODE="straight";        // "straight" | "surface" (flat-pattern geodesic)
 let measureObjs=null;               // {ma, mb, line}
+let measurePath=null;               // surface-mode tape (polyline hugging the leather)
+window.setConstructMeasureMode=function(m){
+  MEASURE_MODE=(m==="surface")?"surface":"straight";
+  window._lastMeasure=-1;           // force a fresh post in the new mode
+  updateMeasure();
+};
+// Which triangle of a panel's FLAT pattern contains 2D point (x,y)?
+function embed2DPoint(panel, x, y){
+  const T=panel.triangles, V=panel.v2d;
+  for(let i=0;i<T.length;i++){
+    const t=T[i], A=V[t[0]], B=V[t[1]], C=V[t[2]];
+    const den=(B[1]-C[1])*(A[0]-C[0])+(C[0]-B[0])*(A[1]-C[1]);
+    if(Math.abs(den)<1e-12) continue;
+    const a=((B[1]-C[1])*(x-C[0])+(C[0]-B[0])*(y-C[1]))/den;
+    const b=((C[1]-A[1])*(x-C[0])+(A[0]-C[0])*(y-C[1]))/den;
+    const c=1-a-b;
+    if(a>=-1e-4 && b>=-1e-4 && c>=-1e-4) return {tri:i, bary:[a,b,c]};
+  }
+  return null;
+}
+function anchor2D(an){
+  const p=PANEL_BY_ID[an.panelId]; if(!p) return null;
+  const t=p.triangles[an.tri]; if(!t) return null;
+  const V=p.v2d, w=an.bary;
+  return [V[t[0]][0]*w[0]+V[t[1]][0]*w[1]+V[t[2]][0]*w[2],
+          V[t[0]][1]*w[0]+V[t[1]][1]*w[1]+V[t[2]][1]*w[2]];
+}
+function clearMeasurePath(){
+  if(measurePath){ root.remove(measurePath); measurePath.geometry.dispose(); measurePath.material.dispose(); measurePath=null; }
+}
 function baryIn3D(p, A, B, C){
   const v0=sub(B,A), v1=sub(C,A), v2=sub(p,A);
   const d00=dot(v0,v0), d01=dot(v0,v1), d11=dot(v1,v1), d20=dot(v2,v0), d21=dot(v2,v1);
@@ -1295,6 +1326,8 @@ function clearMeasure(silent){
     root.remove(measureObjs.line); measureObjs.line.geometry.dispose(); measureObjs.line.material.dispose();
     measureObjs=null;
   }
+  clearMeasurePath();
+  window._measureShown=null; window._lastSurfaced=false; window._lastMeasure=-1;
   const tag=document.getElementById("measuretag"); if(tag) tag.style.display="none";
   if(!silent) post({op:"measure", mm:-1});
 }
@@ -1327,8 +1360,43 @@ function updateMeasure(){
     const pos=measureObjs.line.geometry.attributes.position.array;
     pos[0]=wa[0];pos[1]=wa[1];pos[2]=wa[2];pos[3]=wb[0];pos[4]=wb[1];pos[5]=wb[2];
     measureObjs.line.geometry.attributes.position.needsUpdate=true;
-    const d=len(sub(wa,wb));
-    if(Math.abs(d-(window._lastMeasure||-1))>0.05){ window._lastMeasure=d; post({op:"measure", mm:d}); }
+    let d=len(sub(wa,wb)), surfaced=false;
+    // Along-surface mode: a panel folds isometrically, so the surface distance
+    // between two points on ONE panel is exactly their FLAT-pattern distance.
+    // The tape is that flat 2D segment re-embedded point-by-point into the
+    // folded mesh, so it visibly hugs the leather across every fold.
+    clearMeasurePath();
+    if(MEASURE_MODE==="surface" && MEASURE.b && MEASURE.a.panelId===MEASURE.b.panelId){
+      const p=PANEL_BY_ID[MEASURE.a.panelId];
+      const p2a=anchor2D(MEASURE.a), p2b=anchor2D(MEASURE.b);
+      if(p && p2a && p2b){
+        const d2=Math.hypot(p2b[0]-p2a[0], p2b[1]-p2a[1]);
+        const K=Math.max(8, Math.min(96, Math.ceil(d2/2)));
+        const path=[];
+        let ok=true;
+        for(let k=0;k<=K;k++){
+          const x=p2a[0]+(p2b[0]-p2a[0])*k/K, y=p2a[1]+(p2b[1]-p2a[1])*k/K;
+          const em=embed2DPoint(p, x, y);
+          if(!em){ ok=false; break; }   // segment leaves the panel → straight fallback
+          const w=embeddedWorld(p, em);
+          path.push(w[0], w[1], w[2]);
+        }
+        if(ok){
+          const g=new THREE.BufferGeometry();
+          g.setAttribute("position", new THREE.Float32BufferAttribute(path,3));
+          measurePath=new THREE.Line(g, new THREE.LineBasicMaterial({color:COL_MEASURE}));
+          measurePath.renderOrder=4;
+          root.add(measurePath);
+          measureObjs.line.visible=false;   // the tape replaces the chord
+          d=d2; surfaced=true;
+        }
+      }
+    }
+    window._measureShown=d;
+    if(Math.abs(d-(window._lastMeasure||-1))>0.05 || surfaced!==window._lastSurfaced){
+      window._lastMeasure=d; window._lastSurfaced=surfaced;
+      post({op:"measure", mm:d, surface:surfaced});
+    }
   }
   updateMeasureLabel();
 }
@@ -1341,7 +1409,8 @@ function updateMeasureLabel(){
   tag.style.display="block";
   tag.style.left=((mid.x*0.5+0.5)*window.innerWidth)+"px";
   tag.style.top=((-mid.y*0.5+0.5)*window.innerHeight)+"px";
-  tag.textContent=wa.distanceTo(wb).toFixed(1)+" mm";
+  const d=(window._measureShown!=null)?window._measureShown:wa.distanceTo(wb);
+  tag.textContent=d.toFixed(1)+" mm"+(window._lastSurfaced?" ↝":"");
 }
 
 // Stitch rendering — make a sewn seam *read* like real saddle stitching:

@@ -87,6 +87,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushExplode()
         context.coordinator.pushStep()
         context.coordinator.pushMeasureClear()
+        context.coordinator.pushMeasureMode()
         context.coordinator.pushMat()
         context.coordinator.pushLighting()
         context.coordinator.pushTexture()
@@ -118,6 +119,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastExplodeToken = -1
         private var lastStepToken = -1
         private var lastMeasureClearToken = 0
+        private var lastMeasureModeToken = 0
         var stepSheetDir: URL?      // step-sheet export destination while PNGs stream in
         private var lastMatToken = -1
         private var lastLightingToken = -1
@@ -314,7 +316,11 @@ struct ConstructViewport: NSViewRepresentable {
                 }
             case "measure":
                 let mm = json["mm"] as? Double ?? -1
-                DispatchQueue.main.async { self.state.constructMeasureMm = mm }
+                let surf = json["surface"] as? Bool ?? false
+                DispatchQueue.main.async {
+                    self.state.constructMeasureMm = mm
+                    self.state.constructMeasureIsSurface = surf
+                }
             case "assemblySteps":
                 // The stitch solver's BFS seating order — the build order the
                 // Steps panel scrubs through.
@@ -508,6 +514,13 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastMeasureClearToken != state.constructMeasureClearToken else { return }
             lastMeasureClearToken = state.constructMeasureClearToken
             webView.evaluateJavaScript("clearConstructMeasure();", completionHandler: nil)
+        }
+
+        func pushMeasureMode() {
+            guard ready, let webView = webView else { return }
+            guard lastMeasureModeToken != state.constructMeasureModeToken else { return }
+            lastMeasureModeToken = state.constructMeasureModeToken
+            webView.evaluateJavaScript("setConstructMeasureMode('\(state.constructMeasureMode)');", completionHandler: nil)
         }
 
         func pushMat() {

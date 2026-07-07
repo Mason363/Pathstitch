@@ -628,6 +628,9 @@ struct ConstructModeView: View {
 
     private var measureSection: some View {
         VStack(alignment: .leading, spacing: 10) {
+            TOSegmented(options: [("straight", "Straight"), ("surface", "Along surface")],
+                        selection: Binding(get: { state.constructMeasureMode },
+                                           set: { state.setConstructMeasureMode($0) }))
             if state.constructMeasureMm >= 0 {
                 HStack(spacing: 8) {
                     Image(systemName: "ruler").font(.system(size: 13)).foregroundColor(.to_accent)
@@ -639,7 +642,13 @@ struct ConstructModeView: View {
                         .foregroundColor(.to_textMut)
                     Spacer()
                 }
-                TOHint("Straight-line distance. The endpoints stick to the leather, so it re-reads as you fold or explode.")
+                if state.constructMeasureMode == "surface" && !state.constructMeasureIsSurface {
+                    TOStatus(color: .to_warn, text: "Points sit on different pieces — showing the straight line.")
+                } else if state.constructMeasureIsSurface {
+                    TOHint("Exact over-the-leather run (the flat-pattern distance) — what a strap or lace actually travels across the folds.")
+                } else {
+                    TOHint("Straight-line distance. The endpoints stick to the leather, so it re-reads as you fold or explode.")
+                }
                 TOSecondaryButton(title: "Clear measurement", icon: "xmark", tint: .to_textMut) {
                     state.clearConstructMeasurement()
                 }

@@ -668,6 +668,12 @@ extension AppState {
         constructMeasureClearToken += 1
     }
 
+    /// Switches the measure tape between the 3D chord and the along-surface run.
+    func setConstructMeasureMode(_ m: String) {
+        constructMeasureMode = (m == "surface") ? "surface" : "straight"
+        constructMeasureModeToken += 1
+    }
+
     /// Limits the view to the first `k` panels of the build order (-1 = all).
     func setConstructStep(_ k: Int) {
         constructStepLimit = k
