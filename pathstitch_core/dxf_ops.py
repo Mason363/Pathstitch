@@ -3433,6 +3433,113 @@ def op_edit_fold_line(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "ok", "data": {"edited": True, "deleted": deleted}}
 
 
+# Layers whose CIRCLE / ELLIPSE entities are sewing holes (mirrors
+# construct_ops._HOLE_LAYERS — keep the two in sync).
+_SEW_HOLE_LAYERS = {"SEWING_HOLES", "HOLES", "STITCH", "STITCHES"}
+
+
+def op_repunch_chain(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-punches one sewing-hole chain to a new hole count ("Fix in 2D").
+
+    The seam-fit report can flag a MISMATCH when two chains carry different hole
+    counts; this closes the loop by re-spacing one chain's holes evenly along its
+    own path so the counts match and the seam sews 1:1. Matched by geometry (like
+    op_edit_fold_line) so no handle plumbing is needed between 3D and 2D.
+
+    args: input / output (paths), centers = [[x,y], ...] the chain's ordered hole
+    centers, closed (bool), target_count (int ≥ 2), tol (mm, default 0.75).
+    Every center must match a CIRCLE/ELLIPSE on a sewing-hole layer; the new holes
+    inherit that layer and radius. Open chains keep their exact endpoints.
+    """
+    input_path = args.get("input"); output_path = args.get("output")
+    centers = args.get("centers") or []
+    closed = bool(args.get("closed", False))
+    target = int(args.get("target_count", 0) or 0)
+    tol = float(args.get("tol", 0.75))
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if len(centers) < 2:
+        return {"status": "error", "message": "A chain needs at least 2 holes."}
+    if target < 2:
+        return {"status": "error", "message": "target_count must be at least 2."}
+
+    doc = ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+
+    # Index every sewing-hole entity by center.
+    hole_ents = []
+    for e in msp:
+        if str(e.dxf.layer or "").upper() not in _SEW_HOLE_LAYERS:
+            continue
+        et = e.dxftype()
+        if et == "CIRCLE":
+            c = (e.dxf.center.x, e.dxf.center.y); r = float(e.dxf.radius)
+        elif et == "ELLIPSE":
+            c = (e.dxf.center.x, e.dxf.center.y)
+            r = float(math.hypot(e.dxf.major_axis.x, e.dxf.major_axis.y)) * (1 + float(e.dxf.ratio)) / 2
+        else:
+            continue
+        hole_ents.append((c, r, e))
+
+    # Match every chain center to its entity — refuse a partial match rather than
+    # delete some holes and orphan the rest (area-derived "holes" have no entity).
+    matched, used = [], set()
+    for (cx, cy) in ((float(p[0]), float(p[1])) for p in centers):
+        best, best_d = None, tol
+        for i, (c, r, e) in enumerate(hole_ents):
+            if i in used:
+                continue
+            d = math.hypot(c[0] - cx, c[1] - cy)
+            if d <= best_d:
+                best, best_d = i, d
+        if best is None:
+            return {"status": "error",
+                    "message": "Chain holes not found in the sketch — this chain can't be re-punched."}
+        used.add(best)
+        matched.append(hole_ents[best])
+
+    layer = str(matched[0][2].dxf.layer)
+    radii = sorted(m[1] for m in matched)
+    radius = float(radii[len(radii) // 2])
+
+    # Path through the ordered centers; arc-length resample to the target count.
+    pts = [(float(p[0]), float(p[1])) for p in centers]
+    ring = pts + [pts[0]] if closed else pts
+    seg_len = [math.hypot(ring[i + 1][0] - ring[i][0], ring[i + 1][1] - ring[i][1])
+               for i in range(len(ring) - 1)]
+    total = sum(seg_len)
+    if total <= 1e-9:
+        return {"status": "error", "message": "Chain has no length."}
+
+    def point_at(s: float):
+        s = min(max(s, 0.0), total)
+        acc = 0.0
+        for i, L in enumerate(seg_len):
+            if acc + L >= s or i == len(seg_len) - 1:
+                t = (s - acc) / L if L > 1e-12 else 0.0
+                return (ring[i][0] + (ring[i + 1][0] - ring[i][0]) * t,
+                        ring[i][1] + (ring[i + 1][1] - ring[i][1]) * t)
+            acc += L
+        return ring[-1]
+
+    if closed:
+        new_pts = [point_at(total * k / target) for k in range(target)]
+    else:
+        # Endpoints are seam registration marks — keep them exactly.
+        new_pts = [point_at(total * k / (target - 1)) for k in range(target)]
+        new_pts[0], new_pts[-1] = pts[0], pts[-1]
+
+    for _, _, e in matched:
+        msp.delete_entity(e)
+    for (x, y) in new_pts:
+        msp.add_circle(center=(x, y), radius=radius, dxfattribs={"layer": layer})
+
+    doc.saveas(output_path)
+    return {"status": "ok", "data": {"count": len(new_pts), "radius": radius, "layer": layer}}
+
+
 def op_cleanup(args: Dict[str, Any]) -> Dict[str, Any]:
     """Join/cleanup — bridge hanging endpoints with straight lines (MAS-130).
 
@@ -6935,6 +7042,7 @@ OPERATIONS = {
     "add_thickness": op_add_thickness,
     "add_holes": op_add_holes,
     "edit_fold_line": op_edit_fold_line,
+    "repunch_chain": op_repunch_chain,
     "cleanup": op_cleanup,
     "export_svg": op_export_svg,
     "chain_select": op_chain_select,

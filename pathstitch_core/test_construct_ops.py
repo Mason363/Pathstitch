@@ -322,6 +322,59 @@ def test_loose_lines_with_fold_layer_line():
 # bend allowance — the sheet-metal flat ↔ folded relationship (Phase 1)
 # ---------------------------------------------------------------------------
 
+def test_repunch_chain_fix_in_2d():
+    """'Fix in 2D': re-punching a 12-hole chain to 8 re-spaces the circles evenly
+    along the same edge, keeps the exact endpoints, and the rebuilt model pairs
+    the two chains 8-to-8."""
+    from pathstitch_core import dxf_ops
+
+    def make(m):
+        m.add_lwpolyline([(0, 0), (100, 0), (100, 60), (0, 60)],
+                         dxfattribs={"closed": True})
+        m.add_lwpolyline([(0, 80), (100, 80), (100, 140), (0, 140)],
+                         dxfattribs={"closed": True})
+        for (x, y) in _row_of_holes(8, 92, 56, 8):
+            m.add_circle((x, y), 0.6, dxfattribs={"layer": "SEWING_HOLES"})
+        for (x, y) in _row_of_holes(8, 92, 84, 12):
+            m.add_circle((x, y), 0.6, dxfattribs={"layer": "SEWING_HOLES"})
+
+    path = _dxf_with(make)
+    res = construct_ops.op_build_construct_model({"input": path})
+    assert res["status"] == "ok", res
+    chains = {len(c["holes"]): c for c in res["data"]["holeChains"]}
+    assert set(chains) == {8, 12}, sorted(chains)
+    long_chain = chains[12]
+    centers = [[h["x"], h["y"]] for h in long_chain["holes"]]
+
+    r2 = dxf_ops.op_repunch_chain({
+        "input": path, "output": path, "centers": centers,
+        "closed": long_chain["closed"], "target_count": 8})
+    assert r2["status"] == "ok", r2
+    assert r2["data"]["count"] == 8 and r2["data"]["layer"] == "SEWING_HOLES"
+    assert abs(r2["data"]["radius"] - 0.6) < 1e-9
+
+    res2 = construct_ops.op_build_construct_model({"input": path})
+    assert res2["status"] == "ok", res2
+    counts = sorted(len(c["holes"]) for c in res2["data"]["holeChains"])
+    assert counts == [8, 8], counts
+    new_chain = next(c for c in res2["data"]["holeChains"]
+                     if c["panelId"] == long_chain["panelId"])
+    ncs = [(h["x"], h["y"]) for h in new_chain["holes"]]
+    # endpoints are registration marks — kept exactly
+    for e in (centers[0], centers[-1]):
+        assert any(math.hypot(nx - e[0], ny - e[1]) < 1e-6 for nx, ny in ncs), (e, ncs)
+    # even spacing along the row
+    ds = [math.hypot(ncs[i + 1][0] - ncs[i][0], ncs[i + 1][1] - ncs[i][1])
+          for i in range(len(ncs) - 1)]
+    assert max(ds) - min(ds) < 1e-6, ds
+    # a chain whose holes have no sketch entities refuses cleanly (no partial delete)
+    r3 = dxf_ops.op_repunch_chain({
+        "input": path, "output": path, "closed": False, "target_count": 8,
+        "centers": [[300, 300], [310, 300], [320, 300]]})
+    assert r3["status"] == "error", r3
+    print("repunch: 12→8 holes, endpoints kept, even spacing; bogus chain refused")
+
+
 def test_bend_allowance_known_values():
     # 90° bend, R=1, T=2, K=0.5 → BA = (π/2)(1 + 0.5·2) = π·1 ... actually
     # (π/2)·(1+1) = π. OSSB = tan45·(1+2) = 3. BD = 2·3 − π.
@@ -392,6 +445,7 @@ if __name__ == "__main__":
     test_overlap_sew_treatment_makes_hole_chain()
     test_polygonized_loop_handles_are_stable()
     test_loose_lines_with_fold_layer_line()
+    test_repunch_chain_fix_in_2d()
     test_bend_allowance_known_values()
     test_fold_metrics_op_totals_and_validation()
     print("ALL CONSTRUCT TESTS PASSED")

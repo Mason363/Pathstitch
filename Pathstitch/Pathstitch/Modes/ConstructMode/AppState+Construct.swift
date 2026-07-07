@@ -836,6 +836,47 @@ extension AppState {
         }
     }
 
+    /// "Fix in 2D": re-punches one side of a seam so its hole count matches the
+    /// other side — the holes are re-spaced evenly along that chain's own path in
+    /// the 2D sketch, then the model rebuilds and the seam re-matches 1:1. `side`
+    /// is "A" or "B" (which chain gets re-punched).
+    func repunchSeamChain(_ seamId: StitchSeam.ID, side: String) {
+        guard let si = constructSeams.firstIndex(where: { $0.id == seamId }) else { return }
+        let seam = constructSeams[si]
+        let srcId = side == "A" ? seam.chainA : seam.chainB
+        let dstId = side == "A" ? seam.chainB : seam.chainA
+        guard let src = constructHoleChains.first(where: { $0.id == srcId }),
+              let dst = constructHoleChains.first(where: { $0.id == dstId }),
+              src.holes.count >= 2, dst.holes.count >= 2,
+              src.holes.count != dst.holes.count else { return }
+        saveToHistory()                       // 2D history owns this geometry edit
+        // The re-punch renumbers that chain's holes, so index-based alignment
+        // state no longer points at real holes.
+        constructSeams[si].anchors = nil
+        constructSeams[si].shift = nil
+        let centers = src.holes.map { [$0.x, $0.y] }
+        let url = ensureActiveDXFFileExists()
+        isBuildingConstructModel = true
+        Task {
+            do {
+                await reconcileBufferIfNeeded()
+                let args: [String: Any] = ["input": url.path, "output": url.path,
+                                           "centers": centers, "closed": src.closed,
+                                           "target_count": dst.holes.count]
+                _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "repunch_chain", args: args)
+                await MainActor.run {
+                    self.reloadDXF()
+                    self.buildConstructModel()   // chains re-derive; the seam re-matches
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                    self.isBuildingConstructModel = false
+                }
+            }
+        }
+    }
+
     /// Deletes the currently selected fold's line from the 2D sketch (3D Delete).
     func deleteSelectedFold() {
         guard let seg = lastFoldSeg, seg.count == 2 else { return }

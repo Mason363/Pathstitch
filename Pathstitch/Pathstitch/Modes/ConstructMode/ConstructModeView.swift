@@ -750,6 +750,19 @@ struct ConstructModeView: View {
         }
     }
 
+    /// A small accent chip that re-punches one seam side to N holes ("A → 12").
+    private func repunchChip(_ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11.5, weight: .semibold)).monospacedDigit()
+                .foregroundColor(.to_accent)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.to_accentTint))
+        }
+        .buttonStyle(.plain)
+        .help("Re-punch this side's holes to match the other side's count")
+    }
+
     /// The plain-English verdict label + colour for a seam's fit.
     private func verdictStyle(_ v: StitchSeam.Verdict) -> (String, Color) {
         switch v {
@@ -791,6 +804,21 @@ struct ConstructModeView: View {
                 TOHint("Seams differ too much to sew cleanly. Try Deform to Fit, or fix the hole count/spacing in 2D.")
             } else if verdict == .ease {
                 TOHint("Slightly off — eased (gathered) losslessly. Switch to Deform to Fit for a flush 1:1.")
+            }
+
+            // Fix in 2D: re-punch one side's holes so the counts match and the seam
+            // sews hole-for-hole. The chain keeps its exact path and endpoints.
+            if seam.holesA != seam.holesB, seam.holesA >= 2, seam.holesB >= 2 {
+                HStack(spacing: 7) {
+                    Image(systemName: "wand.and.rays")
+                        .font(.system(size: 11)).foregroundColor(.to_accent)
+                    Text("Fix in 2D")
+                        .font(.system(size: 12.5, weight: .medium)).foregroundColor(.to_textSec)
+                    Spacer()
+                    repunchChip("A → \(seam.holesB)") { state.repunchSeamChain(seam.id, side: "A") }
+                    repunchChip("B → \(seam.holesA)") { state.repunchSeamChain(seam.id, side: "B") }
+                }
+                TOHint("Re-punches that side's holes evenly along its own edge so both sides pair 1:1. Pins and phase reset.")
             }
 
             // Mismatch policy.
