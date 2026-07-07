@@ -877,10 +877,6 @@ extension AppState {
               src.holes.count >= 2, dst.holes.count >= 2,
               src.holes.count != dst.holes.count else { return }
         saveToHistory()                       // 2D history owns this geometry edit
-        // The re-punch renumbers that chain's holes, so index-based alignment
-        // state no longer points at real holes.
-        constructSeams[si].anchors = nil
-        constructSeams[si].shift = nil
         let centers = src.holes.map { [$0.x, $0.y] }
         let url = ensureActiveDXFFileExists()
         isBuildingConstructModel = true
@@ -892,6 +888,13 @@ extension AppState {
                                            "target_count": dst.holes.count]
                 _ = try await PythonBridge.shared.run(module: "dxf_ops", op: "repunch_chain", args: args)
                 await MainActor.run {
+                    // The re-punch renumbered that chain's holes, so index-based
+                    // alignment state no longer points at real holes. Cleared only
+                    // on success — a refused re-punch keeps the pins.
+                    if let i = self.constructSeams.firstIndex(where: { $0.id == seamId }) {
+                        self.constructSeams[i].anchors = nil
+                        self.constructSeams[i].shift = nil
+                    }
                     self.reloadDXF()
                     self.buildConstructModel()   // chains re-derive; the seam re-matches
                 }

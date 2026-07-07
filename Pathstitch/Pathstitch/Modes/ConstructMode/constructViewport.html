@@ -1285,6 +1285,7 @@ let measureObjs=null;               // {ma, mb, line}
 let measurePath=null;               // surface-mode tape (polyline hugging the leather)
 window.setConstructMeasureMode=function(m){
   MEASURE_MODE=(m==="surface")?"surface":"straight";
+  MEASURE.surf=null;                // re-sample the flat-pattern path
   window._lastMeasure=-1;           // force a fresh post in the new mode
   updateMeasure();
 };
@@ -1363,35 +1364,48 @@ function updateMeasure(){
     let d=len(sub(wa,wb)), surfaced=false;
     // Along-surface mode: a panel folds isometrically, so the surface distance
     // between two points on ONE panel is exactly their FLAT-pattern distance.
-    // The tape is that flat 2D segment re-embedded point-by-point into the
-    // folded mesh, so it visibly hugs the leather across every fold.
-    clearMeasurePath();
+    // The flat 2D sampling (triangle lookups) is pose-INdependent, so it runs
+    // once per measurement and is cached; each pose only re-blends the cached
+    // tri/bary anchors into world space — cheap enough for live fold drags.
     if(MEASURE_MODE==="surface" && MEASURE.b && MEASURE.a.panelId===MEASURE.b.panelId){
       const p=PANEL_BY_ID[MEASURE.a.panelId];
-      const p2a=anchor2D(MEASURE.a), p2b=anchor2D(MEASURE.b);
-      if(p && p2a && p2b){
-        const d2=Math.hypot(p2b[0]-p2a[0], p2b[1]-p2a[1]);
-        const K=Math.max(8, Math.min(96, Math.ceil(d2/2)));
-        const path=[];
-        let ok=true;
-        for(let k=0;k<=K;k++){
-          const x=p2a[0]+(p2b[0]-p2a[0])*k/K, y=p2a[1]+(p2b[1]-p2a[1])*k/K;
-          const em=embed2DPoint(p, x, y);
-          if(!em){ ok=false; break; }   // segment leaves the panel → straight fallback
-          const w=embeddedWorld(p, em);
-          path.push(w[0], w[1], w[2]);
-        }
-        if(ok){
+      if(p && MEASURE.surf==null){   // == null covers undefined too
+        const p2a=anchor2D(MEASURE.a), p2b=anchor2D(MEASURE.b);
+        if(p2a && p2b){
+          const d2=Math.hypot(p2b[0]-p2a[0], p2b[1]-p2a[1]);
+          const K=Math.max(8, Math.min(96, Math.ceil(d2/2)));
+          const embeds=[];
+          let ok=true;
+          for(let k=0;k<=K;k++){
+            const x=p2a[0]+(p2b[0]-p2a[0])*k/K, y=p2a[1]+(p2b[1]-p2a[1])*k/K;
+            const em=embed2DPoint(p, x, y);
+            if(!em){ ok=false; break; }   // segment leaves the panel → straight fallback
+            embeds.push(em);
+          }
+          MEASURE.surf = ok ? {embeds, d2} : {fail:true};
+        } else MEASURE.surf={fail:true};
+      }
+      if(p && MEASURE.surf && !MEASURE.surf.fail){
+        const embeds=MEASURE.surf.embeds;
+        if(!measurePath || measurePath.geometry.attributes.position.count!==embeds.length){
+          clearMeasurePath();
           const g=new THREE.BufferGeometry();
-          g.setAttribute("position", new THREE.Float32BufferAttribute(path,3));
+          g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(embeds.length*3),3));
           measurePath=new THREE.Line(g, new THREE.LineBasicMaterial({color:COL_MEASURE}));
           measurePath.renderOrder=4;
           root.add(measurePath);
-          measureObjs.line.visible=false;   // the tape replaces the chord
-          d=d2; surfaced=true;
         }
-      }
-    }
+        const arr=measurePath.geometry.attributes.position.array;
+        for(let i=0;i<embeds.length;i++){
+          const w=embeddedWorld(p, embeds[i]);
+          arr[i*3]=w[0]; arr[i*3+1]=w[1]; arr[i*3+2]=w[2];
+        }
+        measurePath.geometry.attributes.position.needsUpdate=true;
+        measurePath.geometry.computeBoundingSphere();
+        measureObjs.line.visible=false;   // the tape replaces the chord
+        d=MEASURE.surf.d2; surfaced=true;
+      } else clearMeasurePath();
+    } else clearMeasurePath();
     window._measureShown=d;
     if(Math.abs(d-(window._lastMeasure||-1))>0.05 || surfaced!==window._lastSurfaced){
       window._lastMeasure=d; window._lastSurfaced=surfaced;

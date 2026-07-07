@@ -363,16 +363,21 @@ struct ConstructViewport: NSViewRepresentable {
                 guard let dir = stepSheetDir,
                       let step = json["step"] as? Int,
                       let total = json["total"] as? Int,
-                      let s = json["data"] as? String, let comma = s.range(of: "base64,"),
-                      let data = Data(base64Encoded: String(s[comma.upperBound...])), !data.isEmpty
+                      let s = json["data"] as? String
                 else { return }
-                let name = String(format: "step-%02d.png", step)
-                let url = dir.appendingPathComponent(name)
-                try? data.write(to: url)
-                if step == total {
-                    DispatchQueue.main.async {
-                        self.stepSheetDir = nil
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                if step == total { stepSheetDir = nil }
+                // Multi-MB base64 decode + write per frame — keep it off the
+                // main thread so the UI doesn't hitch while the sheet streams.
+                DispatchQueue.global(qos: .userInitiated).async {
+                    guard let comma = s.range(of: "base64,"),
+                          let data = Data(base64Encoded: String(s[comma.upperBound...])), !data.isEmpty
+                    else { return }
+                    let url = dir.appendingPathComponent(String(format: "step-%02d.png", step))
+                    try? data.write(to: url)
+                    if step == total {
+                        DispatchQueue.main.async {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }
                     }
                 }
             case "exportGLB":
