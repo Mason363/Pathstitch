@@ -851,6 +851,21 @@ def op_add_entity(args: Dict[str, Any]) -> Dict[str, Any]:
             pts = make_rounded_rectangle_points(p1[0], p1[1], p2[0], p2[1], fillet_radius)
             new_ent = msp.add_lwpolyline(pts, dxfattribs={"layer": layer, "closed": True})
             new_handle = new_ent.dxf.handle
+        elif ent_type == "arc":
+            # 3-point Arc tool: a true DXF ARC (center/radius + CCW start→end
+            # angles in degrees), so it stays parametric and round-trips with its
+            # radius for offsets, holes, dimensions, and selection.
+            center = params.get("center", [0.0, 0.0])
+            radius = float(params.get("radius", 1.0))
+            start_angle = float(params.get("start_angle", 0.0))
+            end_angle = float(params.get("end_angle", 0.0))
+            if radius > 0:
+                new_ent = msp.add_arc(
+                    center=center, radius=radius,
+                    start_angle=start_angle, end_angle=end_angle,
+                    dxfattribs={"layer": layer},
+                )
+                new_handle = new_ent.dxf.handle
         elif ent_type == "path":
             # Pen-tool path (MAS-94): an already-flattened point list becomes an
             # editable LWPOLYLINE (open or closed), so fillet/vertex tools work on it.

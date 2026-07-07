@@ -32,6 +32,7 @@ struct ConstructModeView: View {
                     exportToken: state.constructExportToken,
                     renderToken: state.constructRenderToken,
                     shaderToken: state.constructShaderToken,
+                    explodeToken: state.constructExplodeToken,
                     matToken: state.matToken,
                     lightingToken: state.constructLightingToken,
                     textureToken: state.constructTextureToken,
@@ -51,11 +52,12 @@ struct ConstructModeView: View {
                 if state.isBuildingConstructModel {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Building assembly…").font(PlasticityFont.label)
+                        Text("Building assembly…")
+                            .font(.system(size: 12.5, weight: .medium)).foregroundColor(.to_textSec)
                     }
-                    .padding(8)
-                    .background(Color.bg_panel.opacity(0.9))
-                    .cornerRadius(6)
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.to_panel.opacity(0.94)))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_panelBorder, lineWidth: 1))
                     .padding(12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
@@ -119,21 +121,21 @@ struct ConstructModeView: View {
         return HStack(spacing: 10) {
             Image(systemName: g.icon)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.accent)
+                .foregroundColor(.to_accent)
                 .frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(g.name).font(PlasticityFont.label.weight(.semibold)).foregroundColor(.text_primary)
-                Text(g.step).font(PlasticityFont.label).foregroundColor(.text_secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(g.name).font(.system(size: 12.5, weight: .semibold)).foregroundColor(.to_textPri)
+                Text(g.step).font(.system(size: 12, weight: .medium)).foregroundColor(.to_textTer)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.bg_panel.opacity(0.92))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accent.opacity(0.35), lineWidth: 1))
+            RoundedRectangle(cornerRadius: 11)
+                .fill(Color.to_panel.opacity(0.94))
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.to_accent.opacity(0.35), lineWidth: 1))
         )
         .frame(maxWidth: 360, alignment: .leading)
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
     }
 
     private var stepCard: some View {
@@ -160,21 +162,15 @@ struct ConstructModeView: View {
     private func overlapChooser(_ e: [String: String]) -> some View {
         let inner = e["inner"] ?? ""
         let count = state.pendingEngulfed.count
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 12) {
             Text(count > 1 ? "Overlapping areas (\(count))" : "Overlapping area")
-                .font(PlasticityFont.label.weight(.semibold))
-                .foregroundColor(.text_primary).tracking(1)
-            Text(count > 1
+                .font(.system(size: 13, weight: .semibold)).tracking(0.5)
+                .foregroundColor(.to_textPri)
+            TOHint(count > 1
                  ? "\(count) areas sit inside others. How should they be treated?"
                  : "An area sits inside another. How should the inner one be treated?")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if count > 1 {
-                Toggle(isOn: $overlapApplyToAll) {
-                    Text("Apply my choice to all \(count) areas")
-                        .font(PlasticityFont.label).foregroundColor(.text_primary)
-                }
-                .toggleStyle(.checkbox)
+                TOCheck(label: "Apply my choice to all \(count) areas", isOn: $overlapApplyToAll)
             }
             overlapOption(inner, "sew", "Sewing holes", "Treat the area as a stitch hole — joins the hole chains like any hole on the SEWING_HOLES layer.")
             overlapOption(inner, "stamp", "Decoration stamp", "Printed/tooled outline on the surface — never cut, rides the fold.")
@@ -182,24 +178,27 @@ struct ConstructModeView: View {
             overlapOption(inner, "cutout", "Cut-out window", "A real hole through the outer panel.")
             overlapOption(inner, "independent", "Independent panel", "Just another panel that happens to overlap in 2D.")
         }
-        .padding(14)
+        .padding(16)
         .frame(width: 320, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.bg_panel.opacity(0.97)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accent.opacity(0.4), lineWidth: 1))
-        .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color.to_panel))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.to_panelBorder, lineWidth: 1))
+        .toPanelShadow()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private func overlapOption(_ inner: String, _ mode: String, _ title: String, _ blurb: String) -> some View {
         Button { state.setAreaTreatment(inner: inner, mode: mode, all: overlapApplyToAll) } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(PlasticityFont.label.weight(.semibold)).foregroundColor(.text_primary)
-                Text(blurb).font(PlasticityFont.label).foregroundColor(.text_secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundColor(.to_textPri)
+                Text(blurb).font(.system(size: 12, weight: .medium)).foregroundColor(.to_textMut)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.bg_selected.opacity(0.6)))
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Color.to_field))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_fieldBorder, lineWidth: 1))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -271,6 +270,7 @@ struct ConstructModeView: View {
                 TODivider()
                 DisclosureGroup(isExpanded: $showDisplay) {
                     VStack(alignment: .leading, spacing: 14) {
+                        explodeSection
                         shadingSection
                         matSection
                     }
@@ -290,13 +290,22 @@ struct ConstructModeView: View {
     private let renderModes: [(String, String)] = [("edit", "Edit"), ("mockup", "Mockup")]
 
     private var renderModeSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("", selection: Binding(
-                get: { state.constructRenderMode },
-                set: { state.setConstructRenderMode($0) })) {
-                ForEach(renderModes, id: \.0) { key, label in Text(label).tag(key) }
-            }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
+        TOSegmented(options: renderModes,
+                    selection: Binding(get: { state.constructRenderMode },
+                                       set: { state.setConstructRenderMode($0) }))
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: Exploded view — pull the pieces apart to inspect internal seams
+
+    private var explodeSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TOGroupLabel("Explode")
+            TOSlider(value: Binding(get: { state.constructExplode },
+                                    set: { state.setConstructExplode($0) }),
+                     range: 0...1, unit: "",
+                     minLabel: "assembled", maxLabel: "apart", maxFrac: 2)
+            TOHint("Pulls the pieces apart to inspect seams inside a closed shape — view only, never exported.")
         }
     }
 
@@ -307,46 +316,37 @@ struct ConstructModeView: View {
     ]
 
     private var shadingSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("SHADING").font(PlasticityFont.header).foregroundColor(.text_secondary)
-            Picker("", selection: Binding(
-                get: { state.constructShaderMode },
-                set: { state.setConstructShaderMode($0) })) {
-                ForEach(shaderModes, id: \.0) { key, label in Text(label).tag(key) }
-            }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
-            Text("How panels are drawn — works in both Edit and Mockup. Realistic is the PBR leather; Wire/Solid/Flat are inspection views.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            TOGroupLabel("Shading")
+            TOSegmented(options: shaderModes,
+                        selection: Binding(get: { state.constructShaderMode },
+                                           set: { state.setConstructShaderMode($0) }))
+            TOHint("How panels are drawn — works in both Edit and Mockup. Realistic is the PBR leather; Wire/Solid/Flat are inspection views.")
         }
     }
 
     // MARK: Cutting mat — finite baseplate shared with the 2D canvas
 
     private var matSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: Binding(
-                get: { state.matEnabled },
-                set: { state.matEnabled = $0; state.bumpMat() })) {
-                Text("Cutting mat").font(PlasticityFont.label).foregroundColor(.text_primary)
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            TOCheck(label: "Cutting mat",
+                    isOn: Binding(get: { state.matEnabled },
+                                  set: { state.matEnabled = $0; state.bumpMat() }))
             if state.matEnabled {
-                HStack(spacing: 6) {
-                    Text("W").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                    TextField("W", value: Binding(get: { state.matWidthMm },
+                HStack(spacing: 8) {
+                    TOLabel("W", color: .to_textMut)
+                    TextField("", value: Binding(get: { state.matWidthMm },
                         set: { state.matWidthMm = $0; state.bumpMat() }), format: .number)
-                        .textFieldStyle(.roundedBorder).frame(width: 56)
-                    Text("H").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                    TextField("H", value: Binding(get: { state.matHeightMm },
+                        .toFieldStyle(width: 60)
+                    TOLabel("H", color: .to_textMut)
+                    TextField("", value: Binding(get: { state.matHeightMm },
                         set: { state.matHeightMm = $0; state.bumpMat() }), format: .number)
-                        .textFieldStyle(.roundedBorder).frame(width: 56)
-                    Text("mm").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                        .toFieldStyle(width: 60)
+                    TOLabel("mm", color: .to_textMut)
                 }
-                Toggle(isOn: Binding(
-                    get: { state.matGridVisible },
-                    set: { state.matGridVisible = $0; state.bumpMat() })) {
-                    Text("Show mat grid").font(PlasticityFont.label).foregroundColor(.text_primary)
-                }
+                TOCheck(label: "Show mat grid",
+                        isOn: Binding(get: { state.matGridVisible },
+                                      set: { state.matGridVisible = $0; state.bumpMat() }))
             }
         }
     }
@@ -362,35 +362,43 @@ struct ConstructModeView: View {
     private var overviewStrip: some View {
         let h = state.assemblyHealth
         let healthy = h.ok && h.openChains == 0
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(String(format: "%.0f × %.0f × %.0f mm",
                                 state.constructFinishedW, state.constructFinishedH, state.constructFinishedD))
-                        .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_primary)
+                        .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                        .foregroundColor(.to_textPri)
                     Text("\(state.constructStitchCount) stitches · \(String(format: "%.0f", state.constructLeatherAreaMm2 / 100)) cm² · \(state.constructReadoutPanels) panels")
-                        .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                        .font(.system(size: 12, weight: .medium)).foregroundColor(.to_textMut)
                 }
                 Spacer()
                 Image(systemName: healthy ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .foregroundColor(healthy ? .green : .orange)
+                    .font(.system(size: 14))
+                    .foregroundColor(healthy ? .to_ok : .to_warn)
                     .help(healthy ? "Everything connected, seams fit" : healthSummary(h))
             }
             HStack(spacing: 8) {
-                Button { state.assembleAll() } label: {
-                    HStack(spacing: 4) { Image(systemName: "shippingbox"); Text("Assemble") }
-                        .font(PlasticityFont.label).frame(maxWidth: .infinity)
+                TOPrimaryButton(title: "Assemble", enabled: !state.constructFolds.isEmpty) {
+                    state.assembleAll()
                 }
-                .buttonStyle(PlasticityButtonStyle(isEnabled: !state.constructFolds.isEmpty))
-                .disabled(state.constructFolds.isEmpty)
                 Menu {
                     Button("STEP (.step)") { state.exportConstruct("step") }
                     Button("STL (.stl)") { state.exportConstruct("stl") }
+                    Divider()
+                    Button("3D model (.glb)") { state.exportConstruct("glb") }
+                    Button("Snapshot (.png)") { state.exportConstruct("png") }
                 } label: {
-                    HStack(spacing: 4) { Image(systemName: "square.and.arrow.up"); Text("Export") }
-                        .font(PlasticityFont.label)
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 11, weight: .semibold))
+                        Text("Export").font(.system(size: 12.5, weight: .semibold))
+                    }
+                    .foregroundColor(state.constructReadoutPanels == 0 ? .to_textMut : .to_accent)
+                    .padding(.vertical, 9).padding(.horizontal, 12)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.to_accent.opacity(state.constructReadoutPanels == 0 ? 0.05 : 0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_accent.opacity(state.constructReadoutPanels == 0 ? 0.15 : 0.45), lineWidth: 1))
                 }
-                .menuStyle(.borderlessButton).fixedSize()
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .disabled(state.constructReadoutPanels == 0)
             }
         }
@@ -419,132 +427,102 @@ struct ConstructModeView: View {
     }
 
     private var selectSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Select")
-            Text("Hover highlights what you'll pick. Click a fold to set its angle, or choose a tool on the left.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button { state.buildConstructModel() } label: {
-                HStack { Image(systemName: "arrow.triangle.2.circlepath"); Text("Rebuild from sketch") }
-                    .font(PlasticityFont.label)
+        VStack(alignment: .leading, spacing: 12) {
+            TOHint("Hover highlights what you'll pick. Click a fold to set its angle, or choose a tool on the left.")
+            TOSecondaryButton(title: "Rebuild from sketch", icon: "arrow.triangle.2.circlepath") {
+                state.buildConstructModel()
             }
-            .buttonStyle(.plain).foregroundColor(.text_secondary)
             healthDetail
         }
     }
 
     private var creaseSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Crease")
-            Text("Click a start point, then an end point across a panel — endpoints snap to corners / edges (toggle snapping with the snap button or “n”). The new fold is written to the 2D sketch on the FOLD layer, so it's editable back in 2D.")
-                .font(PlasticityFont.label).foregroundColor(.accent)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            TOHint("Endpoints snap to corners / edges (toggle snapping with “n”). The new fold is written to the 2D sketch on the FOLD layer — editable back in 2D.")
             if !state.constructUserFolds.isEmpty {
-                Button { state.undoLastUserFold() } label: {
-                    HStack { Image(systemName: "arrow.uturn.backward"); Text("Undo added fold (\(state.constructUserFolds.count))") }
-                        .font(PlasticityFont.label)
+                TOSecondaryButton(title: "Undo added fold (\(state.constructUserFolds.count))",
+                                  icon: "arrow.uturn.backward") {
+                    state.undoLastUserFold()
                 }
-                .buttonStyle(.plain).foregroundColor(.text_secondary)
             }
         }
     }
 
     private func legendDot(_ c: Color, _ t: String) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(c.opacity(0.65)).frame(width: 9, height: 9)
-            Text(t).font(PlasticityFont.label).foregroundColor(.text_secondary)
+        HStack(spacing: 5) {
+            Circle().fill(c.opacity(0.7)).frame(width: 8, height: 8)
+            Text(t).font(.system(size: 12, weight: .medium)).foregroundColor(.to_textMut)
         }
     }
 
     // MARK: Artwork placement panel (shown while a dropped image is being placed)
 
     private var artworkPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Place Artwork")
-            Text(state.activeDecalPanel == nil
+            TOHint(state.activeDecalPanel == nil
                  ? "Bird's-eye view — click a body to drop the image onto it."
                  : "Drag the art on the body to move it. Tune it below; click another body to place it there too.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if let pid = state.activeDecalPanel, state.constructDecals[pid] != nil {
-                Text("Body \(pid)").font(PlasticityFont.label.weight(.semibold)).foregroundColor(.text_primary)
-                HStack(spacing: 10) {
-                    Button { state.artworkCommand("fill") } label: {
-                        HStack(spacing: 4) { Image(systemName: "arrow.up.left.and.arrow.down.right"); Text("Fill") }.font(PlasticityFont.label)
-                    }.buttonStyle(.plain).foregroundColor(.accent)
-                    Button { state.artworkCommand("flipface") } label: {
-                        HStack(spacing: 4) { Image(systemName: "square.on.square"); Text("Other face") }.font(PlasticityFont.label)
-                    }.buttonStyle(.plain).foregroundColor(.accent)
-                    Button { state.artworkCommand("mirror") } label: {
-                        HStack(spacing: 4) { Image(systemName: "arrow.left.and.right"); Text("Mirror") }.font(PlasticityFont.label)
-                    }.buttonStyle(.plain).foregroundColor(.accent)
+                TOStatus(text: "Body \(pid)")
+                HStack(spacing: 8) {
+                    TOSecondaryButton(title: "Fill", icon: "arrow.up.left.and.arrow.down.right") {
+                        state.artworkCommand("fill")
+                    }
+                    TOSecondaryButton(title: "Other face", icon: "square.on.square") {
+                        state.artworkCommand("flipface")
+                    }
+                    TOSecondaryButton(title: "Mirror", icon: "arrow.left.and.right") {
+                        state.artworkCommand("mirror")
+                    }
                 }
                 let x = state.decalXform(pid)
                 framingSlider("Scale", value: x[2], range: 0.2...3) { state.setDecalXform(pid, 2, $0) }
                 framingSlider("Rotation", value: x[3], range: -180...180, unit: "°") { state.setDecalXform(pid, 3, $0) }
-                Button { state.clearConstructDecal(pid) } label: {
-                    HStack { Image(systemName: "trash"); Text("Remove from body \(pid)") }.font(PlasticityFont.label)
-                }.buttonStyle(.plain).foregroundColor(.text_secondary)
+                TOSecondaryButton(title: "Remove from body \(pid)", icon: "trash", tint: .to_textMut) {
+                    state.clearConstructDecal(pid)
+                }
             }
-            Button { state.exitArtworkPlacement() } label: {
-                HStack { Image(systemName: "checkmark"); Text("Done") }.frame(maxWidth: .infinity)
-            }
-            .buttonStyle(PlasticityButtonStyle(isEnabled: true))
+            TOPrimaryButton(title: "Done") { state.exitArtworkPlacement() }
         }
     }
 
     private var moveSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("Transform")
-            Text("Click a panel, then drag the gizmo. This poses the 3D object only — it never changes the 2D sketch, and edits in 2D still flow through.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary)
-            Picker("", selection: Binding(
-                get: { state.constructTransformMode },
-                set: { state.setConstructTransformMode($0) })) {
-                ForEach(transformModes, id: \.0) { key, label in Text(label).tag(key) }
+        VStack(alignment: .leading, spacing: 12) {
+            TORow(label: "Gizmo") {
+                TOSegmented(options: transformModes,
+                            selection: Binding(get: { state.constructTransformMode },
+                                               set: { state.setConstructTransformMode($0) }))
             }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
+            TOHint("Poses the 3D object only — it never changes the 2D sketch, and edits in 2D still flow through.")
             if !state.constructPanelXf.isEmpty {
-                Button { state.clearConstructPanelTransforms() } label: {
-                    HStack { Image(systemName: "arrow.uturn.backward"); Text("Reset poses (\(state.constructPanelXf.count))") }
-                        .font(PlasticityFont.label)
+                TOSecondaryButton(title: "Reset poses (\(state.constructPanelXf.count))",
+                                  icon: "arrow.uturn.backward") {
+                    state.clearConstructPanelTransforms()
                 }
-                .buttonStyle(.plain).foregroundColor(.text_secondary)
             }
         }
     }
 
     private var groundSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            sectionHeader("Ground")
-            Text("Panel \(state.constructGroundPanel) is pinned to the ground plane.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary)
-            Text("Ground tool → click a face to pin it as the base that stays flat. On a folded panel, click the side you want flat — the rest folds relative to it.")
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
+        VStack(alignment: .leading, spacing: 10) {
+            TOStatus(text: "Base panel \(state.constructGroundPanel)", hint: "stays flat")
+            TOHint("Click a face to pin it as the base. On a folded panel, click the side you want flat — the rest folds relative to it.")
         }
     }
 
     private var foldSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Folds")
-            // Lead with the primary interaction (drag-to-fold); the "what is a fold
-            // line" explainer follows for when there are none yet.
-            Label("Drag a flap in 3D to fold it. Snaps to 15/45/90° — hold ⇧ for free.",
-                  systemImage: "hand.draw")
-                .font(PlasticityFont.label).foregroundColor(.accent)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
             if state.constructFolds.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("No fold lines yet. Two ways to add one:")
-                        .font(PlasticityFont.label).foregroundColor(.text_secondary)
-                    Text("• In 2D: draw a LINE → right-click → “Make Fold Line” (or move it to a FOLD layer), then press Rebuild.")
-                        .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("• In 3D: use the Crease tool below and click two points across a panel.")
-                        .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
-                        .fixedSize(horizontal: false, vertical: true)
+                TOHint("No fold lines yet. Add one two ways:")
+                VStack(alignment: .leading, spacing: 6) {
+                    TOHint("• In 2D: draw a LINE → right-click → “Make Fold Line” (or move it to a FOLD layer), then Rebuild.")
+                    TOHint("• In 3D: use the Crease tool and click two points across a panel.")
                 }
             } else {
+                if state.constructFolds.count >= 2 && !state.constructFolds.contains(where: { $0.linked == true }) {
+                    TOHint("Tip: the ⛓ button links folds so they fold together — e.g. all four box flaps.")
+                }
                 ForEach(state.constructFolds) { spec in
                     foldRow(spec)
                 }
@@ -553,30 +531,25 @@ struct ConstructModeView: View {
             // Which side stays flat vs folds — shown for the selected fold, with a
             // one-click Flip. (Ground tool can also click the base face directly.)
             if let id = state.selectedFoldId, state.constructFolds.contains(where: { $0.id == id }) {
-                HStack(spacing: 12) {
-                    legendDot(.green, "stays flat")
-                    legendDot(.orange, "folds up")
+                TODivider()
+                HStack(spacing: 14) {
+                    legendDot(.to_ok, "stays flat")
+                    legendDot(.to_warn, "folds up")
                 }
-                Button { state.flipFoldSide() } label: {
-                    HStack { Image(systemName: "arrow.left.arrow.right"); Text("Flip — make the other side fold") }
-                        .font(PlasticityFont.label)
+                TOSecondaryButton(title: "Flip — make the other side fold",
+                                  icon: "arrow.left.arrow.right",
+                                  enabled: state.lastFoldSides != nil) {
+                    state.flipFoldSide()
                 }
-                .buttonStyle(.plain).foregroundColor(.accent)
-                .disabled(state.lastFoldSides == nil)
-                Text("Drag the blue endpoint handles in 3D to move this crease.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
-                    .fixedSize(horizontal: false, vertical: true)
-                Button { state.deleteSelectedFold() } label: {
-                    HStack { Image(systemName: "trash"); Text("Delete crease") }.font(PlasticityFont.label)
+                TOHint("Drag the blue endpoint handles in 3D to move this crease.")
+                TOSecondaryButton(title: "Delete crease", icon: "trash",
+                                  enabled: state.lastFoldSeg != nil, tint: .to_textMut) {
+                    state.deleteSelectedFold()
                 }
-                .buttonStyle(.plain).foregroundColor(.text_secondary)
-                .disabled(state.lastFoldSeg == nil)
             }
-            Button { state.setConstructTool(.crease) } label: {
-                HStack { Image(systemName: ConstructTool.crease.icon); Text("Add fold (Crease tool)") }
-                    .font(PlasticityFont.label)
+            TOSecondaryButton(title: "Add fold (Crease tool)", icon: ConstructTool.crease.icon) {
+                state.setConstructTool(.crease)
             }
-            .buttonStyle(.plain).foregroundColor(.accent)
         }
     }
 
@@ -587,39 +560,40 @@ struct ConstructModeView: View {
     ]
 
     private var glueSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("Glue")
+        VStack(alignment: .leading, spacing: 12) {
             // How the bond seats — pick before clicking the two parts.
-            Picker("", selection: Binding(
-                get: { state.constructGlueMode },
-                set: { state.setConstructGlueMode($0) })) {
-                ForEach(glueModes, id: \.0) { key, label in Text(label).tag(key) }
+            TORow(label: "Bond") {
+                TOSegmented(options: glueModes,
+                            selection: Binding(get: { state.constructGlueMode },
+                                               set: { state.setConstructGlueMode($0) }))
             }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
-            Text(glueModeBlurb(state.constructGlueMode))
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
+            TOHint(glueModeBlurb(state.constructGlueMode))
 
             if state.constructTool == .glue {
                 if let p = state.selectedPanelForGlue {
-                    Text("Panel \(p) picked — click the \(glueTarget(state.constructGlueMode)) on the other piece.")
-                        .font(PlasticityFont.label).foregroundColor(.accent)
+                    TOStatus(text: "Piece \(p) picked",
+                             hint: "click the \(glueTarget(state.constructGlueMode)) on the other piece")
                 } else {
-                    Text("Glue tool — click the \(glueTarget(state.constructGlueMode)) on one piece, then the other.")
-                        .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
+                    TOStatus(color: .to_textFaint,
+                             text: "Pick two \(glueTarget(state.constructGlueMode))s to weld")
                 }
             } else {
-                Button { state.setConstructTool(.glue) } label: {
-                    HStack { Image(systemName: ConstructTool.glue.icon); Text("Glue tool") }
-                        .frame(maxWidth: .infinity)
+                TOSecondaryButton(title: "Glue tool", icon: ConstructTool.glue.icon) {
+                    state.setConstructTool(.glue)
                 }
-                .buttonStyle(PlasticityButtonStyle(isEnabled: true))
             }
-            ForEach(state.constructGlues) { g in
-                HStack {
-                    Text("Panel \(g.panelA) ⊕ \(g.panelB) · \(g.mode)").font(PlasticityFont.label).foregroundColor(.text_primary)
-                    Spacer()
-                    Button { state.removeGlue(g.id) } label: { Image(systemName: "xmark.circle").font(.system(size: 11)) }
-                        .buttonStyle(.plain).foregroundColor(.text_secondary)
+            if !state.constructGlues.isEmpty {
+                TODivider()
+                ForEach(state.constructGlues) { g in
+                    HStack {
+                        Text("Piece \(g.panelA) ⊕ \(g.panelB) · \(g.mode)")
+                            .font(.system(size: 12.5, weight: .medium)).foregroundColor(.to_textSec)
+                        Spacer()
+                        Button { state.removeGlue(g.id) } label: {
+                            Image(systemName: "xmark.circle").font(.system(size: 12))
+                        }
+                        .buttonStyle(.plain).foregroundColor(.to_textMut).help("Remove glue")
+                    }
                 }
             }
         }
@@ -640,75 +614,74 @@ struct ConstructModeView: View {
     // something is actually folded; the per-fold numbers live in `foldRow`.
     @ViewBuilder private var bendSummary: some View {
         if state.constructFolds.contains(where: { abs($0.angleDeg) > 0.5 }) {
-            Divider().background(Color.border_subtle).padding(.vertical, 2)
+            TODivider()
             readoutRow("Bend allowance", String(format: "%.1f mm", state.constructTotalBendAllowance))
             readoutRow("Flat blank deduction", String(format: "−%.1f mm", state.constructTotalBendDeduction))
             readoutRow("Min bend radius", String(format: "%.1f mm", state.constructMinBendRadiusMm))
             let tight = state.constructTightFolds.count
             if tight > 0 {
                 let mat = state.constructLeather?.name ?? "this leather"
-                Label("\(tight) fold\(tight == 1 ? "" : "s") tighter than \(mat) allows — grain may crack",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(PlasticityFont.label).foregroundColor(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                TOWarning(title: "\(tight) fold\(tight == 1 ? "" : "s") tighter than \(mat) allows",
+                          detail: "The grain may crack — round the fold or skive the bend.")
             }
         }
     }
 
     private func foldRow(_ spec: FoldSpec) -> some View {
         let selected = state.selectedFoldId == spec.id
-        return VStack(alignment: .leading, spacing: 2) {
+        let linked = spec.linked == true
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Panel \(spec.panelId) · Fold \(spec.foldId)")
-                    .font(PlasticityFont.label)
-                    .foregroundColor(selected ? .accent : .text_primary)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(selected ? .to_accent : .to_textSec)
                 Spacer()
+                // Fold symmetry: linked folds share one angle — drag/slide any of
+                // them and the whole group follows. Joining adopts the group angle.
+                Button { state.toggleFoldLinked(spec.id) } label: {
+                    Image(systemName: linked ? "link.circle.fill" : "link.circle")
+                        .font(.system(size: 13))
+                        .foregroundColor(linked ? .to_accent : .to_textMut)
+                }
+                .buttonStyle(.plain)
+                .help(linked ? "Linked — this fold moves with the other linked folds"
+                             : "Link this fold so it moves with the other linked folds")
                 Text("\(Int(spec.angleDeg))°")
-                    .font(PlasticityFont.label.monospacedDigit())
-                    .foregroundColor(.text_secondary)
+                    .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                    .foregroundColor(.to_textPri)
             }
-            Slider(
-                value: Binding(
-                    get: { spec.angleDeg },
-                    set: { state.setConstructFoldAngle(spec.id, $0) }
-                ),
-                in: -180...180, step: 1,
-                onEditingChanged: { began in if began { state.pushConstructUndo() } }
-            )
-            .controlSize(.small)
-            HStack(spacing: 6) {
-                Image(systemName: "drop").font(.system(size: 9)).foregroundColor(.text_secondary)
-                Slider(
-                    value: Binding(
-                        get: { spec.roundness },
-                        set: { state.setConstructFoldRoundness(spec.id, $0) }),
-                    in: 0...1,
-                    onEditingChanged: { began in if began { state.pushConstructUndo() } }
-                )
-                .controlSize(.mini)
-                Text(spec.roundness < 0.02 ? "sharp" : "round")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
-            }
-            .help("Fold roundness — 0 = sharp crease, 1 = rounded")
+            TOSlider(
+                value: Binding(get: { spec.angleDeg },
+                               set: { state.setConstructFoldAngle(spec.id, $0) }),
+                range: -180...180, unit: "°", maxFrac: 0, step: 1,
+                onBegin: { state.pushConstructUndo() })
+            TOSlider(
+                value: Binding(get: { spec.roundness },
+                               set: { state.setConstructFoldRoundness(spec.id, $0) }),
+                range: 0...1, unit: "",
+                minLabel: "sharp", maxLabel: "round", maxFrac: 2,
+                onBegin: { state.pushConstructUndo() })
             // Bend allowance for this fold (sheet-metal: BA = θ·(R + K·T)), plus a
             // soft warning when the fold is tighter than the leather can take.
             if abs(spec.angleDeg) > 0.5 {
                 HStack(spacing: 6) {
                     Text(String(format: "Bend allowance %.1f mm", state.constructBendAllowance(spec)))
-                        .font(PlasticityFont.label.monospacedDigit())
-                        .foregroundColor(.text_secondary.opacity(0.8))
+                        .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                        .foregroundColor(.to_textMut)
                     if !state.constructFoldRadiusOK(spec) {
                         Spacer(minLength: 4)
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9)).foregroundColor(.orange)
+                            .font(.system(size: 10)).foregroundColor(.to_warn)
                             .help("Inside radius is tighter than this leather's minimum bend radius — the grain may crack. Round the fold or skive the bend.")
                     }
                 }
             }
         }
-        .padding(6)
-        .background(selected ? Color.bg_selected : Color.clear)
-        .cornerRadius(5)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 9)
+            .fill(selected ? Color.to_accentTint : Color.to_field))
+        .overlay(RoundedRectangle(cornerRadius: 9)
+            .stroke(selected ? Color.to_accent : Color.to_fieldBorder, lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { state.selectedFoldId = spec.id }
     }
@@ -716,55 +689,62 @@ struct ConstructModeView: View {
     // MARK: Stitch flagship — seams between sewing-hole chains
 
     private var seamSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Seams")
+        VStack(alignment: .leading, spacing: 12) {
             if state.constructHoleChains.isEmpty {
-                Text("No sewing holes found. Add holes in 2D (Sewing Holes), then Rebuild — each run of holes becomes a chain you can stitch.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                TOStatus(color: .to_textFaint, text: "No sewing holes found")
+                TOHint("Add holes in 2D (Sewing Holes), then Rebuild — each run of holes becomes a chain you can stitch.")
             } else {
-                Text("\(state.constructHoleChains.count) hole chains detected.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                TOStatus(text: "\(state.constructHoleChains.count) hole chains detected")
 
                 // Stitch tool prompt + pending pick state.
                 if state.constructTool == .stitch {
                     if let pick = state.selectedChainForStitch {
-                        Text("Chain \(pick) selected — click another chain to sew them.")
-                            .font(PlasticityFont.label).foregroundColor(.accent)
+                        TOStatus(text: "Chain \(pick) selected", hint: "click another chain to sew")
                     } else {
-                        Text("Stitch tool active — click a hole chain in the viewport to start.")
-                            .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
+                        TOHint("Click a hole chain in the viewport to start.")
                     }
                 } else {
-                    Button {
+                    TOSecondaryButton(title: "Stitch chains", icon: ConstructTool.stitch.icon) {
                         state.setConstructTool(.stitch)
-                    } label: {
-                        HStack { Image(systemName: ConstructTool.stitch.icon); Text("Stitch chains") }
-                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
                 }
 
                 // One-click: auto-pair likely seams (closest arc-length, different
                 // panels) for the user to confirm/adjust.
                 if state.canAutoStitch {
-                    Button { state.autoProposeSeams() } label: {
-                        HStack { Image(systemName: "wand.and.stars"); Text("Auto-stitch seams") }
-                            .font(PlasticityFont.label)
+                    TOSecondaryButton(title: "Auto-stitch seams", icon: "wand.and.stars") {
+                        state.autoProposeSeams()
                     }
-                    .buttonStyle(.plain).foregroundColor(.accent)
                 }
 
                 if !state.constructSeams.isEmpty {
-                    Toggle(isOn: Binding(
-                        get: { state.constructShowThread },
-                        set: { state.setConstructShowThread($0) })) {
-                        Text("Show thread").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                    }
-                    .toggleStyle(.switch).controlSize(.mini)
-
+                    TOCheck(label: "Show thread",
+                            isOn: Binding(get: { state.constructShowThread },
+                                          set: { state.setConstructShowThread($0) }))
                     ForEach(state.constructSeams) { seam in
                         seamRow(seam)
                     }
+                    // Pro-CAD fit: the thresholds every FITS/EASE/MISMATCH verdict
+                    // is judged against. Collapsed — the defaults suit hobbyists.
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TORow(label: "Length ±") {
+                                TOStepper(value: Binding(get: { state.seamTolMismatchPct },
+                                                         set: { state.setSeamTolerances(mismatchPct: $0, gapMm: state.seamTolGapMm) }),
+                                          unit: "%", step: 1, range: 1...50, maxFrac: 0)
+                            }
+                            TORow(label: "Max gap") {
+                                TOStepper(value: Binding(get: { state.seamTolGapMm },
+                                                         set: { state.setSeamTolerances(mismatchPct: state.seamTolMismatchPct, gapMm: $0) }),
+                                          unit: "mm", step: 0.5, range: 0.5...25, maxFrac: 1)
+                            }
+                            TOHint("A seam reads MISMATCH when its length difference or after-seating gap exceeds these. Saved with the assembly.")
+                        }
+                        .padding(.top, 8)
+                    } label: {
+                        TOGroupLabel("Fit tolerance")
+                    }
+                    .tint(Color.to_textTer)
                 }
             }
         }
@@ -773,28 +753,29 @@ struct ConstructModeView: View {
     /// The plain-English verdict label + colour for a seam's fit.
     private func verdictStyle(_ v: StitchSeam.Verdict) -> (String, Color) {
         switch v {
-        case .match:    return ("FITS", .green)
+        case .match:    return ("FITS", .to_ok)
         case .ease:     return ("EASE", Color(hex: "C9A36A"))
-        case .mismatch: return ("MISMATCH", .orange)
+        case .mismatch: return ("MISMATCH", .to_warn)
         }
     }
 
     private func seamRow(_ seam: StitchSeam) -> some View {
-        let (vLabel, vColor) = verdictStyle(seam.verdict)
-        return VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
+        let verdict = state.seamVerdict(seam)   // judged against the user tolerances
+        let (vLabel, vColor) = verdictStyle(verdict)
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
                 Text(vLabel)
-                    .font(PlasticityFont.label.weight(.bold)).tracking(0.5)
+                    .font(.system(size: 10, weight: .bold)).tracking(0.5)
                     .foregroundColor(vColor)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(RoundedRectangle(cornerRadius: 3).fill(vColor.opacity(0.18)))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(vColor.opacity(0.18)))
                 Text("Chain \(seam.chainA) → \(seam.chainB)")
-                    .font(PlasticityFont.label).foregroundColor(.text_primary)
+                    .font(.system(size: 12.5, weight: .medium)).foregroundColor(.to_textSec)
                 Spacer()
                 Button { state.removeSeam(seam.id) } label: {
-                    Image(systemName: "scissors").font(.system(size: 11))
+                    Image(systemName: "scissors").font(.system(size: 12))
                 }
-                .buttonStyle(.plain).foregroundColor(.text_secondary).help("Unstitch")
+                .buttonStyle(.plain).foregroundColor(.to_textMut).help("Unstitch")
             }
 
             // The three numbers a maker actually checks: hole counts, edge lengths,
@@ -802,91 +783,89 @@ struct ConstructModeView: View {
             fitStat("Holes", "\(seam.holesA) vs \(seam.holesB)",
                     warn: seam.holesA != seam.holesB && seam.holesA > 0 && seam.holesB > 0)
             fitStat("Length", String(format: "%.0f vs %.0f mm", seam.lenA, seam.lenB),
-                    warn: seam.mismatch >= 0.12)
+                    warn: seam.mismatch >= state.seamTolMismatchPct / 100)
             fitStat("Gap after seating", String(format: "%.1f mm", seam.maxGapMm),
-                    warn: seam.maxGapMm > 4)
+                    warn: seam.maxGapMm > state.seamTolGapMm)
 
-            if seam.verdict == .mismatch {
-                Text("Seams differ too much to sew cleanly. Try Deform to Fit, or fix the hole count/spacing in 2D.")
-                    .font(PlasticityFont.label).foregroundColor(.orange.opacity(0.9))
-            } else if seam.verdict == .ease {
-                Text("Slightly off — eased (gathered) losslessly. Switch to Deform to Fit for a flush 1:1.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
+            if verdict == .mismatch {
+                TOHint("Seams differ too much to sew cleanly. Try Deform to Fit, or fix the hole count/spacing in 2D.")
+            } else if verdict == .ease {
+                TOHint("Slightly off — eased (gathered) losslessly. Switch to Deform to Fit for a flush 1:1.")
             }
 
             // Mismatch policy.
-            Picker("", selection: Binding(
-                get: { seam.mode },
-                set: { state.setSeamMode(seam.id, $0) })) {
-                ForEach(StitchMode.allCases) { m in Text(m.label).tag(m) }
-            }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
-            Text(seam.mode.blurb)
-                .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
+            TOSegmented(options: StitchMode.allCases.map { ($0, $0.label) },
+                        selection: Binding(get: { seam.mode },
+                                           set: { state.setSeamMode(seam.id, $0) }))
+            TOHint(seam.mode.blurb)
 
             // Alignment pins (Fusion-Loft) + reverse. Add pins to lock which holes
             // line up; the matcher fills the rest between them.
             let pinning = state.activeSeamForPins == seam.id && state.stitchPinMode
             HStack(spacing: 8) {
                 Button { state.setStitchPinMode(seam.id, !pinning) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: pinning ? "pin.fill" : "pin")
+                    HStack(spacing: 5) {
+                        Image(systemName: pinning ? "pin.fill" : "pin").font(.system(size: 11))
                         Text(pinning ? "Pinning… click hole A then B" : "Add pins (\((seam.anchors ?? []).count))")
-                    }.font(PlasticityFont.label)
+                            .font(.system(size: 12.5, weight: .medium))
+                    }
                 }
-                .buttonStyle(.plain).foregroundColor(pinning ? .accent : .text_primary)
+                .buttonStyle(.plain).foregroundColor(pinning ? .to_accent : .to_textSec)
                 Spacer()
                 if !(seam.anchors ?? []).isEmpty {
                     Button { state.clearStitchAnchors(seam.id) } label: {
-                        Image(systemName: "pin.slash").font(.system(size: 11))
-                    }.buttonStyle(.plain).foregroundColor(.text_secondary).help("Clear pins")
+                        Image(systemName: "pin.slash").font(.system(size: 12))
+                    }.buttonStyle(.plain).foregroundColor(.to_textMut).help("Clear pins")
                 }
                 Button { state.reverseSeam(seam.id) } label: {
                     Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 11))
-                        .foregroundColor((seam.flip ?? false) ? .accent : .text_secondary)
+                        .font(.system(size: 12))
+                        .foregroundColor((seam.flip ?? false) ? .to_accent : .to_textMut)
                 }.buttonStyle(.plain).help("Reverse seam direction")
             }
 
             // Stitch phase: shift which holes line up by N along chain B. Pins fix
             // the alignment exactly, so the shift is disabled while any pin is set.
             let pinned = !(seam.anchors ?? []).isEmpty
-            HStack(spacing: 8) {
-                Text("Stitch phase").font(PlasticityFont.label).foregroundColor(.text_secondary)
+            HStack(spacing: 10) {
+                TOLabel("Stitch phase")
                 Spacer()
                 Button { state.shiftSeam(seam.id, by: -1) } label: {
-                    Image(systemName: "minus").font(.system(size: 10, weight: .bold))
+                    Image(systemName: "minus").font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.to_textTer).frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain).disabled(pinned).help("Shift one hole back")
                 let sh = seam.shift ?? 0
                 Text(sh > 0 ? "+\(sh)" : "\(sh)")
-                    .font(PlasticityFont.label.monospacedDigit())
-                    .foregroundColor(sh != 0 ? .accent : .text_primary)
+                    .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                    .foregroundColor(sh != 0 ? .to_accent : .to_textPri)
                     .frame(minWidth: 22)
                 Button { state.shiftSeam(seam.id, by: 1) } label: {
-                    Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                    Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.to_textTer).frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain).disabled(pinned).help("Shift one hole forward")
             }
             .opacity(pinned ? 0.4 : 1.0)
             if pinned {
-                Text("Remove pins to shift the stitch phase.")
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.7))
+                TOHint("Remove pins to shift the stitch phase.")
             }
             if pinning {
-                Text("Click a hole on one row, then its partner on the other. The seam re-matches around your pins.")
-                    .font(PlasticityFont.label).foregroundColor(.accent)
+                TOStatus(text: "Click a hole on one row, then its partner on the other.",
+                         hint: "re-matches around your pins")
             }
         }
-        .padding(7)
-        .background(Color.bg_selected.opacity(0.5))
-        .cornerRadius(5)
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.to_field))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_fieldBorder, lineWidth: 1))
     }
 
     private func fitStat(_ label: String, _ value: String, warn: Bool) -> some View {
         HStack {
-            Text(label).font(PlasticityFont.label).foregroundColor(.text_secondary)
+            TOLabel(label, color: .to_textMut)
             Spacer()
-            Text(value).font(PlasticityFont.label.monospacedDigit())
-                .foregroundColor(warn ? .orange : .text_primary)
+            Text(value).font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                .foregroundColor(warn ? .to_warn : .to_textPri)
         }
     }
 
@@ -898,96 +877,77 @@ struct ConstructModeView: View {
     ]
 
     private var materialSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Material")
 
             // Physical leather — sets thickness, tint, and the bend-allowance
             // properties (temper, K-factor, min bend radius). Thickness + tint
             // below stay overridable afterwards.
-            Picker(selection: Binding<String>(
-                get: { state.constructMaterialId ?? "" },
-                set: { id in if let m = LeatherStore.shared.material(id: id) { state.selectConstructMaterial(m) } })) {
-                Text("Choose leather…").tag("")
-                ForEach(LeatherStore.shared.all) { m in Text(m.name).tag(m.id) }
-            } label: { EmptyView() }
-            .pickerStyle(.menu).controlSize(.small).labelsHidden()
+            TOSelect(options: [("", "Choose leather…")] + LeatherStore.shared.all.map { ($0.id, $0.name) },
+                     selection: Binding<String>(
+                        get: { state.constructMaterialId ?? "" },
+                        set: { id in if let m = LeatherStore.shared.material(id: id) { state.selectConstructMaterial(m) } }))
             if let m = state.constructLeather {
-                Text(m.summary)
-                    .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.85))
+                TOHint(m.summary)
             }
 
             // Multi-material: give individual panels their own leather (e.g. a firm
             // stiffener patch on a soft body). Empty = the assembly default above.
             if state.constructPanelHandles.count >= 2 {
                 DisclosureGroup {
-                    ForEach(state.constructPanelHandles.keys.sorted(), id: \.self) { pid in
-                        HStack {
-                            Text("Panel \(pid)").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                            Spacer()
-                            Picker(selection: Binding<String>(
-                                get: { state.leatherForPanel(pid)?.id ?? "" },
-                                set: { state.setConstructPanelMaterial(pid, $0.isEmpty ? nil : $0) })) {
-                                Text("Assembly default").tag("")
-                                ForEach(LeatherStore.shared.all) { m in Text(m.name).tag(m.id) }
-                            } label: { EmptyView() }
-                            .labelsHidden().controlSize(.small).frame(maxWidth: 160)
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(state.constructPanelHandles.keys.sorted(), id: \.self) { pid in
+                            TORow(label: "Panel \(pid)") {
+                                TOSelect(options: [("", "Assembly default")] + LeatherStore.shared.all.map { ($0.id, $0.name) },
+                                         selection: Binding<String>(
+                                            get: { state.leatherForPanel(pid)?.id ?? "" },
+                                            set: { state.setConstructPanelMaterial(pid, $0.isEmpty ? nil : $0) }))
+                            }
                         }
                     }
+                    .padding(.top, 8)
                 } label: {
-                    Text("Per-panel material").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                    TOGroupLabel("Per-panel material")
                 }
+                .tint(Color.to_textTer)
             }
 
-            Text("Tint").font(PlasticityFont.label).foregroundColor(.text_secondary).tracking(1)
+            TOGroupLabel("Tint")
             HStack(spacing: 8) {
                 ForEach(leatherSwatches, id: \.0) { hex, name in
                     Circle()
                         .fill(Color(hex: hex))
-                        .frame(width: 22, height: 22)
-                        .overlay(Circle().stroke(state.constructMaterialHex.caseInsensitiveCompare(hex) == .orderedSame ? Color.accent : Color.border_subtle, lineWidth: 2))
+                        .frame(width: 24, height: 24)
+                        .overlay(Circle().stroke(state.constructMaterialHex.caseInsensitiveCompare(hex) == .orderedSame ? Color.to_accent : Color.to_fieldBorder, lineWidth: 2))
                         .onTapGesture { state.setConstructMaterialColor(hex) }
                         .help(name)
                 }
             }
-            HStack {
-                Text("Thickness").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                Spacer()
-                Text(String(format: "%.1f mm", state.constructThicknessMm))
-                    .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
+
+            TORow(label: "Thickness") {
+                TOStepper(value: Binding(get: { state.constructThicknessMm },
+                                         set: { state.setConstructThickness($0) }),
+                          unit: "mm", step: 0.1, range: 0.5...8, maxFrac: 1)
             }
-            Slider(
-                value: Binding(
-                    get: { state.constructThicknessMm },
-                    set: { state.setConstructThickness($0) }),
-                in: 0.5...8, step: 0.1,
-                onEditingChanged: { began in if began { state.pushConstructUndo() } }
-            )
-            .controlSize(.small)
 
             // Finish — surface sheen from matte veg-tan to glossy patent.
-            HStack {
-                Text("Finish").font(PlasticityFont.label).foregroundColor(.text_secondary)
-                Spacer()
+            TORow(label: "Finish") {
+                TOSegmented(options: finishes,
+                            selection: Binding(get: { state.constructFinish },
+                                               set: { state.setConstructFinish($0) }))
             }
-            Picker("", selection: Binding(
-                get: { state.constructFinish },
-                set: { state.setConstructFinish($0) })) {
-                ForEach(finishes, id: \.0) { key, label in Text(label).tag(key) }
-            }
-            .pickerStyle(.segmented).controlSize(.small).labelsHidden()
 
             // Custom leather texture — a photo / seamless tile used as the albedo.
             HStack(spacing: 8) {
-                Button { state.loadConstructLeatherTexture() } label: {
-                    HStack(spacing: 4) { Image(systemName: "photo"); Text(state.constructLeatherTextureURL == nil ? "Custom texture…" : "Replace texture…") }
-                        .font(PlasticityFont.label)
+                TOSecondaryButton(title: state.constructLeatherTextureURL == nil ? "Custom texture…" : "Replace texture…",
+                                  icon: "photo") {
+                    state.loadConstructLeatherTexture()
                 }
-                .buttonStyle(.plain).foregroundColor(.accent)
                 if state.constructLeatherTextureURL != nil {
                     Button { state.setConstructLeatherTextureURL(nil) } label: {
-                        Image(systemName: "xmark.circle").font(.system(size: 11))
+                        Image(systemName: "xmark.circle").font(.system(size: 13))
                     }
-                    .buttonStyle(.plain).foregroundColor(.text_secondary).help("Remove texture")
+                    .buttonStyle(.plain).foregroundColor(.to_textMut).help("Remove texture")
                 }
             }
             if state.constructLeatherTextureURL != nil {
@@ -996,7 +956,7 @@ struct ConstructModeView: View {
                 }
             }
 
-            Divider().background(Color.border_subtle).padding(.vertical, 2)
+            TODivider()
             artworkSection
         }
     }
@@ -1005,9 +965,8 @@ struct ConstructModeView: View {
 
     @ViewBuilder
     private var artworkSection: some View {
-        Text("Artwork").font(PlasticityFont.label).foregroundColor(.text_secondary).tracking(1)
-        Text("Drop an image (PNG/JPG) onto a panel to add it as artwork — visual only, it rides the fold and never changes the cut pattern.")
-            .font(PlasticityFont.label).foregroundColor(.text_secondary.opacity(0.8))
+        TOGroupLabel("Artwork")
+        TOHint("Drop an image (PNG/JPG) onto a panel to add it as artwork — visual only, it rides the fold and never changes the cut pattern.")
 
         if !state.constructDecals.isEmpty {
             // Which panel's art are we framing? Auto-targets the last drop; a
@@ -1015,62 +974,51 @@ struct ConstructModeView: View {
             let pids = state.constructDecals.keys.sorted()
             let active = state.activeDecalPanel.flatMap { pids.contains($0) ? $0 : nil } ?? pids.first
             if pids.count > 1, let active {
-                Picker("", selection: Binding(
-                    get: { active },
-                    set: { state.activeDecalPanel = $0 })) {
-                    ForEach(pids, id: \.self) { Text("Panel \($0)").tag($0) }
+                TORow(label: "Framing") {
+                    TOSelect(options: pids.map { ($0, "Panel \($0)") },
+                             selection: Binding(get: { active },
+                                                set: { state.activeDecalPanel = $0 }))
                 }
-                .pickerStyle(.menu).controlSize(.small).labelsHidden()
             }
             if let pid = active { decalFraming(pid) }
 
-            Button { state.clearConstructDecals() } label: {
-                HStack { Image(systemName: "trash"); Text("Clear all artwork (\(state.constructDecals.count))") }
-                    .font(PlasticityFont.label)
+            TOSecondaryButton(title: "Clear all artwork (\(state.constructDecals.count))",
+                              icon: "trash", tint: .to_textMut) {
+                state.clearConstructDecals()
             }
-            .buttonStyle(.plain).foregroundColor(.text_secondary)
         }
     }
 
     @ViewBuilder
     private func decalFraming(_ pid: Int) -> some View {
         let x = state.decalXform(pid)
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Framing — panel \(pid)").font(PlasticityFont.label.weight(.semibold))
-                .foregroundColor(.text_primary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Framing — panel \(pid)")
+                .font(.system(size: 12.5, weight: .semibold)).foregroundColor(.to_textPri)
             framingSlider("Position X", value: x[0], range: -1...1) { state.setDecalXform(pid, 0, $0) }
             framingSlider("Position Y", value: x[1], range: -1...1) { state.setDecalXform(pid, 1, $0) }
             framingSlider("Scale", value: x[2], range: 0.2...3) { state.setDecalXform(pid, 2, $0) }
             framingSlider("Rotation", value: x[3], range: -180...180, unit: "°") { state.setDecalXform(pid, 3, $0) }
-            Toggle(isOn: Binding(
-                get: { x[4] > 0.5 },
-                set: { state.setDecalXform(pid, 4, $0 ? 1 : 0) })) {
-                Text("Flip side (mirror)").font(PlasticityFont.label).foregroundColor(.text_secondary)
+            TOCheck(label: "Flip side (mirror)",
+                    isOn: Binding(get: { x[4] > 0.5 },
+                                  set: { state.setDecalXform(pid, 4, $0 ? 1 : 0) }))
+            TOSecondaryButton(title: "Remove from panel \(pid)", icon: "xmark.circle", tint: .to_textMut) {
+                state.clearConstructDecal(pid)
             }
-            .toggleStyle(.switch).controlSize(.mini)
-            Button { state.clearConstructDecal(pid) } label: {
-                HStack { Image(systemName: "xmark.circle"); Text("Remove from panel \(pid)") }
-                    .font(PlasticityFont.label)
-            }
-            .buttonStyle(.plain).foregroundColor(.text_secondary)
         }
-        .padding(8)
+        .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 5).fill(Color.bg_selected.opacity(0.5)))
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.to_field))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_fieldBorder, lineWidth: 1))
     }
 
     private func framingSlider(_ label: String, value: Double, range: ClosedRange<Double>,
                                unit: String = "", onChange: @escaping (Double) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack {
-                Text(label).font(PlasticityFont.label).foregroundColor(.text_secondary)
-                Spacer()
-                Text(unit == "°" ? "\(Int(value))\(unit)" : String(format: "%.2f", value))
-                    .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
-            }
-            Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range,
-                   onEditingChanged: { began in if began { state.pushConstructUndo() } })
-                .controlSize(.small)
+        VStack(alignment: .leading, spacing: 8) {
+            TOLabel(label)
+            TOSlider(value: Binding(get: { value }, set: { onChange($0) }),
+                     range: range, unit: unit, maxFrac: unit == "°" ? 0 : 2,
+                     onBegin: { state.pushConstructUndo() })
         }
     }
 
@@ -1079,26 +1027,34 @@ struct ConstructModeView: View {
 
     private var healthDetail: some View {
         let h = state.assemblyHealth
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 8) {
             readoutRow("Seam length", String(format: "%.0f mm", state.constructSeamLengthMm))
-            Divider().background(Color.border_subtle).padding(.vertical, 2)
+            TODivider()
             if h.ok && h.openChains == 0 {
-                Label("Everything connected, seams fit", systemImage: "checkmark.seal.fill")
-                    .font(PlasticityFont.label).foregroundColor(.green)
+                healthLine("Everything connected, seams fit", "checkmark.seal.fill", .to_ok)
             } else {
                 if h.floating > 0 {
-                    Label("\(h.floating) panel\(h.floating == 1 ? "" : "s") not attached to the base", systemImage: "exclamationmark.triangle.fill")
-                        .font(PlasticityFont.label).foregroundColor(.orange)
+                    healthLine("\(h.floating) panel\(h.floating == 1 ? "" : "s") not attached to the base",
+                               "exclamationmark.triangle.fill", .to_warn)
                 }
                 if h.mismatched > 0 {
-                    Label("\(h.mismatched) seam\(h.mismatched == 1 ? "" : "s") don't fit", systemImage: "exclamationmark.triangle.fill")
-                        .font(PlasticityFont.label).foregroundColor(.orange)
+                    healthLine("\(h.mismatched) seam\(h.mismatched == 1 ? "" : "s") don't fit",
+                               "exclamationmark.triangle.fill", .to_warn)
                 }
                 if h.openChains > 0 {
-                    Label("\(h.openChains) hole chain\(h.openChains == 1 ? "" : "s") unstitched", systemImage: "circle.dashed")
-                        .font(PlasticityFont.label).foregroundColor(.text_secondary)
+                    healthLine("\(h.openChains) hole chain\(h.openChains == 1 ? "" : "s") unstitched",
+                               "circle.dashed", .to_textMut)
                 }
             }
+        }
+    }
+
+    private func healthLine(_ text: String, _ icon: String, _ color: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon).font(.system(size: 11)).foregroundColor(color)
+            Text(text).font(.system(size: 12, weight: .medium)).foregroundColor(color)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
     }
 

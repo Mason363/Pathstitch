@@ -65,6 +65,10 @@ struct FoldSpec: Codable, Identifiable, Hashable {
     /// 0 = knife-sharp crease … 1 = max rounded radius. Real leather rarely folds
     /// dead-sharp; this softens the crease over a true radius (no stretch).
     var roundness: Double = 0
+    /// Fold symmetry: linked folds share one angle — set any one (slider or 3D
+    /// drag) and the whole group follows, so e.g. all four box flaps fold as one.
+    /// Optional so older `.stch` files decode untouched (nil = not linked).
+    var linked: Bool? = nil
 
     var id: String { "\(panelId)-\(foldId)" }
 }
@@ -144,17 +148,24 @@ struct StitchSeam: Codable, Identifiable, Hashable {
     /// True when the seams differ enough in length to warrant a heads-up.
     var hasWarning: Bool { verdict == .mismatch }
 
-    /// Where this seam lands against the fit tolerances. Defaults here are sane
-    /// for hobbyists; Phase 3 makes the thresholds user-settable.
+    /// Where this seam lands against the fit tolerances (pro-CAD: the thresholds
+    /// are user-settable — `mismatchTol` is the allowed fractional length
+    /// difference, `gapTolMm` the allowed worst hole-to-hole gap after seating).
     enum Verdict { case match, ease, mismatch }
-    var verdict: Verdict {
+    func verdict(mismatchTol: Double, gapTolMm: Double) -> Verdict {
         let countDelta = abs(holesA - holesB)
-        if mismatch >= 0.12 || maxGapMm > 4 || (countDelta > 0 && (holesA == 0 || holesB == 0)) {
+        if mismatch >= mismatchTol || maxGapMm > gapTolMm
+            || (countDelta > 0 && (holesA == 0 || holesB == 0)) {
             return .mismatch
         }
-        if countDelta == 0 && mismatch < 0.04 && maxGapMm <= 1.5 { return .match }
+        // FITS stays strict (equal counts, near-equal length, snug gap) even when
+        // the user opens the mismatch tolerance right up.
+        if countDelta == 0 && mismatch < min(0.04, mismatchTol)
+            && maxGapMm <= min(1.5, gapTolMm) { return .match }
         return .ease
     }
+    /// Default hobbyist tolerances (12% length difference, 4 mm gap).
+    var verdict: Verdict { verdict(mismatchTol: 0.12, gapTolMm: 4) }
 }
 
 /// The leather an assembly is made of: PBR look (tint / finish / texture) **and**
@@ -226,6 +237,10 @@ struct ConstructAssembly: Codable {
     /// Multi-material (Phase 2): panel DXF handle → LeatherStore id. Optional →
     /// older files are single-material.
     var panelMaterials: [String: String]? = nil
+    /// User-set seam-fit tolerances (pro-CAD): allowed length mismatch (%) and
+    /// allowed worst post-seating gap (mm). Optional → older files use defaults.
+    var seamTolMismatchPct: Double? = nil
+    var seamTolGapMm: Double? = nil
 }
 
 /// A full snapshot of the editable assembly state for the panel's own undo/redo

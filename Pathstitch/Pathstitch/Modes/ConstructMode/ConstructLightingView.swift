@@ -29,8 +29,8 @@ struct ConstructLightingView: View {
                             PresetThumb(preset: preset)
                                 .frame(width: 44, height: 44)
                             Text(preset.label)
-                                .font(.system(size: 9))
-                                .foregroundColor(.text_secondary)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.to_textMut)
                         }
                     }
                     .buttonStyle(.plain)
@@ -56,31 +56,31 @@ struct ConstructLightingView: View {
                         Button { state.setActiveLight(idx); state.setLightOn(!light.on) } label: {
                             Image(systemName: light.on ? "eye" : "eye.slash")
                                 .font(.system(size: 11))
-                                .foregroundColor(light.on ? .text_primary : .text_secondary.opacity(0.5))
+                                .foregroundColor(light.on ? .to_textPri : .to_textMut)
                         }
                         .buttonStyle(.plain)
                         Circle().fill(Color(hex: light.colorHex)).frame(width: 12, height: 12)
-                            .overlay(Circle().stroke(Color.border_subtle, lineWidth: 1))
-                        Text("Light \(idx + 1)").font(PlasticityFont.label)
-                            .foregroundColor(idx == activeIndex ? .accent : .text_primary)
+                            .overlay(Circle().stroke(Color.to_fieldBorder, lineWidth: 1))
+                        Text("Light \(idx + 1)").font(.system(size: 12.5, weight: .medium))
+                            .foregroundColor(idx == activeIndex ? .to_accent : .to_textSec)
                         Spacer()
                     }
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(idx == activeIndex ? Color.bg_selected : Color.clear)
-                    .cornerRadius(4)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 7)
+                        .fill(idx == activeIndex ? Color.to_accentTint : Color.clear))
                     .contentShape(Rectangle())
                     .onTapGesture { state.setActiveLight(idx) }
                 }
             }
-            HStack {
+            HStack(spacing: 6) {
                 Button { state.addConstructLight() } label: {
-                    Image(systemName: "plus").font(.system(size: 11))
-                }.buttonStyle(.plain).foregroundColor(.text_secondary).help("Add light")
+                    Image(systemName: "plus").font(.system(size: 12))
+                }.buttonStyle(.plain).foregroundColor(.to_textTer).help("Add light")
                 Button { state.removeConstructLight(activeIndex) } label: {
-                    Image(systemName: "trash").font(.system(size: 11))
+                    Image(systemName: "trash").font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
-                .foregroundColor(state.constructLights.count > 1 ? .text_secondary : .text_secondary.opacity(0.3))
+                .foregroundColor(state.constructLights.count > 1 ? .to_textTer : .to_textMut.opacity(0.4))
                 .disabled(state.constructLights.count <= 1)
                 .help("Remove light")
                 Spacer()
@@ -88,7 +88,7 @@ struct ConstructLightingView: View {
 
             // Active-light parameters.
             HStack {
-                Text("Color").font(PlasticityFont.label).foregroundColor(.text_secondary)
+                TOLabel("Color")
                 Spacer()
                 ColorPicker("", selection: Binding(
                     get: { Color(hex: activeLight.colorHex) },
@@ -108,7 +108,7 @@ struct ConstructLightingView: View {
                 state.setLightSoftness($0)
             }
 
-            Divider().background(Color.border_subtle).padding(.vertical, 2)
+            TODivider()
             lightSlider("Ambient", value: state.constructAmbient, range: 0...1, pct: true) {
                 state.setConstructAmbient($0)
             }
@@ -118,22 +118,29 @@ struct ConstructLightingView: View {
     private func lightSlider(_ label: String, value: Double, range: ClosedRange<Double>,
                              unit: String = "", pct: Bool = false,
                              onChange: @escaping (Double) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack {
-                Text(label).font(PlasticityFont.label).foregroundColor(.text_secondary)
-                Spacer()
-                Text(pct ? "\(Int(value / range.upperBound * 100))%"
-                         : (unit == "°" ? "\(Int(value))\(unit)" : String(format: "%.2f", value)))
-                    .font(PlasticityFont.label.monospacedDigit()).foregroundColor(.text_secondary)
+        // Same chrome as TOSlider, but the readout keeps the % / ° formatting the
+        // lighting controls expect (intensity/softness/ambient read as 0–100%).
+        let readout = pct ? "\(Int(value / range.upperBound * 100))%"
+                          : (unit == "°" ? "\(Int(value))\(unit)" : String(format: "%.2f", value))
+        return VStack(alignment: .leading, spacing: 8) {
+            TOLabel(label)
+            HStack(spacing: 11) {
+                Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range)
+                    .tint(Color.to_accent)
+                Text(readout)
+                    .monospacedDigit()
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundColor(.to_textPri)
+                    .frame(minWidth: 48)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.to_field))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.to_fieldBorder, lineWidth: 1))
             }
-            Slider(value: Binding(get: { value }, set: { onChange($0) }), in: range)
-                .controlSize(.small)
         }
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title.uppercased()).font(PlasticityFont.label)
-            .foregroundColor(.text_secondary).tracking(1)
+        TOGroupLabel(title)
     }
 
     /// SwiftUI Color → "RRGGBB" hex.
@@ -166,7 +173,7 @@ struct LightSpherePreview: View {
                 Circle().fill(RadialGradient(
                     gradient: Gradient(colors: [color, color.opacity(0.85), Color.black.opacity(0.92)]),
                     center: u, startRadius: 1, endRadius: R * 1.7))
-                Circle().stroke(Color.border_subtle, lineWidth: 1)
+                Circle().stroke(Color.to_fieldBorder, lineWidth: 1)
                 // the draggable light handle
                 Circle().stroke(Color.white, lineWidth: 2)
                     .background(Circle().fill(Color.white.opacity(0.2)))
@@ -215,7 +222,7 @@ struct PresetThumb: View {
                     center: u, startRadius: 1, endRadius: R * 1.7))
                     .padding(6)
             }
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.border_subtle, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.to_fieldBorder, lineWidth: 1))
         }
     }
 }

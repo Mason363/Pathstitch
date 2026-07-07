@@ -329,6 +329,8 @@ struct PathstitchApp: App {
                 Button("Circle Sketch") { NSApp.activeAppState?.currentTool = .sketchCircle }
                 Button("Rectangle Sketch") { NSApp.activeAppState?.currentTool = .sketchRectangle }
                 Button("Polygon Sketch") { NSApp.activeAppState?.currentTool = .sketchPolygon }
+                Button("Arc Sketch") { NSApp.activeAppState?.currentTool = .sketchArc }
+                Button("Conic Curve Sketch") { NSApp.activeAppState?.currentTool = .sketchConic }
                 Button("Text Sketch") { NSApp.activeAppState?.currentTool = .sketchText }
                 Button("Pen") { NSApp.activeAppState?.currentTool = .pen }
                 Button("Fillet") { NSApp.activeAppState?.currentTool = .fillet }

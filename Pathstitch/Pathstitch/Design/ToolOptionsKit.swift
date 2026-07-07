@@ -320,6 +320,10 @@ struct TORow<Trailing: View>: View {
 struct TOHint: View {
     let text: String
     var leadingInset: CGFloat = 0
+    init(_ text: String, leadingInset: CGFloat = 0) {
+        self.text = text
+        self.leadingInset = leadingInset
+    }
     var body: some View {
         Text(text)
             .font(.system(size: 12, weight: .medium))
@@ -495,6 +499,9 @@ struct TOSlider: View {
     var minLabel: String? = nil
     var maxLabel: String? = nil
     var maxFrac: Int = 1
+    var step: Double? = nil
+    /// Called when a drag begins — lets a tool push one undo step per drag.
+    var onBegin: (() -> Void)? = nil
     var onCommit: (() -> Void)? = nil
 
     var body: some View {
@@ -502,9 +509,7 @@ struct TOSlider: View {
             Text(minLabel ?? toNum(range.lowerBound, maxFrac: 0))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(Color.to_textMut)
-            Slider(value: $value, in: range) { editing in
-                if !editing { onCommit?() }
-            }
+            slider
             .tint(Color.to_accent)
             Text(maxLabel ?? toNum(range.upperBound, maxFrac: 0))
                 .font(.system(size: 11, weight: .medium))
@@ -524,6 +529,18 @@ struct TOSlider: View {
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.to_field))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.to_fieldBorder, lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder private var slider: some View {
+        if let step {
+            Slider(value: $value, in: range, step: step) { editing in
+                if editing { onBegin?() } else { onCommit?() }
+            }
+        } else {
+            Slider(value: $value, in: range) { editing in
+                if editing { onBegin?() } else { onCommit?() }
+            }
         }
     }
 }

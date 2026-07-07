@@ -68,6 +68,8 @@ enum ToolbarRegistry {
         .init(id: "sketchRectangle", title: "Rectangle", icon: "rectangle",              shapesOrigin: true, kind: .tool(.sketchRectangle)),
         .init(id: "sketchText",      title: "Text",      icon: "character.cursor.ibeam", shapesOrigin: true, kind: .tool(.sketchText)),
         .init(id: "sketchPolygon",   title: "Polygon",   icon: "hexagon",                shapesOrigin: true, kind: .tool(.sketchPolygon)),
+        .init(id: "sketchArc",       title: "Arc",       icon: "compass.drawing",        shapesOrigin: true, kind: .tool(.sketchArc)),
+        .init(id: "sketchConic",     title: "Conic Curve", icon: "point.topleft.down.to.point.bottomright.curvepath", shapesOrigin: true, kind: .tool(.sketchConic)),
         .init(id: "pen",             title: "Pen",       icon: "pencil.tip",             shapesOrigin: true, kind: .tool(.pen)),
         .init(id: "templateInsert",  title: "Templates", icon: "square.on.square.dashed", shapesOrigin: true, kind: .tool(.templateInsert)),
         // — Utilities flyout ("Other Tools" •••) —
@@ -88,7 +90,7 @@ enum ToolbarRegistry {
     static func def(_ id: String) -> ToolbarItemDef? { byId[id] }
 
     static let defaultMain   = ["select", "move", "pan", "scale", "offset", "addThickness", "addHoles", "cleanup", "trim", "measure", "dimension", "fillet", "chamfer", "patterning", "paperFolding"]
-    static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchPolygon", "sketchText", "pen", "templateInsert"]
+    static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchPolygon", "sketchArc", "sketchConic", "sketchText", "pen", "templateInsert"]
     static let defaultExtra  = ["mirror", "convert", "boxStitch", "mandala", "boxJoint", "goldenGuide", "jigExport", "flipH", "flipV", "duplicate"]
 }
 

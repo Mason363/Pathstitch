@@ -25,6 +25,7 @@ struct ConstructViewport: NSViewRepresentable {
     let exportToken: Int
     let renderToken: Int       // edit ↔ mockup render mode
     let shaderToken: Int       // shading mode (wireframe / solid / flat / realistic)
+    let explodeToken: Int      // exploded-view amount (inspection only)
     let matToken: Int          // cutting-mat config (shared with the 2D mat)
     let lightingToken: Int     // studio lighting changes
     let textureToken: Int      // custom leather texture / tiling
@@ -83,6 +84,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushExport()
         context.coordinator.pushRenderMode()
         context.coordinator.pushShaderMode()
+        context.coordinator.pushExplode()
         context.coordinator.pushMat()
         context.coordinator.pushLighting()
         context.coordinator.pushTexture()
@@ -111,6 +113,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastExportToken = -1
         private var lastRenderToken = -1
         private var lastShaderToken = -1
+        private var lastExplodeToken = -1
         private var lastMatToken = -1
         private var lastLightingToken = -1
         private var lastTextureToken = -1
@@ -158,6 +161,7 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushSnap()
                     self.lastRenderToken = -1
                     self.lastShaderToken = -1
+                    self.lastExplodeToken = -1
                     self.lastMatToken = -1
                     self.lastLightingToken = -1
                     self.lastTextureToken = -1
@@ -165,6 +169,7 @@ struct ConstructViewport: NSViewRepresentable {
                     self.lastArtworkToken = -1
                     self.pushRenderMode()
                     self.pushShaderMode()
+                    self.pushExplode()
                     self.pushMat()
                     self.pushLighting()
                     self.pushTexture()
@@ -294,6 +299,16 @@ struct ConstructViewport: NSViewRepresentable {
                         self.state.setPanelTransform(handle: handle, t: t, q: q, s: s)
                     }
                 }
+            case "exportGLB":
+                // The viewport's glTF exporter finished (or failed) — save / surface.
+                if let err = json["error"] as? String, !err.isEmpty {
+                    DispatchQueue.main.async { self.state.errorMessage = "glTF export failed: \(err)" }
+                } else if let b64 = json["data"] as? String,
+                          let data = Data(base64Encoded: b64), !data.isEmpty {
+                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("assembly.glb")
+                    try? data.write(to: tmp)
+                    DispatchQueue.main.async { self.presentSave(tmp, fmt: "glb") }
+                }
             case "consoleError":
                 let msg = json["message"] as? String ?? ""
                 let src = json["source"] as? String ?? ""
@@ -404,6 +419,13 @@ struct ConstructViewport: NSViewRepresentable {
             webView.evaluateJavaScript("setConstructShaderMode('\(state.constructShaderMode)');", completionHandler: nil)
         }
 
+        func pushExplode() {
+            guard ready, let webView = webView else { return }
+            guard lastExplodeToken != state.constructExplodeToken else { return }
+            lastExplodeToken = state.constructExplodeToken
+            webView.evaluateJavaScript("setConstructExplode(\(state.constructExplode));", completionHandler: nil)
+        }
+
         func pushMat() {
             guard ready, let webView = webView else { return }
             guard lastMatToken != state.matToken else { return }
@@ -480,13 +502,32 @@ struct ConstructViewport: NSViewRepresentable {
             webView.evaluateJavaScript("recenterCamera();", completionHandler: nil)
         }
 
-        // Export: pull the folded geometry from the viewport, build per-region solids
-        // via the OCC worker, then offer a save panel for the STEP/STL.
+        // Export: STEP/STL pull the folded geometry from the viewport and build
+        // per-region solids via the OCC worker; PNG captures the rendered view at
+        // 2× resolution; GLB runs the in-viewport glTF exporter (result arrives
+        // asynchronously as an `exportGLB` message). All end in a save panel.
         func pushExport() {
             guard ready, let webView = webView else { return }
             guard lastExportToken != state.constructExportToken else { return }
             lastExportToken = state.constructExportToken
             guard let fmt = state.constructExportFormat else { return }
+            if fmt == "png" {
+                webView.evaluateJavaScript("captureConstructPNG(2)") { result, _ in
+                    guard let s = result as? String, let comma = s.range(of: "base64,"),
+                          let data = Data(base64Encoded: String(s[comma.upperBound...])), !data.isEmpty else {
+                        DispatchQueue.main.async { self.state.errorMessage = "Snapshot failed — nothing rendered yet." }
+                        return
+                    }
+                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("assembly.png")
+                    try? data.write(to: tmp)
+                    DispatchQueue.main.async { self.presentSave(tmp, fmt: "png") }
+                }
+                return
+            }
+            if fmt == "glb" {
+                webView.evaluateJavaScript("exportConstructGLB();", completionHandler: nil)
+                return
+            }
             webView.evaluateJavaScript("gatherConstructExport()") { result, _ in
                 guard let jsonStr = result as? String,
                       let data = jsonStr.data(using: .utf8),

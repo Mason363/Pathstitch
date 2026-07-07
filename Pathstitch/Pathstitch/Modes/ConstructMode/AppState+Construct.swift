@@ -352,23 +352,49 @@ extension AppState {
         applyConstruct(next)
     }
 
-    /// Sets a fold's target angle and pushes it live to the solver.
+    /// Sets a fold's target angle and pushes it live to the solver. A linked fold
+    /// drives the whole linked group (fold symmetry — four box flaps as one).
     func setConstructFoldAngle(_ id: FoldSpec.ID, _ deg: Double) {
         guard let i = constructFolds.firstIndex(where: { $0.id == id }) else { return }
         constructFolds[i].angleDeg = deg
+        if constructFolds[i].linked == true {
+            for j in constructFolds.indices where constructFolds[j].linked == true {
+                constructFolds[j].angleDeg = deg
+            }
+        }
         constructFoldStateToken += 1
         hasUnsavedChanges = true
     }
 
     /// Sets a fold's angle by (panelId, foldId) — used by direct drag-to-fold in 3D,
     /// which reports the final angle on release. The viewport already applied it live
-    /// (and the inspector slider reads `angleDeg` directly via @Observable), so we do
+    /// (linked partners included — it mirrors the group during the drag), so we do
     /// NOT bump the push token — no redundant re-pose round-trip (mirrors panelXf).
     func setConstructFoldAngleByIds(panelId: Int, foldId: Int, deg: Double) {
         guard let i = constructFolds.firstIndex(where: { $0.panelId == panelId && $0.foldId == foldId }),
               abs(constructFolds[i].angleDeg - deg) > 1e-6 else { return }
         pushConstructUndo()                 // snapshot is pre-drag (Swift held the old angle until now)
         constructFolds[i].angleDeg = deg
+        if constructFolds[i].linked == true {
+            for j in constructFolds.indices where constructFolds[j].linked == true {
+                constructFolds[j].angleDeg = deg
+            }
+        }
+        hasUnsavedChanges = true
+    }
+
+    /// Toggles a fold in/out of the linked group. Joining adopts the group's
+    /// current angle, so "fold one flap to 90°, then link the rest" snaps each
+    /// flap into place as it's linked — the natural box-assembly flow.
+    func toggleFoldLinked(_ id: FoldSpec.ID) {
+        guard let i = constructFolds.firstIndex(where: { $0.id == id }) else { return }
+        pushConstructUndo()
+        let joining = !(constructFolds[i].linked ?? false)
+        constructFolds[i].linked = joining ? true : nil
+        if joining, let group = constructFolds.first(where: { $0.linked == true && $0.id != id }) {
+            constructFolds[i].angleDeg = group.angleDeg
+        }
+        constructFoldStateToken += 1
         hasUnsavedChanges = true
     }
 
@@ -462,8 +488,21 @@ extension AppState {
         let floating = ids.subtracting(seen).count
         let seamedChains = Set(constructSeams.flatMap { [$0.chainA, $0.chainB] })
         let openChains = constructHoleChains.filter { !seamedChains.contains($0.id) }.count
-        let mismatched = constructSeams.filter { $0.verdict == .mismatch }.count
+        let mismatched = constructSeams.filter { seamVerdict($0) == .mismatch }.count
         return (floating, openChains, mismatched, floating == 0 && mismatched == 0)
+    }
+
+    /// A seam's verdict judged against the user-set fit tolerances.
+    func seamVerdict(_ seam: StitchSeam) -> StitchSeam.Verdict {
+        seam.verdict(mismatchTol: seamTolMismatchPct / 100.0, gapTolMm: seamTolGapMm)
+    }
+
+    /// Sets the pro-CAD seam-fit tolerances (clamped to sane bounds). Every seam
+    /// verdict / health readout re-judges immediately.
+    func setSeamTolerances(mismatchPct: Double, gapMm: Double) {
+        seamTolMismatchPct = max(0.5, min(50, mismatchPct))
+        seamTolGapMm = max(0.1, min(25, gapMm))
+        hasUnsavedChanges = true
     }
 
     /// Clears all per-panel pose overrides (back to the seated pose).
@@ -616,6 +655,12 @@ extension AppState {
     }
 
     // MARK: - Mockup rendering (render mode + finish + custom texture + lighting)
+
+    /// Exploded-view amount (0 assembled … 1 apart) — inspection only, not undoable.
+    func setConstructExplode(_ f: Double) {
+        constructExplode = max(0, min(1, f))
+        constructExplodeToken += 1
+    }
 
     /// Switches between the editing view and the clean Mockup beauty render.
     func setConstructRenderMode(_ m: String) {
@@ -979,7 +1024,7 @@ extension AppState {
     var constructControlsJSON: String {
         let folds = constructFolds.map {
             ["panelId": $0.panelId, "foldId": $0.foldId, "angleDeg": $0.angleDeg,
-             "roundness": $0.roundness] as [String: Any]
+             "roundness": $0.roundness, "linked": $0.linked ?? false] as [String: Any]
         }
         let payload: [String: Any] = ["groundPanel": constructGroundPanel,
                                       "folds": folds]

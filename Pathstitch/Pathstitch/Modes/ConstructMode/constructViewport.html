@@ -16,6 +16,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
 </head>
 <body>
 <canvas id="c"></canvas>
@@ -675,6 +676,11 @@ function measureSeam(seam, fixed, fIdxKey, moving, mIdxKey, pairs){
 let lastReadoutJSON="";
 function postReadouts(){
   if(!PANELS.length){ return; }
+  // While the exploded view is on, panel.X is deliberately blown apart — keep
+  // reporting the last *assembled* size instead of the inflated bbox. (Seam
+  // gaps are measured inside solveStitches, before the explode, so they stay
+  // truthful; bar lengths are rigid-translated so stretch is unaffected too.)
+  if(typeof EXPLODE!=="undefined" && EXPLODE>0){ return; }
   let mnx=1e18,mny=1e18,mnz=1e18,mxx=-1e18,mxy=-1e18,mxz=-1e18, area=0;
   for(const p of PANELS){
     for(const v of p.X){ if(v[0]<mnx)mnx=v[0]; if(v[1]<mny)mny=v[1]; if(v[2]<mnz)mnz=v[2]; if(v[0]>mxx)mxx=v[0]; if(v[1]>mxy)mxy=v[1]; if(v[2]>mxz)mxz=v[2]; }
@@ -716,42 +722,136 @@ function deformSeam(fixed, fIdxKey, moving, mIdxKey, mp, pairs){
     }
   }
 }
+// One deterministic pass over the whole assembly (the "assembly tree"):
+//   1. Panels are nodes; every seam + glue is a joint. BFS from the ground panel
+//      gives a deterministic seating order (disconnected islands each get their
+//      own root, which stays where it folded).
+//   2. Each panel is seated ONCE, using ALL of its joints to already-seated
+//      panels at the same time (one combined Kabsch over every matched hole
+//      pair) — so a gusset sewn along two edges seats against both, instead of
+//      whichever seam happened to be last in the list.
+//   3. A rigid Gauss–Seidel relaxation then re-aligns every non-root panel to
+//      *all* of its partners a few times, so closed loops (box corner seams, a
+//      strap ring) share their residual gap fairly instead of dumping it on the
+//      loop's last seam. Panels stay perfectly rigid — this is block-coordinate
+//      descent on the summed squared hole gaps, so it monotonically settles.
+//   4. Deform-to-Fit seams then pucker their moving panel; finally every seam
+//      (including same-panel corner seams) is measured for the fit report.
 function solveStitches(){
   for(const p of PANELS) p.asm=null;
   seamReport=[];
+  if(!PANELS.length) return;
   const ground=CONTROLS.groundPanel;
+
+  // -- collect usable joints --------------------------------------------------
+  const seamJoints=[];
   for(const seam of SEAMS){
     const ca=CHAIN_BY_ID[seam.chainA], cb=CHAIN_BY_ID[seam.chainB];
     if(!ca||!cb) continue;
-    const pairs=seamPairs(seam, ca, cb);
-    // pairs are [aIdxInChainA, bIdxInChainB]; A is fixed, B moves by default.
-    let fixed=ca, moving=cb, fKey=0, mKey=1;
-    if(cb.panelId===ground && ca.panelId!==ground){ fixed=cb; moving=ca; fKey=1; mKey=0; }
-    if(fixed.panelId===moving.panelId){
-      // same-panel corner seam — the two runs already meet once folded
-      seamReport.push(measureSeam(seam,fixed,fKey,moving,mKey,pairs)); continue;
-    }
-    const mp=PANEL_BY_ID[moving.panelId]; if(!mp) continue;
-    const src=[], dst=[];
-    for(const pr of pairs){ dst.push(holeWorld(fixed, pr[fKey])); src.push(holeWorld(moving, pr[mKey])); }
-    const RT=kabsch(src,dst);
-    if(RT) applyRigidInPlace(mp, RT.R, RT.t);
-    // Ease/gather (default) is LOSSLESS: rigid seating only, the excess length
-    // gathers as thread that converges many holes onto fewer — 0% stretch. Only
-    // Deform-to-Fit actually compresses/stretches the panel so holes meet 1:1.
-    if(seam.mode==="deform") deformSeam(fixed,fKey,moving,mKey,mp,pairs);
-    seamReport.push(measureSeam(seam,fixed,fKey,moving,mKey,pairs));
+    if(!PANEL_BY_ID[ca.panelId] || !PANEL_BY_ID[cb.panelId]) continue;
+    if(ca.panelId===cb.panelId) continue;   // corner seam on one panel: folding satisfies it
+    seamJoints.push({seam, ca, cb});
   }
-  // Glue (weld): seat panel B onto panel A along their *closest* boundary run —
-  // exactly mating a glue tab to the panel it's glued onto. Rigid, no thread.
+  const glueJoints=[];
   for(const g of GLUES){
+    if(g.panelA===g.panelB) continue;
+    if(!PANEL_BY_ID[g.panelA] || !PANEL_BY_ID[g.panelB]) continue;
+    glueJoints.push(g);
+  }
+
+  // -- assembly tree: BFS the panel graph from the ground ----------------------
+  const adj={};
+  const linkAdj=(a,b)=>{ (adj[a]||(adj[a]=new Set())).add(b); (adj[b]||(adj[b]=new Set())).add(a); };
+  for(const j of seamJoints) linkAdj(j.ca.panelId, j.cb.panelId);
+  for(const g of glueJoints) linkAdj(g.panelA, g.panelB);
+  const seatedSet=new Set(), order=[];
+  const roots=[ground, ...PANELS.map(p=>p.id)];   // ground first; islands root on their lowest id
+  for(const r of roots){
+    if(seatedSet.has(r) || !PANEL_BY_ID[r]) continue;
+    seatedSet.add(r); order.push({id:r, root:true});
+    const q=[r];
+    while(q.length){
+      const u=q.shift();
+      for(const v of (adj[u]||[])) if(!seatedSet.has(v) && PANEL_BY_ID[v]){
+        seatedSet.add(v); order.push({id:v, root:false}); q.push(v);
+      }
+    }
+  }
+  const bfsIndex={}; order.forEach((o,i)=>{ bfsIndex[o.id]=i; });
+
+  // Matched hole pairs between `pid` and partner panels passing `accept`.
+  function pairsFor(pid, accept){
+    const src=[], dst=[];
+    for(const j of seamJoints){
+      let mine, theirs, mKey, tKey;
+      if(j.ca.panelId===pid){ mine=j.ca; theirs=j.cb; mKey=0; tKey=1; }
+      else if(j.cb.panelId===pid){ mine=j.cb; theirs=j.ca; mKey=1; tKey=0; }
+      else continue;
+      if(accept && !accept(theirs.panelId)) continue;
+      for(const pr of seamPairs(j.seam, j.ca, j.cb)){
+        src.push(holeWorld(mine, pr[mKey])); dst.push(holeWorld(theirs, pr[tKey]));
+      }
+    }
+    return {src, dst};
+  }
+  // Seat the glue joint's other panel onto `fixedId` per the joint's bond mode.
+  function applyGlueJoint(g, fixedId){
     let A=g.panelA, B=g.panelB, aPt=g.aPt, bPt=g.bPt, aSide=g.aSide, bSide=g.bSide;
-    if(B===ground && A!==ground){ const t=A; A=B; B=t; const tp=aPt; aPt=bPt; bPt=tp; const ts=aSide; aSide=bSide; bSide=ts; }
-    const pa=PANEL_BY_ID[A], pb=PANEL_BY_ID[B]; if(!pa||!pb||A===B) continue;
+    if(B===fixedId){ const t=A; A=B; B=t; const tp=aPt; aPt=bPt; bPt=tp; const ts=aSide; aSide=bSide; bSide=ts; }
+    const pa=PANEL_BY_ID[A], pb=PANEL_BY_ID[B]; if(!pa||!pb) return;
     const mode=g.mode||"panel";
     if(mode==="face") seatFaceGlue(pa, pb, aPt, bPt, aSide, bSide);
     else if(mode==="edge") seatEdgeGlue(pa, pb, aPt, bPt, aSide, bSide);
     else seatPanelGlue(pa, pb);
+  }
+  // Seat `pid`: seams win (one Kabsch over every pair to accepted partners);
+  // a glue-only panel re-seats via its bond, preferring the partner nearest the
+  // ground so the mate direction is deterministic.
+  function seatPanel(pid, accept){
+    const p=PANEL_BY_ID[pid]; if(!p) return;
+    const {src, dst}=pairsFor(pid, accept);
+    if(src.length){ const RT=kabsch(src, dst); if(RT) applyRigidInPlace(p, RT.R, RT.t); return; }
+    let best=null;
+    for(const g of glueJoints){
+      if(g.panelA!==pid && g.panelB!==pid) continue;
+      const other=(g.panelA===pid)?g.panelB:g.panelA;
+      if(accept && !accept(other)) continue;
+      if(!best || bfsIndex[other]<bfsIndex[best.other]) best={g, other};
+    }
+    if(best) applyGlueJoint(best.g, best.other);
+  }
+
+  // -- pass 1: deterministic seating, each panel once, off already-seated panels
+  const placed=new Set();
+  for(const o of order){
+    if(!o.root) seatPanel(o.id, id=>placed.has(id));
+    placed.add(o.id);
+  }
+
+  // -- pass 2: rigid loop-closure relaxation (only when some panel has >1 joint)
+  const jointCount={};
+  const bump=id=>{ jointCount[id]=(jointCount[id]||0)+1; };
+  for(const j of seamJoints){ bump(j.ca.panelId); bump(j.cb.panelId); }
+  for(const g of glueJoints){ bump(g.panelA); bump(g.panelB); }
+  let needRelax=false; for(const k in jointCount) if(jointCount[k]>1) needRelax=true;
+  if(needRelax){
+    for(let it=0; it<24; it++){
+      for(const o of order){ if(!o.root) seatPanel(o.id, null); }
+    }
+  }
+
+  // -- pass 3: deform-to-fit seams pucker the panel farther from the ground ----
+  for(const j of seamJoints){
+    if(j.seam.mode!=="deform") continue;
+    let fixed=j.ca, moving=j.cb, fKey=0, mKey=1;
+    if(bfsIndex[j.ca.panelId] > bfsIndex[j.cb.panelId]){ fixed=j.cb; moving=j.ca; fKey=1; mKey=0; }
+    deformSeam(fixed, fKey, moving, mKey, PANEL_BY_ID[moving.panelId], seamPairs(j.seam, j.ca, j.cb));
+  }
+
+  // -- pass 4: measure every seam (corner seams included) for the fit report ---
+  for(const seam of SEAMS){
+    const ca=CHAIN_BY_ID[seam.chainA], cb=CHAIN_BY_ID[seam.chainB]; if(!ca||!cb) continue;
+    seamReport.push(measureSeam(seam, ca, 0, cb, 1, seamPairs(seam, ca, cb)));
   }
 }
 // Panel glue: seat B onto A along their closest boundary run (general catch-all).
@@ -951,11 +1051,17 @@ function regionLoops(panel, region){
   return { outer:polys[0], holes:polys.slice(1), normal:norm(cross(sub(B,A),sub(C,A))) };
 }
 // All regions across all panels as solids-to-be (loops + normal), + thickness.
+// An active exploded view is temporarily collapsed so the export is always the
+// real assembled geometry, then restored.
 window.gatherConstructExport=function(){
+  const e=(typeof EXPLODE!=="undefined")?EXPLODE:0;
+  if(e>0){ EXPLODE=0; recomputePose(true); }
   const regs=[];
   for(const p of PANELS){ if(!p.tree) continue;
     for(const region of p.tree.region){ const r=regionLoops(p, region); if(r && r.outer.length>=3) regs.push(r); } }
-  return JSON.stringify({ regions:regs, thickness:THICKNESS });
+  const out=JSON.stringify({ regions:regs, thickness:THICKNESS });
+  if(e>0){ EXPLODE=e; recomputePose(true); }
+  return out;
 };
 function recomputePose(silent){
   for(const panel of PANELS) foldPanel(panel);   // each panel folds kinematically (rounded fillets included)
@@ -964,6 +1070,7 @@ function recomputePose(silent){
   // drift). World-up offset reads right for the common flat-area pocket case.
   for(const panel of PANELS){ if(panel.patchOf>=0){ const dy=THICKNESS*1.5+0.4; for(const v of panel.X){ v[1]+=dy; } } }
   for(const panel of PANELS) applyUserXf(panel);  // Blender-style move/rotate/scale override
+  applyExplode();                                 // exploded view (inspection only)
   for(const panel of PANELS) writePanelGeometry(panel);
   updateHoleInstances();
   updateChainLines();
@@ -1224,6 +1331,78 @@ function applyRenderMode(){
 }
 window.setConstructRenderMode=function(m){ RENDER_MODE=(m==="mockup")?"mockup":"edit"; applyRenderMode(); };
 
+// ---- exploded view ----------------------------------------------------------
+// Pulls the seated pieces radially apart (proportional to their distance from
+// the assembly centre) so internal seams / stitch correspondence can be
+// inspected inside a closed shape. Inspection only: applied after the pose,
+// never persisted, and export re-poses tight first. Everything that rides
+// panel.X (holes, thread, stamps, decals) follows automatically.
+let EXPLODE=0;
+window.setConstructExplode=function(f){ EXPLODE=Math.max(0, Math.min(1, +f||0)); needsPose=true; };
+function applyExplode(){
+  if(EXPLODE<=0 || PANELS.length<2) return;
+  const cents=PANELS.map(p=>centroidX(p));
+  let C=[0,0,0];
+  for(const c of cents) C=add(C,c);
+  C=scl(C, 1/PANELS.length);
+  PANELS.forEach((p,i)=>{
+    const d=sub(cents[i],C), L=len(d);
+    // Coincident centroids (stacked patch/panel) still separate: lift by index.
+    const off = L>1e-6 ? scl(d, EXPLODE*1.2) : [0, EXPLODE*22*(i+1), 0];
+    for(const v of p.X){ v[0]+=off[0]; v[1]+=off[1]; v[2]+=off[2]; }
+    // The Move gizmo anchors on seatCentroid — shift it too so the gizmo stays
+    // glued to the panel while it's exploded apart.
+    if(p.seatCentroid) p.seatCentroid=add(p.seatCentroid, off);
+  });
+}
+
+// ---- viewport snapshot (PNG) ------------------------------------------------
+// Renders the current view at `mult`× resolution and returns it as a data URL —
+// the mockup beauty shot the user can save/share without screenshotting.
+window.captureConstructPNG=function(mult){
+  mult=Math.max(1, Math.min(4, +mult||2));
+  const pr=renderer.getPixelRatio();
+  let url="";
+  try{
+    renderer.setPixelRatio(pr*mult);
+    renderer.render(scene, camera);
+    url=renderer.domElement.toDataURL("image/png");   // same task as the render → buffer intact
+  }catch(e){ post({op:"consoleError", message:"PNG capture: "+((e&&e.message)||e)}); }
+  renderer.setPixelRatio(pr);
+  renderer.render(scene, camera);
+  return url;
+};
+
+// ---- glTF (.glb) export -----------------------------------------------------
+// Exports the folded assembly (leather + shells + artwork + stitching thread) as
+// a binary glTF for Blender / web viewers. Tool overlays (outlines, crease lines,
+// hole markers, chain lines) are hidden for the export and restored after via
+// applyRenderMode. Result is posted to Swift as base64 (op: exportGLB).
+window.exportConstructGLB=function(){
+  if(typeof THREE.GLTFExporter!=="function"){
+    post({op:"exportGLB", error:"glTF exporter unavailable (needs network once to load)"}); return;
+  }
+  if(!PANELS.length){ post({op:"exportGLB", error:"Nothing to export yet."}); return; }
+  for(const p of PANELS){ if(p.wire) p.wire.visible=false; if(p.foldLine) p.foldLine.visible=false; }
+  if(holeMesh) holeMesh.visible=false;
+  if(chainLineMesh) chainLineMesh.visible=false;
+  let posted=false;
+  const done=(ok, payload)=>{
+    if(posted) return; posted=true;
+    applyRenderMode();   // restore the overlay visibility for the current mode
+    post(ok ? {op:"exportGLB", data:payload} : {op:"exportGLB", error:payload});
+  };
+  try{
+    new THREE.GLTFExporter().parse([root, threadGroup], function(buf){
+      try{
+        const bytes=new Uint8Array(buf), parts=[];
+        for(let i=0;i<bytes.length;i+=0x8000) parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000)));
+        done(true, btoa(parts.join("")));
+      }catch(e){ done(false, String((e&&e.message)||e)); }
+    }, {binary:true, onlyVisible:true});
+  }catch(e){ done(false, String((e&&e.message)||e)); }
+};
+
 // Swap the shading of every panel (wireframe / solid / flat / realistic). Works
 // in both edit and mockup. Realistic re-honours the leather tint + custom map.
 window.setConstructShaderMode=function(name){
@@ -1432,11 +1611,16 @@ function showCreasePreview(a,b){
 function clearCreasePreview(){ if(creaseLine) creaseLine.visible=false; }
 
 // ---- controls from Swift --------------------------------------------------
+let LINKED_FOLDS=new Set();   // "panelId-foldId" keys of folds that move together
 window.setConstructControls=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   CONTROLS.groundPanel=c.groundPanel||0;
-  CONTROLS.foldAngle={}; CONTROLS.foldRound={};
-  for(const f of (c.folds||[])){ const k=f.panelId+"-"+f.foldId; CONTROLS.foldAngle[k]=f.angleDeg||0; CONTROLS.foldRound[k]=f.roundness||0; }
+  CONTROLS.foldAngle={}; CONTROLS.foldRound={}; LINKED_FOLDS=new Set();
+  for(const f of (c.folds||[])){
+    const k=f.panelId+"-"+f.foldId;
+    CONTROLS.foldAngle[k]=f.angleDeg||0; CONTROLS.foldRound[k]=f.roundness||0;
+    if(f.linked) LINKED_FOLDS.add(k);   // linked folds share one angle (drag moves the group)
+  }
   needsPose=true;
 };
 window.setConstructTool=function(t){
@@ -1878,7 +2062,11 @@ function updateFoldGesture(cx,cy,shift){
   let deg=Math.max(-180, Math.min(180, g.startDeg + g.s*g.acc*180/Math.PI));
   const sn=shift?{deg,snapped:false}:snapFoldDeg(deg);
   g.deg=sn.deg; g.moved=true;
-  CONTROLS.foldAngle[g.key]=sn.deg; needsPose=true;
+  CONTROLS.foldAngle[g.key]=sn.deg;
+  // Linked folds ride the drag live (all four box flaps swing together); Swift
+  // persists the group from the single setFoldAngle post on release.
+  if(LINKED_FOLDS.has(g.key)){ for(const k of LINKED_FOLDS) CONTROLS.foldAngle[k]=sn.deg; }
+  needsPose=true;
   const fh=document.getElementById("foldhud");
   if(fh){ const sp=worldToScreen(g.o); fh.textContent=Math.round(sn.deg)+"°"+(sn.snapped?" ⦿":"");
     fh.style.borderColor=sn.snapped?"rgba(110,224,110,0.95)":"rgba(255,154,60,0.8)";

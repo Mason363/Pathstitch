@@ -45,6 +45,12 @@ struct DxfCanvasView: View {
     
     @State private var sketchStartPoint: CGPoint? = nil // in model coordinates
     @State private var sketchAwaitingSecondClick = false // true after the 1st click, before the 2nd commits
+
+    // Arc (3-point) and Conic Curve tools: the model-space points clicked so far.
+    // Both tools collect two anchor clicks (start, end); the live cursor is the
+    // third defining point (the arc's through-point / the conic's apex) and the
+    // third click commits. Cleared on commit, Escape, and tool change.
+    @State private var curvePoints: [CGPoint] = []
     @State private var editingMeasureId: UUID? = nil
     @State private var hoveredMeasurementId: UUID? = nil
     @State private var editingIsStart: Bool = false
@@ -311,6 +317,14 @@ struct DxfCanvasView: View {
                     // Return/Enter finishes the in-progress shape at the cursor.
                     if state.currentTool == .pen {
                         finishPenPath()
+                    } else if isCurveTool {
+                        // Treat the cursor as the final defining point (the arc's
+                        // through-point / the conic's apex) and commit if ready.
+                        if curvePoints.count == 2 {
+                            handleCurveToolClick(snappedMouseLocation(size: geo.size, bounds: modelBounds).point)
+                        } else {
+                            curvePoints = []
+                        }
                     } else if state.currentTool == .sketchLine, let start = sketchStartPoint {
                         let end = snappedMouseLocation(size: geo.size, bounds: modelBounds).point
                         let sStart = toScreen(dx: start.x, dy: start.y, size: geo.size, bounds: modelBounds)
@@ -351,6 +365,9 @@ struct DxfCanvasView: View {
                         // Esc abandons the in-progress pen path, or cancels a
                         // re-edit and restores the original (parametric pen lines).
                         resetPenState()
+                    } else if isCurveTool && !curvePoints.isEmpty {
+                        // Esc abandons the in-progress arc / conic curve.
+                        curvePoints = []
                     } else if state.isEditingText {
                         state.cancelTextEditing()
                     } else if gizmoDimKind != nil {
@@ -371,6 +388,7 @@ struct DxfCanvasView: View {
                 .onChange(of: state.currentTool) { oldTool, newTool in
                     sketchStartPoint = nil
                     sketchAwaitingSecondClick = false
+                    curvePoints = []
                     state.activeMeasureStart = nil
                     gizmoDimKind = nil
                     // Leaving the Pen tool finishes an in-progress path (so the
@@ -1709,7 +1727,70 @@ struct DxfCanvasView: View {
             let labelText = String(format: "W: %.2f | H: %.2f mm", w, h)
             context.draw(Text(labelText).font(.system(size: 10, weight: .bold)).foregroundColor(.accent), at: CGPoint(x: endScreen.x, y: endScreen.y - 10), anchor: .center)
         }
-        
+
+        // Arc / Conic Curve live preview: placed-point markers, the chord/handle
+        // guides, and the rubber-banded curve through the snapped cursor.
+        if isCurveTool {
+            func scr(_ p: CGPoint) -> CGPoint { toScreen(dx: p.x, dy: p.y, size: size, bounds: modelBounds) }
+            func marker(_ p: CGPoint, filled: Bool = true) {
+                let s = scr(p)
+                var sq = SwiftUI.Path(); sq.addRect(CGRect(x: s.x - 2.5, y: s.y - 2.5, width: 5, height: 5))
+                if filled { context.fill(sq, with: .color(Color.accent)) }
+                else { context.stroke(sq, with: .color(Color.accent), lineWidth: 1.0) }
+            }
+            for p in curvePoints { marker(p) }
+
+            let cursor = snappedMouseLocation(size: size, bounds: modelBounds).point
+            if curvePoints.count == 1 {
+                // Defining the chord: a dashed rubber-band to the cursor.
+                var path = SwiftUI.Path()
+                path.move(to: scr(curvePoints[0]))
+                path.addLine(to: scr(cursor))
+                context.stroke(path, with: .color(Color.accent.opacity(0.6)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                marker(cursor)
+            } else if curvePoints.count == 2 {
+                let p1 = curvePoints[0], p2 = curvePoints[1]
+                if state.currentTool == .sketchArc {
+                    if let arc = arcFrom3Points(p1, cursor, p2) {
+                        let pts = arcPolyline(center: arc.center, radius: arc.radius,
+                                              startDeg: arc.startDeg, endDeg: arc.endDeg)
+                        if pts.count >= 2 {
+                            var path = SwiftUI.Path()
+                            path.move(to: scr(pts[0]))
+                            for q in pts.dropFirst() { path.addLine(to: scr(q)) }
+                            context.stroke(path, with: .color(Color.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                        }
+                        let cur = scr(cursor)
+                        context.draw(Text(String(format: "R: %.2f mm", arc.radius))
+                            .font(.system(size: 10, weight: .bold)).foregroundColor(.accent),
+                            at: CGPoint(x: cur.x, y: cur.y - 12), anchor: .center)
+                    } else {
+                        // Collinear → previews (and commits) as a straight line.
+                        var path = SwiftUI.Path()
+                        path.move(to: scr(p1)); path.addLine(to: scr(p2))
+                        context.stroke(path, with: .color(Color.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                    }
+                } else {
+                    // Conic: faint control legs start→apex→end + the curve itself.
+                    var legs = SwiftUI.Path()
+                    legs.move(to: scr(p1)); legs.addLine(to: scr(cursor)); legs.addLine(to: scr(p2))
+                    context.stroke(legs, with: .color(Color.accent.opacity(0.35)), style: StrokeStyle(lineWidth: 1.0, dash: [3, 3]))
+                    let pts = conicPolyline(start: p1, apex: cursor, end: p2, rho: state.conicRho)
+                    if pts.count >= 2 {
+                        var path = SwiftUI.Path()
+                        path.move(to: scr(pts[0]))
+                        for q in pts.dropFirst() { path.addLine(to: scr(q)) }
+                        context.stroke(path, with: .color(Color.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                    }
+                    let cur = scr(cursor)
+                    context.draw(Text(String(format: "ρ: %.2f", state.conicRho))
+                        .font(.system(size: 10, weight: .bold)).foregroundColor(.accent),
+                        at: CGPoint(x: cur.x, y: cur.y - 12), anchor: .center)
+                }
+                marker(cursor, filled: false)
+            }
+        }
+
         // Pen tool live path (MAS-94): committed bezier/line segments, the
         // rubber-band to the cursor, anchor squares, and handle dots.
         if state.currentTool == .pen, !penAnchors.isEmpty {
@@ -2936,6 +3017,9 @@ struct DxfCanvasView: View {
                         }
                         sketchAwaitingSecondClick = true
                     }
+                } else if isCurveTool {
+                    // Arc / Conic place their points on release (handleCurveToolClick);
+                    // the press must not arm a marquee or touch the selection.
                 } else if state.currentTool != .measure && state.currentTool != .offset {
                     // Offset never marquee-selects: you pick the profile by clicking
                     // (chain-select grabs the whole loop), and a stray canvas drag
@@ -3011,6 +3095,8 @@ struct DxfCanvasView: View {
             )
         } else if state.currentTool == .sketchLine || state.currentTool == .sketchCircle || state.currentTool == .sketchRectangle || state.currentTool == .sketchText || state.currentTool == .sketchPolygon {
             // mouseLocation is already updated above
+        } else if isCurveTool {
+            // Arc / Conic only need the live cursor for their preview (already set).
         } else if state.currentTool != .measure && !state.currentTool.isCornerTool {
             dragSelectionEnd = val.location
         }
@@ -3223,13 +3309,170 @@ struct DxfCanvasView: View {
         }
     }
 
+    // MARK: - Arc (3-point) & Conic Curve tools
+
+    /// True while one of the two multi-click curve tools is active.
+    private var isCurveTool: Bool {
+        state.currentTool == .sketchArc || state.currentTool == .sketchConic
+    }
+
+    /// The circle through three points → (center, radius, CCW start/end angles in
+    /// degrees) for a DXF ARC that runs start → through → end. Returns nil when the
+    /// points are (nearly) collinear, in which case no valid arc exists.
+    private func arcFrom3Points(_ start: CGPoint, _ through: CGPoint, _ end: CGPoint)
+        -> (center: CGPoint, radius: Double, startDeg: Double, endDeg: Double)? {
+        let ax = Double(start.x), ay = Double(start.y)
+        let bx = Double(through.x), by = Double(through.y)
+        let cx = Double(end.x), cy = Double(end.y)
+        // Need three mutually-distinct points; coincident ones (e.g. the through
+        // point snapped onto an endpoint) have no well-defined circle.
+        let eps = 1e-7
+        if hypot(ax - bx, ay - by) < eps || hypot(cx - bx, cy - by) < eps
+            || hypot(ax - cx, ay - cy) < eps { return nil }
+        let d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+        guard abs(d) > 1e-9 else { return nil }
+        let a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, c2 = cx * cx + cy * cy
+        let ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+        let uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+        let center = CGPoint(x: ux, y: uy)
+        let radius = hypot(ax - ux, ay - uy)
+        guard radius > 1e-9 else { return nil }
+
+        // DXF arcs sweep CCW from start to end; orient the sweep so the through
+        // point lies on the drawn span. `ccw(from,to)` is the CCW gap in radians.
+        func ccw(_ from: Double, _ to: Double) -> Double {
+            var v = to - from
+            while v < 0 { v += 2 * .pi }
+            while v >= 2 * .pi { v -= 2 * .pi }
+            return v
+        }
+        let aS = atan2(ay - uy, ax - ux)
+        let aT = atan2(by - uy, bx - ux)
+        let aE = atan2(cy - uy, cx - ux)
+        let deg = 180.0 / Double.pi
+        // If the through point is reached before the end going CCW from start,
+        // the CCW arc start→end already passes through it; otherwise the desired
+        // span is the complementary one, i.e. CCW from end→start.
+        if ccw(aS, aT) <= ccw(aS, aE) {
+            return (center, radius, aS * deg, aE * deg)
+        } else {
+            return (center, radius, aE * deg, aS * deg)
+        }
+    }
+
+    /// Samples a model-space polyline along a DXF-style CCW arc (degrees).
+    private func arcPolyline(center: CGPoint, radius: Double, startDeg: Double,
+                             endDeg: Double, segments: Int = 96) -> [CGPoint] {
+        let toRad = Double.pi / 180.0
+        var sweep = (endDeg - startDeg).truncatingRemainder(dividingBy: 360.0)
+        if sweep <= 0 { sweep += 360.0 }
+        let steps = max(2, min(segments, Int(sweep / 2.0) + 2))
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(steps + 1)
+        for i in 0...steps {
+            let a = (startDeg + sweep * Double(i) / Double(steps)) * toRad
+            pts.append(CGPoint(x: center.x + CGFloat(radius * cos(a)),
+                               y: center.y + CGFloat(radius * sin(a))))
+        }
+        return pts
+    }
+
+    /// Flattens a rational quadratic Bézier (a conic section) from `start` to `end`
+    /// with apex (tangent intersection) `apex` and fullness `rho` ∈ (0,1) into a
+    /// model-space polyline. rho < 0.5 ⇒ ellipse, 0.5 ⇒ parabola, > 0.5 ⇒ hyperbola.
+    private func conicPolyline(start: CGPoint, apex: CGPoint, end: CGPoint,
+                               rho: Double, segments: Int = 72) -> [CGPoint] {
+        let r = min(max(rho, 0.01), 0.99)
+        let w = r / (1.0 - r)   // rational-Bézier weight; r = w / (1 + w)
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(segments + 1)
+        for i in 0...segments {
+            let t = Double(i) / Double(segments)
+            let mt = 1.0 - t
+            let b0 = mt * mt
+            let b1 = 2.0 * mt * t * w
+            let b2 = t * t
+            let denom = b0 + b1 + b2
+            guard denom > 1e-12 else { continue }
+            let x = (b0 * Double(start.x) + b1 * Double(apex.x) + b2 * Double(end.x)) / denom
+            let y = (b0 * Double(start.y) + b1 * Double(apex.y) + b2 * Double(end.y)) / denom
+            pts.append(CGPoint(x: x, y: y))
+        }
+        return pts
+    }
+
+    /// Handles one click for the Arc / Conic tools: collects the two anchor points,
+    /// then commits on the third. `p` is already snapped to geometry/the cursor.
+    private func handleCurveToolClick(_ p: CGPoint) {
+        if curvePoints.count < 2 {
+            // Reject a zero-length chord (second click on top of the first).
+            if curvePoints.count == 1,
+               hypot(curvePoints[0].x - p.x, curvePoints[0].y - p.y) < 1e-6 {
+                return
+            }
+            curvePoints.append(p)
+            return
+        }
+        // Third click → commit, then re-arm for the next curve.
+        let p1 = curvePoints[0], p2 = curvePoints[1]
+        if state.currentTool == .sketchArc {
+            commitArc(start: p1, end: p2, through: p)
+        } else {
+            commitConic(start: p1, end: p2, apex: p)
+        }
+        curvePoints = []
+    }
+
+    /// Commits a 3-point arc as a true DXF ARC. Collinear points (no valid circle)
+    /// fall back to a straight line so a click is never silently dropped.
+    private func commitArc(start: CGPoint, end: CGPoint, through: CGPoint) {
+        if let arc = arcFrom3Points(start, through, end) {
+            Task {
+                _ = await state.addSketchedEntity(type: "arc", params: [
+                    "center": [Double(arc.center.x), Double(arc.center.y)],
+                    "radius": arc.radius,
+                    "start_angle": arc.startDeg,
+                    "end_angle": arc.endDeg,
+                ])
+            }
+        } else if hypot(start.x - end.x, start.y - end.y) > 1e-6 {
+            Task {
+                _ = await state.addSketchedEntity(type: "line", params: [
+                    "start": [Double(start.x), Double(start.y)],
+                    "end": [Double(end.x), Double(end.y)],
+                ])
+            }
+        }
+    }
+
+    /// Commits a conic curve as an editable open LWPOLYLINE (flattened so the
+    /// vertex/fillet/offset tools all work on it, like the pen and polygon tools).
+    private func commitConic(start: CGPoint, end: CGPoint, apex: CGPoint) {
+        let pts = conicPolyline(start: start, apex: apex, end: end, rho: state.conicRho)
+        guard pts.count >= 2 else { return }
+        let coords = pts.map { [Double($0.x), Double($0.y)] }
+        Task {
+            _ = await state.addSketchedEntity(type: "path", params: ["points": coords, "closed": false])
+        }
+    }
+
     private func handleDragEnded(val: DragGesture.Value, size: CGSize, modelBounds: CGRect) {
         if let activeL = state.activeLayer, activeL.isReferenceImageLayer, state.isEditingRefImageTransform {
             handleRefImageDragEnded(val: val, layer: activeL, size: size, modelBounds: modelBounds)
             return
         }
-        
+
         isDragging = false
+
+        // Arc / Conic Curve tools: each release that isn't a pan places a defining
+        // point; the third commits (see handleCurveToolClick). Snap to geometry and
+        // the cursor exactly like the other sketch tools.
+        if isCurveTool {
+            if NSEvent.modifierFlags.contains(.option) { return } // option-drag panned
+            let p = snappedMouseLocation(size: size, bounds: modelBounds).point
+            handleCurveToolClick(p)
+            return
+        }
 
         // Pen tool (MAS-94): a press on the first anchor closes & commits the
         // path; otherwise the anchor just placed stays and the path continues.
@@ -6216,7 +6459,7 @@ extension View {
                 if isHovered { NSCursor.openHand.set() }
                 else { NSCursor.arrow.set() }
             }
-        case .select, .move, .offset, .addThickness, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning, .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
+        case .select, .move, .offset, .addThickness, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .sketchArc, .sketchConic, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning, .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
             return self.onHover { isHovered in
                 if isHovered { NSCursor.crosshair.set() }
                 else { NSCursor.arrow.set() }

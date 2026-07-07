@@ -881,7 +881,7 @@ extension ContentView {
                         .foregroundColor(Color.to_accent)
                         .help("Deselect the current active measurement/dimension line")
                 }
-                TOHint(text: selected.isAutoDimension ? "Auto-dimension line" : "Manual measurement"
+                TOHint(selected.isAutoDimension ? "Auto-dimension line" : "Manual measurement"
                        + (selected.dimensionType.map { " · \($0.capitalized)" } ?? ""))
 
                 let binding = Binding<Double>(
@@ -1028,11 +1028,11 @@ extension ContentView {
             } else if state.currentTool == .sketchLine {
                 TOToolTitle(icon: "line.diagonal", title: "Line",
                             help: "Drag on the canvas to draw a line.", helpOpen: $toolHelpOpen)
-                if state.isLearnModeEnabled { TOHint(text: "Drag to draw.") }
+                if state.isLearnModeEnabled { TOHint("Drag to draw.") }
             } else if state.currentTool == .sketchCircle {
                 TOToolTitle(icon: "circle", title: "Circle",
                             help: "Drag from the center outward to draw a circle.", helpOpen: $toolHelpOpen)
-                if state.isLearnModeEnabled { TOHint(text: "Drag from the center outward.") }
+                if state.isLearnModeEnabled { TOHint("Drag from the center outward.") }
             } else if state.currentTool == .sketchRectangle {
                 TOToolTitle(icon: "rectangle", title: "Rectangle",
                             help: "Drag corner-to-corner to draw a rectangle. Set a fillet radius to round its corners.",
@@ -1041,11 +1041,11 @@ extension ContentView {
                     TextField("Fillet", value: $state.sketchFilletRadius, format: .number)
                         .toFieldStyle(width: 90)
                 }
-                if state.isLearnModeEnabled { TOHint(text: "Drag corner-to-corner.") }
+                if state.isLearnModeEnabled { TOHint("Drag corner-to-corner.") }
             } else if state.currentTool == .sketchText {
                 TOToolTitle(icon: "textformat", title: "Text",
                             help: "Drag a box on the canvas, then type.", helpOpen: $toolHelpOpen)
-                if state.isLearnModeEnabled { TOHint(text: "Drag a box, then type.") }
+                if state.isLearnModeEnabled { TOHint("Drag a box, then type.") }
             }
         }
     }
@@ -1445,7 +1445,7 @@ extension ContentView {
                         helpOpen: $toolHelpOpen)
 
             TOGroupLabel("Crease pattern")
-            TOHint(text: "Turns selected segments into dashed crease folds.")
+            TOHint("Turns selected segments into dashed crease folds.")
             TOPrimaryButton(title: "Apply Dashed Creases", enabled: !state.selectedHandles.isEmpty) {
                 state.applyDashedCreases()
             }
@@ -1526,7 +1526,7 @@ extension ContentView {
                             patternStepperField($state.patternExtentY, step: 1)
                         }
                     }
-                    TOHint(text: String(format: "≈ %.1f / %.1f mm between copies",
+                    TOHint(String(format: "≈ %.1f / %.1f mm between copies",
                                         state.effectivePatternSpacingX, state.effectivePatternSpacingY))
                 }
                 TOPrimaryButton(title: "Apply Pattern", enabled: !state.selectedHandles.isEmpty) {
@@ -1563,7 +1563,7 @@ extension ContentView {
                 if state.pickingPatternPath {
                     TOStatus(color: .to_accent, text: "Click a guide path on the canvas…")
                 } else if let handle = state.patternPathHandle {
-                    TOHint(text: "Picked path: \(handle)")
+                    TOHint("Picked path: \(handle)")
                 }
                 TOPrimaryButton(title: "Apply Pattern",
                                 enabled: !state.selectedHandles.isEmpty && state.patternPathHandle != nil) {
@@ -1808,7 +1808,7 @@ extension ContentView {
                     )
                 )
 
-                TOHint(text: "Double-click the text on the canvas to retype it.")
+                TOHint("Double-click the text on the canvas to retype it.")
             }
         }
     }
@@ -2315,7 +2315,7 @@ extension ContentView {
         case .offset, .addThickness, .cleanup, .addHoles, .sketchRectangle, .sketchText,
              .sketchLine, .sketchCircle, .fillet, .chamfer, .paperFolding,
              .patterning, .move, .convertLines, .mirror, .select, .dimension, .scale,
-             .sketchPolygon, .templateInsert, .boxStitch, .mandala, .boxJoint,
+             .sketchPolygon, .sketchArc, .sketchConic, .templateInsert, .boxStitch, .mandala, .boxJoint,
              .goldenGuide, .jigExport:
             return true
         default:
@@ -2797,6 +2797,10 @@ extension ContentView {
                 scaleToolSection
             } else if state.currentTool == .sketchPolygon {
                 polygonToolSection
+            } else if state.currentTool == .sketchArc {
+                arcToolSection
+            } else if state.currentTool == .sketchConic {
+                conicToolSection
             } else if state.currentTool == .mirror {
                 mirrorSection
             } else if state.currentTool == .templateInsert {
@@ -2877,7 +2881,7 @@ extension ContentView {
     private var templateInsertSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             toolHeader("square.on.square.dashed", "TEMPLATES")
-            TOHint(text: "Tap a template to insert it (centred at the origin) on the TEMPLATE layer.")
+            TOHint("Tap a template to insert it (centred at the origin) on the TEMPLATE layer.")
             ForEach(TemplateStore.shared.categories, id: \.self) { cat in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(cat.uppercased())
@@ -2976,7 +2980,7 @@ extension ContentView {
     private var boxStitchSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             toolHeader("rectangle.connected.to.line.below", "BOX STITCH")
-            TOHint(text: "Select two mating paths, then re-prick both with an equal hole count so the seams line up. Uses the active pricking iron.")
+            TOHint("Select two mating paths, then re-prick both with an equal hole count so the seams line up. Uses the active pricking iron.")
             TORow(label: "Match") {
                 TOSelect(options: [("average", "Average"), ("a", "Match A"), ("b", "Match B")],
                          selection: $state.boxStitchStrategy)
@@ -2991,10 +2995,10 @@ extension ContentView {
     private var mandalaSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             toolHeader("circle.hexagongrid", "MANDALA")
-            TOHint(text: "Replicates the selected seed around the origin. Mirror adds reflected copies (kaleidoscope).")
+            TOHint("Replicates the selected seed around the origin. Mirror adds reflected copies (kaleidoscope).")
             TORow(label: "Segments") { TOIntStepper(value: $state.mandalaSegments, range: 2...64) }
             TOCheck(label: "Mirror (dihedral)", isOn: $state.mandalaMirror)
-            TOHint(text: "= \(state.mandalaSegments * (state.mandalaMirror ? 2 : 1)) copies around the origin")
+            TOHint("= \(state.mandalaSegments * (state.mandalaMirror ? 2 : 1)) copies around the origin")
             TOStatus(color: state.selectedHandles.isEmpty ? .to_textFaint : .to_accent,
                      text: "\(state.selectedHandles.count) seed object(s) selected")
             toolButtons(ok: "Bake") { state.applyMandala(exitAfterApply: true) }
@@ -3005,7 +3009,7 @@ extension ContentView {
     private var boxJointSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             toolHeader("puzzlepiece", "BOX JOINT")
-            TOHint(text: "Select a straight edge (a line, or a shape — its longest side is used), then create an interlocking finger joint along it.")
+            TOHint("Select a straight edge (a line, or a shape — its longest side is used), then create an interlocking finger joint along it.")
             TOStatus(color: state.selectedHandles.isEmpty ? .to_textFaint : .to_accent,
                      text: "\(state.selectedHandles.count) selected")
             numberField("Finger width (mm)", $state.boxJointFingerWidth)
@@ -3026,7 +3030,7 @@ extension ContentView {
                 TOSegmented(options: [("spiral", "Spiral"), ("rectangle", "Rectangle"), ("centerline", "Centre Line")],
                             selection: $state.goldenKind)
             }
-            TOHint(text: "Proportion guide on a construction layer (orange, never exported).")
+            TOHint("Proportion guide on a construction layer (orange, never exported).")
 
             TOCheck(label: "Fit to selection", isOn: $state.goldenFitSelection)
             if !state.goldenFitSelection || state.selectionBoundingBox() == nil {
@@ -3056,7 +3060,7 @@ extension ContentView {
     private var jigExportSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             toolHeader("cube.transparent", "3D PATTERN / JIG")
-            TOHint(text: "Extrude the selected closed regions to a 3D-printable STL.")
+            TOHint("Extrude the selected closed regions to a 3D-printable STL.")
             TORow(label: "Mode") {
                 TOSelect(options: [("solid", "Solid pattern"), ("stitch_template", "Stitch template"),
                                    ("corner_jig", "Corner jig")],
@@ -3081,7 +3085,7 @@ extension ContentView {
             .frame(height: 150)
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_fieldBorder, lineWidth: 1))
             if state.jigPreviewTriCount > 0 {
-                TOHint(text: "\(state.jigPreviewTriCount) triangles")
+                TOHint("\(state.jigPreviewTriCount) triangles")
             }
 
             HStack(spacing: 8) {
@@ -3189,6 +3193,36 @@ extension ContentView {
         }
     }
 
+    /// ARC tool options: a 3-point arc (start → end → a point on the arc).
+    private var arcToolSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            TOToolTitle(icon: "compass.drawing", title: "Arc",
+                        help: "Three clicks make an arc: the start point, the end point, then a point the arc passes through. Press Enter to finish at the cursor, or Esc to cancel.",
+                        helpOpen: $toolHelpOpen)
+            TOHint("1. Click the start point\n2. Click the end point\n3. Click a point on the arc")
+        }
+    }
+
+    /// CONIC CURVE tool options: a rational-quadratic conic (start → end → apex)
+    /// whose fullness ρ chooses an elliptical, parabolic, or hyperbolic arc.
+    private var conicToolSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            TOToolTitle(icon: "point.topleft.down.to.point.bottomright.curvepath", title: "Conic Curve",
+                        help: "Three clicks make a conic: the start point, the end point, then the apex (where the two end tangents meet). Fullness ρ shapes the curve — below 0.5 is an ellipse, 0.5 is a parabola, above 0.5 is a hyperbola. Press Enter to finish at the cursor, or Esc to cancel.",
+                        helpOpen: $toolHelpOpen)
+            TOLabel("Fullness ρ")
+            TOSlider(value: Binding(get: { state.conicRho },
+                                    set: { state.conicRho = min(0.95, max(0.05, $0)) }),
+                     range: 0.05...0.95, unit: "", maxFrac: 2)
+            // One-tap classic conics: ellipse / parabola / hyperbola.
+            TOPresetChips(values: [0.25, 0.5, 0.75],
+                          value: Binding(get: { state.conicRho },
+                                         set: { state.conicRho = $0 }),
+                          maxFrac: 2)
+            TOHint("1. Click the start point\n2. Click the end point\n3. Click the apex")
+        }
+    }
+
     /// SCALE tool options (MAS-128): pivot mode, factor entry, and a scale-point
     /// picker. Drag the on-canvas handle for a live scale, or type an exact factor.
     private var scaleToolSection: some View {
@@ -3233,7 +3267,7 @@ extension ContentView {
                 TOPresetChips(values: [0.5, 0.75, 1, 1.5, 2], value: $state.scaleFactor, unit: "×")
             }
             if state.scaleFactor > 0 {
-                TOHint(text: String(format: "= %.0f%% of current size", state.scaleFactor * 100))
+                TOHint(String(format: "= %.0f%% of current size", state.scaleFactor * 100))
             }
 
             TOPrimaryButton(title: "Apply Scale",
@@ -3251,7 +3285,7 @@ extension ContentView {
             TOToolTitle(icon: "ruler.fill", title: "Dimension",
                         help: "Click a line for its length, a circle for its radius, or two points for a distance. Type a value or formula and press Enter.\n\nFormulas: 20*2, d1*0.5+10, sqrt(d2^2+d3^2). Units: 50, 2.54cm, 1 inch.",
                         helpOpen: $toolHelpOpen)
-            TOHint(text: "Click a line, circle, or two points; then type a value or formula.")
+            TOHint("Click a line, circle, or two points; then type a value or formula.")
 
             if !params.isEmpty {
                 TODivider()
@@ -3321,7 +3355,7 @@ extension ContentView {
             TODivider()
             // Edge finish (Phase 2): treatments that change the cut pattern.
             TOGroupLabel("Edge finish (selected edge)")
-            TOHint(text: "Turn = a folded-over hem (adds material + a crease). Bind = a binding strip sized to wrap the edge.")
+            TOHint("Turn = a folded-over hem (adds material + a crease). Bind = a binding strip sized to wrap the edge.")
             TORow(label: "Allowance (mm)") {
                 TextField("", value: $state.edgeFinishAllowanceMm, format: .number).toFieldStyle(width: 70)
             }
@@ -3424,7 +3458,7 @@ extension ContentView {
 
             TOCheck(label: "Mirror (flip) copy", isOn: $state.mirrorFlip)
             TOCheck(label: "Keep live link", isOn: $state.mirrorKeepLink)
-            TOHint(text: state.mirrorStageHint)
+            TOHint(state.mirrorStageHint)
 
             HStack(spacing: 8) {
                 TOPrimaryButton(title: "Apply Mirror",

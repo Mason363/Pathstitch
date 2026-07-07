@@ -5,31 +5,30 @@ struct FaceRowView: View {
     let face: Face3D
     let isSelected: Bool
     let onTap: () -> Void
-    
+
     var body: some View {
-        HStack {
+        HStack(spacing: 7) {
             Image(systemName: "square.on.square")
-                .font(.system(size: 8))
-                .foregroundColor(isSelected ? Color.accent : Color.text_muted)
-            
-            Text("Face \(face.face_index)")
-                .font(PlasticityFont.label)
-                .foregroundColor(isSelected ? Color.accent : Color.text_secondary)
-            
-            Spacer()
-            
-            Text(face.type)
                 .font(.system(size: 9))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(Color.bg_panel)
-                .cornerRadius(2)
-                .foregroundColor(Color.text_muted)
+                .foregroundColor(isSelected ? Color.to_accent : Color.to_textMut)
+
+            Text("Face \(face.face_index)")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(isSelected ? Color.to_accent : Color.to_textSec)
+
+            Spacer()
+
+            Text(face.type)
+                .font(.system(size: 9, weight: .medium))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.to_card))
+                .foregroundColor(Color.to_textMut)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
         .padding(.horizontal, 20)
-        .background(isSelected ? Color.bg_selected : Color.clear)
-        .cornerRadius(3)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(isSelected ? Color.to_accentTint : Color.clear))
         .contentShape(Rectangle())
         .onTapGesture {
             onTap()
@@ -41,47 +40,49 @@ struct SelectedFaceRowView: View {
     let sel: SelectedFace
     let bodyObj: Body3D
     let face: Face3D
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text("B\(sel.bodyIndex + 1) : F\(sel.faceIndex)")
-                    .font(PlasticityFont.body)
-                    .fontWeight(.bold)
-                    .foregroundColor(Color.accent)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundColor(Color.to_accent)
                 Spacer()
                 Text(face.type)
-                    .font(.system(size: 9))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.bg_selected)
-                    .cornerRadius(2)
-                    .foregroundColor(Color.text_primary)
+                    .font(.system(size: 9, weight: .medium))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.to_accentTint))
+                    .foregroundColor(Color.to_textSec)
             }
             Text("\(String(format: "%.1f", face.area)) mm²")
-                .font(PlasticityFont.label)
-                .foregroundColor(Color.text_secondary)
+                .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                .foregroundColor(Color.to_textMut)
         }
-        .padding(6)
-        .background(Color.bg_input)
-        .cornerRadius(4)
-        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_strong, lineWidth: 1))
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 9).fill(Color.to_field))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.to_fieldBorder, lineWidth: 1))
     }
 }
 
 /// Caption + control on one line — keeps the right panel reading like a
-/// settings form instead of a stack of anonymous pickers.
+/// settings form instead of a stack of anonymous pickers. Adaptive: drops the
+/// control below the label when the panel is too narrow to fit both.
 struct SettingRow<Content: View>: View {
     let label: String
     @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(PlasticityFont.label)
-                .foregroundColor(Color.text_secondary)
-                .frame(width: 52, alignment: .leading)
-            content
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                TOLabel(label).fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                content
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                TOLabel(label)
+                content
+            }
         }
     }
 }
@@ -98,53 +99,49 @@ struct ThreeDModeView: View {
 
             // Left Panel: Solid Bodies (200px wide)
             VStack(alignment: .leading, spacing: 0) {
-                Text("SOLID BODIES")
-                    .font(PlasticityFont.header)
-                    .foregroundColor(Color.text_secondary)
-                    .tracking(0.5)
+                TOGroupLabel("Solid Bodies")
                     .padding(.horizontal, 14)
-                    .padding(.top, 14)
-                    .padding(.bottom, 8)
-                
-                Divider().background(Color.border_subtle)
-                
+                    .padding(.top, 16)
+                    .padding(.bottom, 11)
+
+                TODivider()
+
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach($state.bodies3D) { $body in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 8) {
                                     Button(action: {
                                         body.visible.toggle()
                                     }) {
                                         Image(systemName: body.visible ? "eye" : "eye.slash")
                                             .font(.system(size: 11))
-                                            .foregroundColor(body.visible ? Color.text_primary : Color.text_muted)
+                                            .foregroundColor(body.visible ? Color.to_textSec : Color.to_textMut)
                                             .frame(width: 14, height: 14)
                                     }
                                     .buttonStyle(PlainButtonStyle())
-                                    
+
                                     Image(systemName: "cube.fill")
                                         .font(.system(size: 11))
-                                        .foregroundColor(Color.accent)
-                                    
+                                        .foregroundColor(Color.to_accent)
+
                                     Text(body.name)
-                                        .font(PlasticityFont.body)
-                                        .foregroundColor(Color.text_primary)
+                                        .font(.system(size: 12.5, weight: .medium))
+                                        .foregroundColor(Color.to_textPri)
                                         .lineLimit(1)
-                                    
+
                                     Spacer()
                                 }
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 8)
-                                .background(Color.bg_input.opacity(0.3))
-                                .cornerRadius(4)
-                                
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 9)
+                                .background(RoundedRectangle(cornerRadius: 7).fill(Color.to_field))
+
                                 if body.visible {
                                     VStack(alignment: .leading, spacing: 1) {
                                         ForEach(body.faces) { face in
                                             let faceSel = SelectedFace(bodyIndex: body.body_index, faceIndex: face.face_index)
                                             let isSelected = state.selectedFaces3D.contains(faceSel)
-                                            
+
                                             FaceRowView(
                                                 bodyIndex: body.body_index,
                                                 face: face,
@@ -166,7 +163,7 @@ struct ThreeDModeView: View {
                                     .padding(.leading, 8)
                                 }
                             }
-                            .padding(.horizontal, 6)
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 2)
                         }
                     }
@@ -174,8 +171,8 @@ struct ThreeDModeView: View {
                 }
             }
             .frame(width: 200)
-            .background(Color.bg_panel)
-            .border(Color.border_subtle, width: 1)
+            .background(Color.to_panel)
+            .overlay(Rectangle().fill(Color.to_panelBorder).frame(width: 1), alignment: .trailing)
             
             // Center Viewport: WKWebView wrapper
             ThreeDViewport(
@@ -208,11 +205,11 @@ struct ThreeDModeView: View {
                     Button(action: { state.frameHome3D() }) {
                         Image(systemName: "house")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(Color.text_primary)
+                            .foregroundColor(Color.to_textSec)
                             .frame(width: 30, height: 30)
-                            .background(Color.bg_panel.opacity(0.9))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.border_subtle, lineWidth: 1))
+                            .background(Color.to_panel.opacity(0.94))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.to_panelBorder, lineWidth: 1))
                     }
                     .buttonStyle(PlainButtonStyle())
                     .help("Home — frame the model with optimal framing")
@@ -224,23 +221,15 @@ struct ThreeDModeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         // Section 1: Selection Info
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("SELECTED FACES")
-                                .font(PlasticityFont.header)
-                                .foregroundColor(Color.text_secondary)
-                                .tracking(0.5)
-                            
+                        VStack(alignment: .leading, spacing: 10) {
+                            TOGroupLabel("Selected Faces")
+
                             if state.selectedFaces3D.isEmpty {
-                                Text("No selection")
-                                    .font(PlasticityFont.body)
-                                    .foregroundColor(Color.text_muted)
-                                    .padding(.vertical, 4)
+                                TOStatus(color: .to_textFaint, text: "No selection",
+                                         hint: "click a face in the list or viewport")
                             } else {
-                                Text("\(state.selectedFaces3D.count) face(s) in queue")
-                                    .font(PlasticityFont.body)
-                                    .foregroundColor(Color.text_primary)
-                                    .padding(.bottom, 4)
-                                
+                                TOStatus(text: "\(state.selectedFaces3D.count) face\(state.selectedFaces3D.count == 1 ? "" : "s") in queue")
+
                                 ForEach(Array(state.selectedFaces3D), id: \.self) { sel in
                                     if let body = state.bodies3D.first(where: { $0.body_index == sel.bodyIndex }),
                                        let face = body.faces.first(where: { $0.face_index == sel.faceIndex }) {
@@ -248,289 +237,178 @@ struct ThreeDModeView: View {
                                     }
                                 }
                             }
-                            
-                            Divider().background(Color.border_subtle)
                         }
+
+                        TODivider()
 
                         // Section 1.5: Move Bodies (MAS-125)
                         moveBodiesSection
 
                         // Section 2: Unfolding (one section, one mental model:
                         // pick how pieces come out, then unfold)
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("UNFOLD")
-                                .font(PlasticityFont.header)
-                                .foregroundColor(Color.text_secondary)
-                                .tracking(0.5)
+                        VStack(alignment: .leading, spacing: 12) {
+                            TOGroupLabel("Unfold")
 
                             SettingRow(label: "Layout") {
-                                Picker("Layout", selection: $state.netLayout) {
-                                    Text("Connected Net").tag("connected")
-                                    Text("Separate Pieces").tag("separate")
-                                }
-                                .pickerStyle(DefaultPickerStyle())
-                                .labelsHidden()
-                                .help("Connected Net keeps faces joined at fold lines; Separate Pieces flattens each face on its own.")
+                                TOSelect(options: [("connected", "Connected Net"), ("separate", "Separate Pieces")],
+                                         selection: $state.netLayout)
+                                    .help("Connected Net keeps faces joined at fold lines; Separate Pieces flattens each face on its own.")
                             }
 
                             SettingRow(label: "Distort") {
-                                Picker("Distortion Mode", selection: $state.distortionMode) {
-                                    Text("Conformal").tag("conformal")
-                                    Text("Equal-Area").tag("equal-area")
-                                    Text("Equidistant").tag("equidistant")
-                                    Text("Balanced").tag("balanced")
-                                }
-                                .pickerStyle(DefaultPickerStyle())
-                                .labelsHidden()
-                                .help("The parameterization energy mode used to flatten curved surfaces.")
+                                TOSelect(options: [("conformal", "Conformal"), ("equal-area", "Equal-Area"),
+                                                   ("equidistant", "Equidistant"), ("balanced", "Balanced")],
+                                         selection: $state.distortionMode)
+                                    .help("The parameterization energy mode used to flatten curved surfaces.")
                             }
 
                             if state.netLayout == "connected" {
                                 SettingRow(label: "Unroll") {
-                                    Picker("Unroll Mode", selection: $state.netMode) {
-                                        Text("Radial").tag("radial")
-                                        Text("Strip").tag("strip")
-                                        Text("Spanning Tree").tag("spanning")
-                                    }
-                                    .pickerStyle(DefaultPickerStyle())
-                                    .labelsHidden()
-                                    .help("How faces unroll around the anchor: outward rings, long strips, or the most stable fold edges.")
+                                    TOSelect(options: [("radial", "Radial"), ("strip", "Strip"), ("spanning", "Spanning Tree")],
+                                             selection: $state.netMode)
+                                        .help("How faces unroll around the anchor: outward rings, long strips, or the most stable fold edges.")
                                 }
 
                                 SettingRow(label: "Seams") {
-                                    Picker("Seam Decoration", selection: $state.netDecoration) {
-                                        Text("Plain").tag("none")
-                                        Text("Glue Tabs").tag("tabs")
-                                        Text("Sew Holes").tag("holes")
-                                    }
-                                    .pickerStyle(DefaultPickerStyle())
-                                    .labelsHidden()
-                                    .help("Added along every mated seam pair. Sizes come from the Add Holes / Glue Tab tool settings.")
+                                    TOSelect(options: [("none", "Plain"), ("tabs", "Glue Tabs"), ("holes", "Sew Holes")],
+                                             selection: $state.netDecoration)
+                                        .help("Added along every mated seam pair. Sizes come from the Add Holes / Glue Tab tool settings.")
                                 }
 
                                 SettingRow(label: "Control") {
-                                    Picker("Seam Control", selection: $state.seamControlMode) {
-                                        Text("Auto").tag("auto")
-                                        Text("Manual (Cuts)").tag("manual")
-                                        Text("Hybrid (Folds)").tag("hybrid")
-                                    }
-                                    .pickerStyle(DefaultPickerStyle())
-                                    .labelsHidden()
-                                    .help("Auto uses curvature-weighted spanning tree. Manual lets you pick cuts. Hybrid lets you force creases.")
+                                    TOSelect(options: [("auto", "Auto"), ("manual", "Manual (Cuts)"), ("hybrid", "Hybrid (Folds)")],
+                                             selection: $state.seamControlMode)
+                                        .help("Auto uses curvature-weighted spanning tree. Manual lets you pick cuts. Hybrid lets you force creases.")
                                 }
 
-                                VStack(alignment: .leading, spacing: 4) {
-                                    if let anchor = state.anchorFace3D {
-                                        HStack {
-                                            Text("Anchor: B\(anchor.bodyIndex + 1) : F\(anchor.faceIndex)")
-                                                .font(PlasticityFont.label)
-                                                .foregroundColor(Color.accent)
-                                            Spacer()
-                                            Button("Reset") {
-                                                state.anchorFace3D = nil
-                                            }
-                                            .buttonStyle(PlainButtonStyle())
-                                            .font(PlasticityFont.label)
-                                            .foregroundColor(Color.text_muted)
-                                        }
-                                    } else {
-                                        HStack {
-                                            Text("Anchor: Default (Largest)")
-                                                .font(PlasticityFont.label)
-                                                .foregroundColor(Color.text_muted)
-                                            Spacer()
-                                            if let firstSel = state.selectedFaces3D.first, state.selectedFaces3D.count == 1 {
-                                                Button("Set Selected") {
-                                                    state.anchorFace3D = firstSel
-                                                }
-                                                .buttonStyle(PlainButtonStyle())
-                                                .font(PlasticityFont.label)
-                                                .foregroundColor(Color.accent)
-                                            }
+                                // Anchor face — the fixed face the net unrolls around.
+                                if let anchor = state.anchorFace3D {
+                                    HStack {
+                                        TOStatus(text: "Anchor B\(anchor.bodyIndex + 1):F\(anchor.faceIndex)")
+                                        miniButton("Reset", tint: .to_textMut) { state.anchorFace3D = nil }
+                                    }
+                                } else {
+                                    HStack {
+                                        TOStatus(color: .to_textFaint, text: "Anchor: default (largest)")
+                                        if let firstSel = state.selectedFaces3D.first, state.selectedFaces3D.count == 1 {
+                                            miniButton("Set selected", tint: .to_accent) { state.anchorFace3D = firstSel }
                                         }
                                     }
                                 }
-                                .padding(.vertical, 2)
 
                                 if let selectedEdge = state.selectedEdge3D {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text("Edge Override (B\(selectedEdge.bodyIndex + 1) : E\(selectedEdge.edgeIndex))")
-                                            .font(PlasticityFont.label)
-                                            .foregroundColor(Color.text_secondary)
-                                            .fontWeight(.bold)
-                                        
-                                        Picker("Seam Override", selection: Binding(
-                                            get: { state.seamDecorations3D[selectedEdge] ?? "default" },
-                                            set: { newVal in
-                                                if newVal == "default" {
-                                                    state.seamDecorations3D.removeValue(forKey: selectedEdge)
-                                                } else {
-                                                    state.seamDecorations3D[selectedEdge] = newVal
-                                                }
-                                            }
-                                        )) {
-                                            Text("Default (Use Global)").tag("default")
-                                            Text("Plain (Cut)").tag("none")
-                                            Text("Glue Tab").tag("tabs")
-                                            Text("Sew Holes").tag("holes")
-                                        }
-                                        .pickerStyle(DefaultPickerStyle())
-                                        .labelsHidden()
+                                    SettingRow(label: "Edge B\(selectedEdge.bodyIndex + 1):E\(selectedEdge.edgeIndex)") {
+                                        TOSelect(options: [("default", "Default (global)"), ("none", "Plain (cut)"),
+                                                           ("tabs", "Glue Tab"), ("holes", "Sew Holes")],
+                                                 selection: Binding(
+                                                    get: { state.seamDecorations3D[selectedEdge] ?? "default" },
+                                                    set: { newVal in
+                                                        if newVal == "default" {
+                                                            state.seamDecorations3D.removeValue(forKey: selectedEdge)
+                                                        } else {
+                                                            state.seamDecorations3D[selectedEdge] = newVal
+                                                        }
+                                                    }))
                                     }
-                                    .padding(.top, 4)
-                                    .padding(.bottom, 2)
                                 }
 
                                 if state.seamControlMode == "manual" && !state.forcedSeams3D.isEmpty {
-                                    Button("Clear Manual Cuts") {
+                                    TOSecondaryButton(title: "Clear manual cuts", icon: "xmark") {
                                         state.forcedSeams3D.removeAll()
                                     }
-                                    .buttonStyle(PlainButtonStyle())
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.accent)
-                                    .padding(.top, 2)
                                 } else if state.seamControlMode == "hybrid" && !state.forbiddenSeams3D.isEmpty {
-                                    Button("Clear Forced Folds") {
+                                    TOSecondaryButton(title: "Clear forced folds", icon: "xmark") {
                                         state.forbiddenSeams3D.removeAll()
                                     }
-                                    .buttonStyle(PlainButtonStyle())
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.accent)
-                                    .padding(.top, 2)
                                 }
                             }
 
-                            Toggle("Live Recompute", isOn: $state.liveRecomputeEnabled)
-                                .toggleStyle(.switch)
-                                .font(PlasticityFont.body)
-                                .foregroundColor(Color.text_primary)
-                                .padding(.vertical, 4)
-                                .onChange(of: state.liveRecomputeEnabled) { oldValue, newValue in
-                                    if newValue {
-                                        state.wholeBodyRecompute = false
-                                        state.triggerLiveRecompute()
-                                    }
+                            TOCheck(label: "Live recompute",
+                                    isOn: $state.liveRecomputeEnabled) {
+                                if state.liveRecomputeEnabled {
+                                    state.wholeBodyRecompute = false
+                                    state.triggerLiveRecompute()
                                 }
+                            }
 
-                            Button("Unfold Selected") {
+                            TOPrimaryButton(title: "Unfold Selected",
+                                            enabled: !state.selectedFaces3D.isEmpty) {
                                 if state.netLayout == "connected" {
                                     state.unfoldConnected(wholeBody: false, mode: state.netMode, decoration: state.netDecoration)
                                 } else {
                                     state.unfoldAllSelected()
                                 }
                             }
-                            .buttonStyle(PlasticityButtonStyle(isEnabled: !state.selectedFaces3D.isEmpty))
-                            .disabled(state.selectedFaces3D.isEmpty)
                             .help(state.netLayout == "connected"
                                   ? "Unfolds the selected faces as one connected net — shared edges become dashed fold lines, cuts become seams."
                                   : "Flattens each selected face and places them side-by-side in the 2D editor.")
 
                             if state.netLayout == "connected" {
-                                Button("Unfold Entire Body") {
+                                TOSecondaryButton(title: "Unfold Entire Body", icon: "square.on.square",
+                                                  enabled: !state.bodies3D.isEmpty) {
                                     state.wholeBodyRecompute = true
                                     state.unfoldConnected(wholeBody: true, mode: state.netMode, decoration: state.netDecoration)
                                 }
-                                .buttonStyle(PlasticityButtonStyle(isEnabled: !state.bodies3D.isEmpty))
-                                .disabled(state.bodies3D.isEmpty)
                                 .help("Unfolds every face of every body into connected nets.")
                             }
 
                             if state.selectedFaces3D.isEmpty {
-                                Text("Select faces in the list or viewport (⇧-click for multiple).")
-                                    .font(PlasticityFont.label)
-                                    .foregroundColor(Color.text_muted)
+                                TOHint("Select faces in the list or viewport (⇧-click for multiple).")
                             }
                         }
 
-                        Divider().background(Color.border_subtle)
+                        TODivider()
 
                         // Section 3: Sketch Projection
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("PROJECTION SKETCH")
-                                .font(PlasticityFont.header)
-                                .foregroundColor(Color.text_secondary)
-                                .tracking(0.5)
+                        VStack(alignment: .leading, spacing: 12) {
+                            TOGroupLabel("Projection Sketch")
 
                             if !state.isPlaneSelectionActive {
-                                Button("Add Plane") {
+                                TOPrimaryButton(title: "Add Plane") {
                                     state.startPlaneSelection()
                                 }
-                                .buttonStyle(PlasticityButtonStyle(isEnabled: true))
                                 .help("Enter Plane Selection Mode to define a projection plane.")
                             } else {
-                                Picker("Define Plane By", selection: $state.planeSelectionModeType) {
-                                    Text("Origin Planes").tag("origin")
-                                    Text("Shape Face").tag("face")
-                                }
-                                .pickerStyle(SegmentedPickerStyle())
-                                .labelsHidden()
-                                .onChange(of: state.planeSelectionModeType) { oldValue, newValue in
+                                TOSegmented(options: [("origin", "Origin Planes"), ("face", "Shape Face")],
+                                            selection: $state.planeSelectionModeType) {
                                     // Reset selected plane and offset when switching modes
                                     state.selectedProjectionPlane = nil
                                     state.selectedProjectionFaceIndex = nil
                                     state.selectedProjectionBodyIndex = nil
                                     state.planeOffset = 0.0
                                 }
-                                
+                                .frame(maxWidth: .infinity)
+
                                 if state.planeSelectionModeType == "origin" {
-                                    Text("Click an origin plane square (XY, YZ, ZX) in the 3D viewport.")
-                                        .font(PlasticityFont.label)
-                                        .foregroundColor(Color.text_muted)
-                                    
+                                    TOHint("Click an origin plane square (XY, YZ, ZX) in the 3D viewport.")
                                     if let plane = state.selectedProjectionPlane {
-                                        Text("Selected: \(plane) Plane")
-                                            .font(PlasticityFont.body)
-                                            .foregroundColor(Color.accent)
+                                        TOStatus(text: "Selected: \(plane) plane")
                                     } else {
-                                        Text("Selected: None")
-                                            .font(PlasticityFont.body)
-                                            .foregroundColor(Color.text_muted)
+                                        TOStatus(color: .to_textFaint, text: "Selected: none")
                                     }
                                 } else {
-                                    Text("Click a flat face of the 3D model in the viewport.")
-                                        .font(PlasticityFont.label)
-                                        .foregroundColor(Color.text_muted)
-                                    
+                                    TOHint("Click a flat face of the 3D model in the viewport.")
                                     if let faceIdx = state.selectedProjectionFaceIndex, let bodyIdx = state.selectedProjectionBodyIndex {
-                                        Text("Selected Face: B\(bodyIdx + 1) : F\(faceIdx)")
-                                            .font(PlasticityFont.body)
-                                            .foregroundColor(Color.accent)
+                                        TOStatus(text: "Selected face B\(bodyIdx + 1):F\(faceIdx)")
                                     } else {
-                                        Text("Selected: None")
-                                            .font(PlasticityFont.body)
-                                            .foregroundColor(Color.text_muted)
+                                        TOStatus(color: .to_textFaint, text: "Selected: none")
                                     }
                                 }
-                                
+
                                 if state.selectedProjectionPlane != nil {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Offset (mm)")
-                                            .font(PlasticityFont.label)
-                                            .foregroundColor(Color.text_secondary)
-                                        
-                                        TextField("", value: $state.planeOffset, format: .number)
-                                            .textFieldStyle(RoundedBorderTextFieldStyle())
-                                            .labelsHidden()
+                                    SettingRow(label: "Offset") {
+                                        TOStepper(value: $state.planeOffset, unit: "mm", step: 1,
+                                                  range: -100000...100000, maxFrac: 2)
                                     }
-                                    .padding(.top, 4)
-                                    
-                                    Button("Confirm Projection") {
+                                    TOPrimaryButton(title: "Confirm Projection") {
                                         state.confirmPlaneProjection()
                                     }
-                                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
                                     .help("Lock this plane position and project 3D silhouettes onto it.")
                                 }
-                                
-                                Button("Cancel") {
+
+                                TOSecondaryButton(title: "Cancel", tint: .to_textMut) {
                                     state.cancelPlaneSelection()
                                 }
-                                .buttonStyle(PlainButtonStyle())
-                                .foregroundColor(Color.text_secondary)
-                                .font(PlasticityFont.body)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 4)
-                                .background(Color.bg_input.opacity(0.5))
-                                .cornerRadius(4)
                             }
                         }
                     }
@@ -538,10 +416,18 @@ struct ThreeDModeView: View {
                 }
             }
             .frame(width: 240)
-            .background(Color.bg_panel)
-            .border(Color.border_subtle, width: 1)
+            .background(Color.to_panel)
+            .overlay(Rectangle().fill(Color.to_panelBorder).frame(width: 1), alignment: .leading)
         }
         .background(Color.bg_base)
+    }
+
+    /// A small inline text button (Reset / Set selected) used beside status lines.
+    private func miniButton(_ title: String, tint: Color, _ action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(tint)
     }
 
     // MARK: - Move Bodies (MAS-125)
@@ -564,75 +450,76 @@ struct ThreeDModeView: View {
 
     @ViewBuilder
     private var moveBodiesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("MOVE BODIES")
-                .font(PlasticityFont.header)
-                .foregroundColor(Color.text_secondary)
-                .tracking(0.5)
+        VStack(alignment: .leading, spacing: 12) {
+            TOGroupLabel("Move Bodies")
 
-            Toggle("Move Tool", isOn: Binding(
-                get: { state.bodyMoveToolActive },
-                set: { on in if on != state.bodyMoveToolActive { state.toggleBodyMoveTool() } }
-            ))
-            .toggleStyle(.switch)
-            .font(PlasticityFont.body)
-            .foregroundColor(Color.text_primary)
-            .help("Select a body in the viewport, then drag the 3D gizmo or type exact offsets.")
+            TOCheck(label: "Move tool",
+                    isOn: Binding(
+                        get: { state.bodyMoveToolActive },
+                        set: { on in if on != state.bodyMoveToolActive { state.toggleBodyMoveTool() } }))
+                .help("Select a body in the viewport, then drag the 3D gizmo or type exact offsets.")
 
             if state.bodyMoveToolActive {
                 if let bi = state.selectedBodyIndex,
                    let body = state.bodies3D.first(where: { $0.body_index == bi }) {
-                    Text("Selected: \(body.name)")
-                        .font(PlasticityFont.body)
-                        .foregroundColor(Color.accent)
+                    TOStatus(text: "Selected: \(body.name)")
 
-                    SettingRow(label: "X (mm)") {
-                        TextField("", value: bodyOffsetBinding(0), format: .number)
-                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    SettingRow(label: "X") {
+                        TOStepper(value: bodyOffsetBinding(0), unit: "mm", step: state.bodyMoveStep,
+                                  range: -100000...100000, maxFrac: 2)
                     }
-                    SettingRow(label: "Y (mm)") {
-                        TextField("", value: bodyOffsetBinding(1), format: .number)
-                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    SettingRow(label: "Y") {
+                        TOStepper(value: bodyOffsetBinding(1), unit: "mm", step: state.bodyMoveStep,
+                                  range: -100000...100000, maxFrac: 2)
                     }
-                    SettingRow(label: "Z (mm)") {
-                        TextField("", value: bodyOffsetBinding(2), format: .number)
-                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                    SettingRow(label: "Z") {
+                        TOStepper(value: bodyOffsetBinding(2), unit: "mm", step: state.bodyMoveStep,
+                                  range: -100000...100000, maxFrac: 2)
                     }
 
                     SettingRow(label: "Step") {
-                        TextField("", value: $state.bodyMoveStep, format: .number)
-                            .textFieldStyle(RoundedBorderTextFieldStyle()).labelsHidden()
+                        TOStepper(value: $state.bodyMoveStep, unit: "mm", step: 1,
+                                  range: 0.1...1000, maxFrac: 2)
                     }
                     .help("Distance for the precise nudge buttons.")
 
+                    // Precise per-axis nudges by the Step amount.
                     HStack(spacing: 4) {
                         ForEach(Array(["X", "Y", "Z"].enumerated()), id: \.offset) { idx, axis in
-                            Button("-\(axis)") { nudgeBody(bi, axis: idx, dir: -1) }
-                                .buttonStyle(BorderedButtonStyle()).controlSize(.small)
-                            Button("+\(axis)") { nudgeBody(bi, axis: idx, dir: 1) }
-                                .buttonStyle(BorderedButtonStyle()).controlSize(.small)
+                            miniAxisButton("−\(axis)") { nudgeBody(bi, axis: idx, dir: -1) }
+                            miniAxisButton("+\(axis)") { nudgeBody(bi, axis: idx, dir: 1) }
                         }
                     }
 
-                    Button("Reset Position") {
+                    TOSecondaryButton(title: "Reset position", icon: "arrow.uturn.backward") {
                         state.beginBodyMove()   // undoable (MAS-143)
                         state.setBodyOffset(index: bi, x: 0, y: 0, z: 0)
                     }
-                    .buttonStyle(PlasticityButtonStyle(isEnabled: true))
                     .help("Return this body to its distributed home position.")
                 } else {
-                    Text("Click a body in the viewport to select it.")
-                        .font(PlasticityFont.label)
-                        .foregroundColor(Color.text_muted)
+                    TOHint("Click a body in the viewport to select it.")
                 }
             } else {
-                Text("Enable to select bodies and move them with a 3D gizmo.")
-                    .font(PlasticityFont.label)
-                    .foregroundColor(Color.text_muted)
+                TOHint("Enable to select bodies and move them with a 3D gizmo.")
             }
 
-            Divider().background(Color.border_subtle)
+            TODivider()
         }
+    }
+
+    /// A compact bordered axis-nudge button (−X, +X, …) matching the field chrome.
+    private func miniAxisButton(_ title: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                .foregroundColor(.to_textSec)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.to_field))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.to_fieldBorder, lineWidth: 1))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func nudgeBody(_ index: Int, axis: Int, dir: Double) {

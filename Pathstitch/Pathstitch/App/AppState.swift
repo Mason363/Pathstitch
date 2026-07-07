@@ -52,6 +52,8 @@ enum TwoDTool: String, CaseIterable {
     case sketchRectangle = "Rectangle"
     case sketchText = "Text"
     case sketchPolygon = "Polygon"
+    case sketchArc = "Arc"
+    case sketchConic = "Conic Curve"
     case pen = "Pen"
     case fillet = "Fillet"
     case chamfer = "Chamfer"
@@ -87,6 +89,8 @@ enum TwoDTool: String, CaseIterable {
         case .sketchRectangle: return "rectangle"
         case .sketchText: return "character.cursor.ibeam"
         case .sketchPolygon: return "hexagon"
+        case .sketchArc: return "compass.drawing"
+        case .sketchConic: return "point.topleft.down.to.point.bottomright.curvepath"
         case .pen: return "pencil.tip"
         case .fillet: return "square"
         case .chamfer: return "square"
@@ -112,7 +116,7 @@ enum TwoDTool: String, CaseIterable {
     /// for each lives in `DxfCanvasView`'s `commitToolToken` handler.
     var confirmsOnEnter: Bool {
         switch self {
-        case .sketchLine, .pen, .offset, .fillet, .chamfer,
+        case .sketchLine, .sketchArc, .sketchConic, .pen, .offset, .fillet, .chamfer,
              .addHoles, .addThickness, .cleanup, .scale, .mirror, .patterning,
              .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
             return true
@@ -140,6 +144,8 @@ enum TwoDTool: String, CaseIterable {
         case .sketchRectangle: return "tool.rectangle"
         case .sketchText: return "tool.text"
         case .sketchPolygon: return "tool.polygon"
+        case .sketchArc: return "tool.arc"
+        case .sketchConic: return "tool.conic"
         case .pen: return "tool.pen"
         case .fillet: return "tool.fillet"
         case .chamfer: return "tool.chamfer"
@@ -1483,6 +1489,13 @@ class AppState {
     // Polygon tool (MAS-118): number of sides for the next polygon (3–64).
     var polygonSides: Int = 6
 
+    // Conic Curve tool: the "fullness" (ρ / rho) of the next conic, in (0,1).
+    // The conic is a rational quadratic Bézier through start → end with the apex
+    // as the third click; ρ is where the curve crosses the chord-apex median:
+    // ρ < 0.5 ⇒ flatter elliptical arc, ρ = 0.5 ⇒ parabola, ρ > 0.5 ⇒ fuller
+    // hyperbolic arc. Clamped to [0.05, 0.95] by the tool-option control.
+    var conicRho: Double = 0.5
+
     // Patterning v2 (MAS-113). Rectangular grid or circular array, with a live
     // ghost preview + draggable handles driven from the canvas.
     var patternMode: String = "rectangular"   // "rectangular" | "circular"
@@ -2230,6 +2243,12 @@ class AppState {
     var constructStampsJSON: String = "[]"          // surface outlines for the viewport
     var constructStampToken: Int = 0
 
+    // User-set seam-fit tolerances (pro-CAD): a seam reads MISMATCH when its
+    // length difference (%) or worst post-seating gap (mm) exceeds these.
+    // Persisted with the assembly.
+    var seamTolMismatchPct: Double = 12
+    var seamTolGapMm: Double = 4.0
+
     // Fold lines added in 3D (re-fed to the triangulator on rebuild) + glue joints.
     var constructUserFolds: [ConstructUserFold] = []
     var constructGlues: [GlueJoint] = []
@@ -2277,6 +2296,11 @@ class AppState {
     // viewport, and persisted with the assembly.
     var constructRenderMode: String = "edit"        // "edit" | "mockup"
     var constructRenderToken: Int = 0
+    // Exploded view (0 = assembled … 1 = fully apart): pulls the seated pieces
+    // radially apart to inspect internal seams. Inspection only — never persisted,
+    // and the viewport collapses it before gathering export geometry.
+    var constructExplode: Double = 0
+    var constructExplodeToken: Int = 0
     // How panels are shaded, independent of edit/mockup: wireframe | solid (flat
     // unlit) | flat (flat-shaded lit) | realistic (PBR leather, default).
     var constructShaderMode: String = "realistic"
@@ -7577,7 +7601,9 @@ class AppState {
                         lights: constructLights.isEmpty ? nil : constructLights,
                         ambient: constructAmbient,
                         renderMode: constructRenderMode,
-                        panelMaterials: constructPanelMaterials.isEmpty ? nil : constructPanelMaterials)
+                        panelMaterials: constructPanelMaterials.isEmpty ? nil : constructPanelMaterials,
+                        seamTolMismatchPct: seamTolMismatchPct,
+                        seamTolGapMm: seamTolGapMm)
             )
 
             let encoder = JSONEncoder()
@@ -7698,6 +7724,8 @@ class AppState {
                 if let amb = asm.ambient { self.constructAmbient = amb }
                 self.constructRenderMode = asm.renderMode ?? "edit"
                 self.constructPanelMaterials = asm.panelMaterials ?? [:]
+                if let t = asm.seamTolMismatchPct { self.seamTolMismatchPct = t }
+                if let t = asm.seamTolGapMm { self.seamTolGapMm = t }
                 self.constructDecals = Dictionary(uniqueKeysWithValues:
                     (asm.decals ?? [:]).compactMap { k, v in Int(k).map { ($0, v) } })
                 self.constructDecalXforms = Dictionary(uniqueKeysWithValues:
