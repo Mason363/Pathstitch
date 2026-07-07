@@ -615,6 +615,11 @@ def op_match_chains(args: Dict[str, Any]) -> Dict[str, Any]:
 _FOLD_LAYERS = {"FOLD", "FOLDS", "CREASE", "CREASES", "FOLD_LINES"}
 _HOLE_LAYERS = {"SEWING_HOLES", "HOLES", "STITCH", "STITCHES"}
 _SKIP_LAYERS = {"SEWING_HOLES", "DISTORTION", "CONSTRUCTION"}
+# Hardware footprints (op_place_hardware cuts): metal parts, not leather. They
+# must never polygonize into panels (every rivet hole used to become an
+# "engulfed area" prompt); instead each footprint surfaces as a fitting the
+# viewport renders riding its panel.
+_HW_LAYERS = {"HARDWARE"}
 
 
 def _entity_center(ent) -> Optional[Pt]:
@@ -641,7 +646,8 @@ def _entity_center(ent) -> Optional[Pt]:
 def _extract_from_dxf(input_path: str,
                       fold_layers: Optional[List[str]],
                       include_handles: Optional[set] = None
-                      ) -> Tuple[List[List[Pt]], List[List[Pt]], List[Pt], List[str], List[str]]:
+                      ) -> Tuple[List[List[Pt]], List[List[Pt]], List[Pt], List[str], List[str],
+                                 List[Tuple[float, float, float]]]:
     """Reads panel outlines, fold-layer lines, sewing-hole centers, the DXF handle
     of each panel (parallel to `panels`), and *all* closed-area handles in the
     sketch (regardless of the include filter — used to prune stale references).
@@ -667,6 +673,7 @@ def _extract_from_dxf(input_path: str,
     # and the whole import "didn't show up". We collect it here, then stitch it into
     # closed loops below so those outlines surface as real panels.
     open_edges: List[LineString] = []
+    hardware: List[Tuple[float, float, float]] = []   # (cx, cy, footprint radius)
     for ent in msp:
         layer = (ent.dxf.layer or "").upper()
         et = ent.dxftype()
@@ -674,6 +681,23 @@ def _extract_from_dxf(input_path: str,
             c = _entity_center(ent)
             if c is not None:
                 holes.append(c)
+            continue
+        if layer in _HW_LAYERS:
+            # Any footprint shape → its centroid + circumscribed radius. Good
+            # enough to stand a rivet/snap cap on; slots read as oversize discs.
+            try:
+                path = make_path(ent)
+                pts = [(p.x, p.y) for p in path.flattening(distance=0.2)]
+            except Exception:
+                pts = []
+            if len(pts) >= 2:
+                # bbox centre/extent — exact for circles, and immune to the
+                # uneven vertex spacing flattening produces on polylines.
+                xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+                cx = (min(xs) + max(xs)) / 2.0
+                cy = (min(ys) + max(ys)) / 2.0
+                r = max(max(xs) - min(xs), max(ys) - min(ys)) / 2.0
+                hardware.append((float(cx), float(cy), float(max(r, 0.5))))
             continue
         if layer in _SKIP_LAYERS:
             continue
@@ -747,7 +771,7 @@ def _extract_from_dxf(input_path: str,
         except Exception:
             pass
 
-    return panels, folds, holes, panel_handles, all_handles
+    return panels, folds, holes, panel_handles, all_handles, hardware
 
 
 # ---------------------------------------------------------------------------
@@ -780,6 +804,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
     panels_in = args.get("panels")
     folds_in = args.get("folds") or []
     holes_in = args.get("holes") or []
+    hardware_in = args.get("hardware") or []   # [[cx, cy, r], ...]
     panel_handles: List[str] = []
     all_handles: List[str] = []
 
@@ -790,7 +815,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         inc = args.get("include_handles") or []
         inc_set = {str(h) for h in inc} if inc else None
         try:
-            panels_in, folds_in, holes_in, panel_handles, all_handles = _extract_from_dxf(input_path, args.get("fold_layers"), inc_set)
+            panels_in, folds_in, holes_in, panel_handles, all_handles, hardware_in = _extract_from_dxf(input_path, args.get("fold_layers"), inc_set)
         except Exception as e:
             return {"status": "error", "message": f"DXF read failed: {e}"}
     if not panel_handles:
@@ -950,6 +975,31 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
             if pts:
                 stamps.append({"panelId": j, "closed": True, "pts": pts})
 
+    # Hardware fittings: each footprint embedded in its containing (or nearest)
+    # panel's mesh — same trick as sewing holes — so the metal part rides the
+    # fold and the viewport can stand a rivet/snap cap on it.
+    hardware_out: List[Dict[str, Any]] = []
+    for hw in hardware_in:
+        try:
+            hx, hy, hr = float(hw[0]), float(hw[1]), float(hw[2])
+        except Exception:
+            continue
+        pt = Point(hx, hy)
+        best, best_score = None, 1e18
+        for pid, poly in panel_polys.items():
+            if poly.contains(pt):
+                score = -1.0 + poly.exterior.distance(pt) * 1e-6
+            else:
+                score = poly.distance(pt)
+            if score < best_score:
+                best_score, best = score, pid
+        if best is None or best not in panel_meshes:
+            continue
+        v2d, tris = panel_meshes[best]
+        tri, bary = _embed_point(hx, hy, v2d, tris)
+        hardware_out.append({"panelId": best, "x": hx, "y": hy,
+                             "tri": tri, "bary": bary, "r": hr})
+
     # Sewing holes → ordered chains, each hole embedded in its panel's mesh so it
     # rides the fold. This is the raw material the stitch flagship matches.
     hole_chains: List[Dict[str, Any]] = []
@@ -968,6 +1018,7 @@ def op_build_construct_model(args: Dict[str, Any]) -> Dict[str, Any]:
         "holeChains": hole_chains,
         "engulfed": engulfed,
         "stamps": stamps,
+        "hardware": hardware_out,
         "allHandles": all_handles,
     }}
 

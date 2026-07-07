@@ -310,7 +310,7 @@ def test_loose_lines_with_fold_layer_line():
         for i in range(4):
             m.add_line(pts[i], pts[(i + 1) % 4])
         m.add_line((50, 0), (50, 50), dxfattribs={"layer": "FOLD"})
-    panels, folds, holes, ph, ah = construct_ops._extract_from_dxf(_dxf_with(make), None, None)
+    panels, folds, holes, ph, ah, hw = construct_ops._extract_from_dxf(_dxf_with(make), None, None)
     assert len(panels) == 1 and len(folds) == 1, (len(panels), len(folds))
     res = construct_ops.op_build_construct_model({"input": _dxf_with(make)})
     assert res["status"] == "ok" and len(res["data"]["panels"]) == 1, res
@@ -321,6 +321,34 @@ def test_loose_lines_with_fold_layer_line():
 # ---------------------------------------------------------------------------
 # bend allowance — the sheet-metal flat ↔ folded relationship (Phase 1)
 # ---------------------------------------------------------------------------
+
+def test_hardware_footprints_become_fittings():
+    """HARDWARE-layer footprints (op_place_hardware cuts) must surface as
+    embedded fittings that ride the panel — never as panels/engulfed areas
+    (every rivet hole used to trigger the overlap-treatment prompt)."""
+    def make(m):
+        m.add_lwpolyline([(0, 0), (100, 0), (100, 60), (0, 60)],
+                         dxfattribs={"closed": True})
+        m.add_circle((20, 30), 2.5, dxfattribs={"layer": "HARDWARE"})   # rivet
+        # slot footprint (closed polyline) — reads as an oversize disc
+        m.add_lwpolyline([(60, 28), (80, 28), (80, 32), (60, 32)],
+                         dxfattribs={"layer": "HARDWARE", "closed": True})
+    res = construct_ops.op_build_construct_model({"input": _dxf_with(make)})
+    assert res["status"] == "ok", res
+    d = res["data"]
+    assert len(d["panels"]) == 1, [p["id"] for p in d["panels"]]
+    assert d["engulfed"] == [], d["engulfed"]
+    hw = d["hardware"]
+    assert len(hw) == 2, hw
+    for h in hw:
+        assert h["panelId"] == 0
+        assert 0 <= h["tri"] < len(d["panels"][0]["triangles"])
+        assert abs(sum(h["bary"]) - 1.0) < 1e-6
+    rivet = min(hw, key=lambda h: h["r"])
+    assert abs(rivet["x"] - 20) < 0.1 and abs(rivet["y"] - 30) < 0.1
+    assert abs(rivet["r"] - 2.5) < 0.1, rivet["r"]
+    print(f"hardware: {len(hw)} fittings embedded (rivet r={rivet['r']:.2f}), no engulfed prompts")
+
 
 def test_repunch_chain_fix_in_2d():
     """'Fix in 2D': re-punching a 12-hole chain to 8 re-spaces the circles evenly
@@ -445,6 +473,7 @@ if __name__ == "__main__":
     test_overlap_sew_treatment_makes_hole_chain()
     test_polygonized_loop_handles_are_stable()
     test_loose_lines_with_fold_layer_line()
+    test_hardware_footprints_become_fittings()
     test_repunch_chain_fix_in_2d()
     test_bend_allowance_known_values()
     test_fold_metrics_op_totals_and_validation()

@@ -323,6 +323,8 @@ let holeMesh=null;        // InstancedMesh of all hole markers (rides the fold)
 let chainLineMesh=null;   // LineSegments linking each chain's holes (always shown)
 let STAMPS=[];            // decoration-stamp outlines [{panelId, closed, pts:[{tri,bary}]}]
 let stampMesh=null;       // LineSegments of all stamp outlines (ride the fold)
+let HARDWARE=[];          // fittings [{panelId, tri, bary, r}] — rivet/snap caps
+let hwGroup=null;         // THREE.Group of the fitting meshes (ride the fold)
 let HOLE_SLOTS=[];        // per-instance {chainId, k} parallel to holeMesh
 let threadGroup=new THREE.Group(); scene.add(threadGroup);
 let seamReport=[];        // per-seam gap stats for the HUD
@@ -356,6 +358,7 @@ function clearPanels(){
   if(holeMesh){ root.remove(holeMesh); holeMesh.geometry.dispose(); holeMesh.material.dispose(); holeMesh=null; }
   if(chainLineMesh){ root.remove(chainLineMesh); chainLineMesh.geometry.dispose(); chainLineMesh.material.dispose(); chainLineMesh=null; }
   if(stampMesh){ root.remove(stampMesh); stampMesh.geometry.dispose(); stampMesh.material.dispose(); stampMesh=null; }
+  disposeHardware();
   if(typeof detachGizmo==="function") detachGizmo();
   hoverPanelId=-1; if(typeof clearHoverLine==="function") clearHoverLine();   // stale hover refs gone
   if(typeof clearFoldHi==="function") clearFoldHi();
@@ -495,6 +498,7 @@ window.loadConstructModel=function(jsonStr){
   }
   CONTROLS.groundPanel = m.groundPanel||0;
   buildHoleChains(m.holeChains||[]);
+  buildHardware(m.hardware||[]);
   // Pose once (flat) so the meshes have real positions. Frame the camera only on
   // the first load; later rebuilds keep wherever the user orbited/zoomed to.
   recomputePose();
@@ -1108,6 +1112,7 @@ function recomputePose(silent){
   updateHoleInstances();
   updateChainLines();
   updateStamps();
+  updateHardware();
   updateThread();
   // Drag-start fold calibration re-poses twice; stay silent so it doesn't spam the
   // readout / seam-fit / stretch messages back to Swift mid-gesture.
@@ -1213,6 +1218,50 @@ function updateStamps(){
   stampMesh=new THREE.LineSegments(g, new THREE.LineBasicMaterial({color:0x2b2f36, transparent:true, opacity:0.9}));
   stampMesh.renderOrder=2; root.add(stampMesh);
 }
+// Hardware fittings — placed rivets/snaps (HARDWARE-layer footprints) rendered
+// as metal caps on both faces of the leather, embedded in the panel mesh so
+// they ride every fold/seat/explode exactly like sewing holes do.
+const _HWMAT=new THREE.MeshStandardMaterial({color:0xd9dbdf, metalness:0.92, roughness:0.26});
+function disposeHardware(){
+  if(hwGroup){ hwGroup.traverse(o=>{ if(o.geometry) o.geometry.dispose(); }); root.remove(hwGroup); hwGroup=null; }
+  HARDWARE=[];
+}
+function buildHardware(items){
+  disposeHardware();
+  HARDWARE=items||[];
+  if(!HARDWARE.length) return;
+  hwGroup=new THREE.Group();
+  for(const hw of HARDWARE){
+    const rHead=Math.max(2.0, hw.r*1.9);            // cap overhangs its cut hole
+    const cap=new THREE.Mesh(new THREE.CylinderGeometry(rHead, rHead, 1.1, 24), _HWMAT);
+    const back=new THREE.Mesh(new THREE.CylinderGeometry(rHead*0.82, rHead*0.82, 0.9, 24), _HWMAT);
+    cap.castShadow=back.castShadow=true;
+    hw._cap=cap; hw._back=back;
+    hwGroup.add(cap); hwGroup.add(back);
+  }
+  root.add(hwGroup);
+}
+function updateHardware(){
+  if(!HARDWARE.length) return;
+  const nv=new THREE.Vector3(), q=new THREE.Quaternion();
+  for(const hw of HARDWARE){
+    const p=PANEL_BY_ID[hw.panelId];
+    const ok=!!(p && p.triangles[hw.tri]);
+    const hidden=!ok || !!(p && p.stepHidden);
+    hw._cap.visible=!hidden; hw._back.visible=!hidden;
+    if(hidden) continue;
+    const w=embeddedWorld(p, hw);
+    const t=p.triangles[hw.tri];
+    const n=cross(sub(p.X[t[1]],p.X[t[0]]), sub(p.X[t[2]],p.X[t[0]]));
+    const l=len(n); nv.set(l<1e-9?0:n[0]/l, l<1e-9?1:n[1]/l, l<1e-9?0:n[2]/l);
+    q.setFromUnitVectors(_UPY, nv);
+    // panel.X is the top surface; the shell hangs THICKNESS below it.
+    hw._cap.position.set(w[0]+nv.x*0.56, w[1]+nv.y*0.56, w[2]+nv.z*0.56);
+    hw._back.position.set(w[0]-nv.x*(THICKNESS+0.46), w[1]-nv.y*(THICKNESS+0.46), w[2]-nv.z*(THICKNESS+0.46));
+    hw._cap.quaternion.copy(q); hw._back.quaternion.copy(q);
+  }
+}
+
 // Stitch rendering — make a sewn seam *read* like real saddle stitching:
 //   • running stitch: bright thread segments hole→hole along each chain (the
 //     visible top thread you see on the leather — also the seam line in plain view)
