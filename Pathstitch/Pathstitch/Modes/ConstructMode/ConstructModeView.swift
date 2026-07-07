@@ -453,6 +453,8 @@ struct ConstructModeView: View {
                     Divider()
                     Button("3D model (.glb)") { state.exportConstruct("glb") }
                     Button("Snapshot (.png)") { state.exportConstruct("png") }
+                    Button("Step sheet (PNG per step)") { state.exportConstruct("steps") }
+                        .disabled(state.constructAssemblySteps.count < 2)
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "square.and.arrow.up").font(.system(size: 11, weight: .semibold))

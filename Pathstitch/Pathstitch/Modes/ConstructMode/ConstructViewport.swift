@@ -116,6 +116,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastShaderToken = -1
         private var lastExplodeToken = -1
         private var lastStepToken = -1
+        var stepSheetDir: URL?      // step-sheet export destination while PNGs stream in
         private var lastMatToken = -1
         private var lastLightingToken = -1
         private var lastTextureToken = -1
@@ -320,6 +321,30 @@ struct ConstructViewport: NSViewRepresentable {
                     if !handle.isEmpty {
                         self.lastPanelXfToken = self.state.constructPanelXfToken  // applied in JS already
                         self.state.setPanelTransform(handle: handle, t: t, q: q, s: s)
+                    }
+                }
+            case "stepPNG":
+                // One captioned frame of the step-sheet export.
+                if let err = json["error"] as? String, !err.isEmpty {
+                    DispatchQueue.main.async {
+                        self.stepSheetDir = nil
+                        self.state.errorMessage = err
+                    }
+                    return
+                }
+                guard let dir = stepSheetDir,
+                      let step = json["step"] as? Int,
+                      let total = json["total"] as? Int,
+                      let s = json["data"] as? String, let comma = s.range(of: "base64,"),
+                      let data = Data(base64Encoded: String(s[comma.upperBound...])), !data.isEmpty
+                else { return }
+                let name = String(format: "step-%02d.png", step)
+                let url = dir.appendingPathComponent(name)
+                try? data.write(to: url)
+                if step == total {
+                    DispatchQueue.main.async {
+                        self.stepSheetDir = nil
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                 }
             case "exportGLB":
@@ -556,6 +581,24 @@ struct ConstructViewport: NSViewRepresentable {
             }
             if fmt == "glb" {
                 webView.evaluateJavaScript("exportConstructGLB();", completionHandler: nil)
+                return
+            }
+            if fmt == "steps" {
+                // Ask where the sheet goes first; the viewport then posts one
+                // captioned PNG per build step (op: stepPNG) into that folder.
+                DispatchQueue.main.async {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true
+                    panel.canChooseFiles = false
+                    panel.canCreateDirectories = true
+                    panel.prompt = "Export Steps Here"
+                    panel.message = "Choose a folder for the step-sheet PNGs (one per build step)."
+                    panel.begin { resp in
+                        guard resp == .OK, let dir = panel.url else { return }
+                        self.stepSheetDir = dir
+                        self.webView?.evaluateJavaScript("exportStepSheet(2);", completionHandler: nil)
+                    }
+                }
                 return
             }
             webView.evaluateJavaScript("gatherConstructExport()") { result, _ in

@@ -808,6 +808,7 @@ function solveStitches(){
       return {id:o.id, root:!!o.root, via, partner};
     });
     const sj=JSON.stringify(steps);
+    window._ASM_STEPS=steps;   // reused by the step-sheet export captions
     if(sj!==window._lastStepsJSON){ window._lastStepsJSON=sj; post({op:"assemblySteps", steps}); }
   }
 
@@ -1432,6 +1433,58 @@ window.captureConstructPNG=function(mult){
   renderer.setPixelRatio(pr);
   renderer.render(scene, camera);
   return url;
+};
+
+// ---- step-sheet export (one captioned PNG per build step) --------------------
+// Scrubs the step limit 1..N, renders each state, and burns a caption banner
+// into the image ("Step 2 / 4 — Stitch Panel 2 to Panel 0") so the folder of
+// PNGs reads as printable assembly instructions. Each shot is posted to Swift
+// separately (op: stepPNG) to keep messages small; the user's own step limit
+// and pose are restored afterwards.
+function stepCaptionJS(i){
+  const s=(window._ASM_STEPS||[])[i]; if(!s) return "Step "+(i+1);
+  if(s.root) return i===0 ? ("Start with Panel "+s.id) : ("Place Panel "+s.id+" (separate piece)");
+  return (s.via==="glue"?"Glue":"Stitch")+" Panel "+s.id+" to Panel "+s.partner;
+}
+function captureStepShot(k, n, caption, mult){
+  mult=Math.max(1, Math.min(4, +mult||2));
+  const pr=renderer.getPixelRatio();
+  let url="";
+  try{
+    renderer.setPixelRatio(pr*mult);
+    renderer.render(scene, camera);
+    const src=renderer.domElement;                        // canvas→canvas draw is synchronous
+    const w=src.width, h=src.height, band=Math.max(44, Math.round(h*0.065));
+    const c=document.createElement("canvas"); c.width=w; c.height=h+band;
+    const g=c.getContext("2d");
+    g.drawImage(src, 0, 0);
+    g.fillStyle="#1e1f22"; g.fillRect(0, h, w, band);
+    g.textBaseline="middle";
+    const fs=Math.round(band*0.42), pad=Math.round(band*0.5);
+    g.font="600 "+fs+"px -apple-system, sans-serif";
+    g.fillStyle="#ff9a3c";
+    const tag="Step "+k+" / "+n;
+    g.fillText(tag, pad, h+band/2);
+    g.fillStyle="#e8e9ec";
+    g.fillText(caption, pad+g.measureText(tag).width+Math.round(band*0.55), h+band/2);
+    url=c.toDataURL("image/png");
+  }catch(e){ post({op:"consoleError", message:"Step sheet: "+((e&&e.message)||e)}); }
+  renderer.setPixelRatio(pr);
+  renderer.render(scene, camera);
+  return url;
+}
+window.exportStepSheet=function(mult){
+  const steps=window._ASM_STEPS||[], n=steps.length;
+  if(n<2){ post({op:"stepPNG", error:"No build steps yet — assemble at least two panels first."}); return; }
+  const keep=STEP_LIMIT;
+  for(let k=1;k<=n;k++){
+    STEP_LIMIT=k; recomputePose(true);
+    const cap=stepCaptionJS(k-1);
+    const url=captureStepShot(k, n, cap, mult);
+    if(!url){ post({op:"stepPNG", error:"Render failed at step "+k+"."}); break; }
+    post({op:"stepPNG", step:k, total:n, caption:cap, data:url});
+  }
+  STEP_LIMIT=keep; recomputePose(true);
 };
 
 // ---- glTF (.glb) export -----------------------------------------------------
