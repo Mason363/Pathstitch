@@ -95,6 +95,16 @@ struct HoleChain: Codable, Identifiable, Hashable {
     var holes: [ConstructHole] = []
 }
 
+/// One entry of the assembly build order — the stitch solver's BFS seating order
+/// doubles as step-by-step instructions ("place panel 0, stitch panel 2 to it…").
+/// Reported live by the viewport; never persisted (it re-derives every solve).
+struct ConstructAsmStep: Codable, Hashable {
+    var id: Int          // panel placed at this step
+    var root: Bool       // starts a new island (nothing attaches it)
+    var via: String      // "start" | "seam" | "glue"
+    var partner: Int     // panel it attaches to (-1 for roots)
+}
+
 /// How a seam resolves when the two chains have different perimeters.
 enum StitchMode: String, Codable, CaseIterable, Identifiable {
     case ease       // default: keep both hole counts, gather the longer onto the shorter

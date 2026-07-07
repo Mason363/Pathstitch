@@ -662,6 +662,21 @@ extension AppState {
         constructExplodeToken += 1
     }
 
+    /// Limits the view to the first `k` panels of the build order (-1 = all).
+    func setConstructStep(_ k: Int) {
+        constructStepLimit = k
+        constructStepToken += 1
+    }
+
+    /// Plain-English caption for one build step ("Stitch Panel 2 to Panel 0").
+    func assemblyStepCaption(_ i: Int) -> String {
+        guard i < constructAssemblySteps.count else { return "" }
+        let s = constructAssemblySteps[i]
+        if s.root { return i == 0 ? "Start with Panel \(s.id)" : "Place Panel \(s.id) (separate piece)" }
+        let verb = s.via == "glue" ? "Glue" : "Stitch"
+        return "\(verb) Panel \(s.id) to Panel \(s.partner)"
+    }
+
     /// Switches between the editing view and the clean Mockup beauty render.
     func setConstructRenderMode(_ m: String) {
         guard m != constructRenderMode else { return }
@@ -928,6 +943,8 @@ extension AppState {
         constructFolds = []
         constructHoleChains = []
         constructSeams = []
+        constructAssemblySteps = []
+        constructStepLimit = -1
         constructStampsJSON = "[]"
         pendingEngulfed = []
         constructPanelHandles = [:]

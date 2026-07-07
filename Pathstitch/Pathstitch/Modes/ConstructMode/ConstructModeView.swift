@@ -270,6 +270,7 @@ struct ConstructModeView: View {
                 TODivider()
                 DisclosureGroup(isExpanded: $showDisplay) {
                     VStack(alignment: .leading, spacing: 14) {
+                        if state.constructAssemblySteps.count >= 2 { stepsSection }
                         explodeSection
                         shadingSection
                         matSection
@@ -294,6 +295,70 @@ struct ConstructModeView: View {
                     selection: Binding(get: { state.constructRenderMode },
                                        set: { state.setConstructRenderMode($0) }))
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: Build steps — scrub the solver's seating order like instructions
+
+    private var stepsSection: some View {
+        let steps = state.constructAssemblySteps
+        let n = steps.count
+        let lim = state.constructStepLimit          // -1 = show all
+        let shown = lim < 0 ? n : min(lim, n)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                TOGroupLabel("Build Steps")
+                Spacer()
+                if lim >= 0 {
+                    Button { state.setConstructStep(-1) } label: {
+                        Text("Show all")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundColor(.to_accent)
+                    }.buttonStyle(.plain)
+                }
+            }
+            HStack(spacing: 10) {
+                Button { state.setConstructStep(max(1, shown - 1)) } label: {
+                    Image(systemName: "minus").font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.to_textTer).frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(shown <= 1).help("One step back")
+                Text(lim < 0 ? "All \(n) steps" : "Step \(shown) of \(n)")
+                    .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                    .foregroundColor(lim < 0 ? .to_textPri : .to_accent)
+                    .frame(maxWidth: .infinity)
+                Button {
+                    let next = shown + 1
+                    state.setConstructStep(next >= n ? -1 : next)
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.to_textTer).frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(lim < 0).help("One step forward")
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(0..<n, id: \.self) { i in
+                    let active = lim >= 0 && i == shown - 1
+                    let placed = lim < 0 || i < shown
+                    Button { state.setConstructStep(i + 1) } label: {
+                        HStack(spacing: 6) {
+                            Text("\(i + 1).")
+                                .font(.system(size: 11.5, weight: .semibold)).monospacedDigit()
+                                .foregroundColor(active ? .to_accent : .to_textMut)
+                            Text(state.assemblyStepCaption(i))
+                                .font(.system(size: 12, weight: active ? .semibold : .regular))
+                                .foregroundColor(active ? .to_accent : (placed ? .to_textSec : .to_textMut))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 7).padding(.vertical, 3.5)
+                        .background(RoundedRectangle(cornerRadius: 6)
+                            .fill(active ? Color.to_accentTint : Color.clear))
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+            }
+            TOHint("The stitch order, worked out from the assembly — scrub it to see the build one attachment at a time. View only.")
+        }
     }
 
     // MARK: Exploded view — pull the pieces apart to inspect internal seams
@@ -655,6 +720,13 @@ struct ConstructModeView: View {
                                set: { state.setConstructFoldAngle(spec.id, $0) }),
                 range: -180...180, unit: "°", maxFrac: 0, step: 1,
                 onBegin: { state.pushConstructUndo() })
+            // One-tap presets for the angles leatherwork actually uses: box sides
+            // (±90°), gusset half-folds (±45°), fold-flat (180°), and open (0°).
+            TOPresetChips(values: [-180, -90, -45, 0, 45, 90, 180],
+                          value: Binding(get: { spec.angleDeg },
+                                         set: { state.pushConstructUndo()
+                                                state.setConstructFoldAngle(spec.id, $0) }),
+                          unit: "°", maxFrac: 0)
             TOSlider(
                 value: Binding(get: { spec.roundness },
                                set: { state.setConstructFoldRoundness(spec.id, $0) }),

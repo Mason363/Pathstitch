@@ -779,6 +779,38 @@ function solveStitches(){
   }
   const bfsIndex={}; order.forEach((o,i)=>{ bfsIndex[o.id]=i; });
 
+  // -- assembly steps: the seating order IS the build order --------------------
+  // Each panel gets its step index; a step limit (Steps panel in the inspector)
+  // hides everything not yet attached, turning the solve into build instructions.
+  for(const p of PANELS){
+    p.stepIdx = (bfsIndex[p.id]!==undefined) ? bfsIndex[p.id] : 0;
+    p.stepHidden = (STEP_LIMIT>=0 && p.stepIdx>=STEP_LIMIT);
+  }
+  {
+    const steps=order.map(o=>{
+      let via="start", partner=-1, mine=bfsIndex[o.id];
+      if(!o.root){
+        for(const j of seamJoints){
+          let other=null;
+          if(j.ca.panelId===o.id) other=j.cb.panelId;
+          else if(j.cb.panelId===o.id) other=j.ca.panelId;
+          if(other===null || bfsIndex[other]>=mine) continue;
+          if(partner<0 || bfsIndex[other]<bfsIndex[partner]){ partner=other; via="seam"; }
+        }
+        if(partner<0) for(const g of glueJoints){
+          let other=null;
+          if(g.panelA===o.id) other=g.panelB;
+          else if(g.panelB===o.id) other=g.panelA;
+          if(other===null || bfsIndex[other]>=mine) continue;
+          if(partner<0 || bfsIndex[other]<bfsIndex[partner]){ partner=other; via="glue"; }
+        }
+      }
+      return {id:o.id, root:!!o.root, via, partner};
+    });
+    const sj=JSON.stringify(steps);
+    if(sj!==window._lastStepsJSON){ window._lastStepsJSON=sj; post({op:"assemblySteps", steps}); }
+  }
+
   // Matched hole pairs between `pid` and partner panels passing `accept`.
   function pairsFor(pid, accept){
     const src=[], dst=[];
@@ -1080,6 +1112,7 @@ function recomputePose(silent){
   // readout / seam-fit / stretch messages back to Swift mid-gesture.
   if(!silent){ reportStretch(); postSeamFit(); postReadouts(); }
   if(typeof applyRenderMode==="function") applyRenderMode();   // re-hide overlays in mockup
+  applyStepVisibility();                                       // step limit hides not-yet-attached panels
   if(typeof updateFoldHi==="function") updateFoldHi();         // fold-side tint rides the pose
   if(typeof updateGlueSelHi==="function") updateGlueSelHi();   // glue first-pick highlight rides the pose
   // Keep the gizmo on its panel as the pose changes (but never while dragging it).
@@ -1109,6 +1142,8 @@ function updateHoleInstances(){
   const tlen=Math.max(0.8, THICKNESS)+1.4;   // span the leather + poke both faces
   for(let i=0;i<HOLE_SLOTS.length;i++){
     const slot=HOLE_SLOTS[i], c=CHAIN_BY_ID[slot.chainId]; if(!c) continue;
+    const pnl=PANEL_BY_ID[c.panelId];
+    if(pnl && pnl.stepHidden){ m.makeScale(0,0,0); holeMesh.setMatrixAt(i, m); continue; }
     const w=holeWorld(c, slot.k), n=holeNormal(c, slot.k);
     nv.set(n[0],n[1],n[2]); if(nv.lengthSq()<1e-9) nv.set(0,1,0); nv.normalize();
     q.setFromUnitVectors(_UPY, nv);
@@ -1133,6 +1168,7 @@ function updateChainLines(){
   const pos=[], colArr=[], sel=new THREE.Color(COL_HOLE_SEL), base=new THREE.Color(COL_CHAIN);
   for(const c of CHAINS){
     const n=c.holes.length; if(n<2) continue;
+    const cp=PANEL_BY_ID[c.panelId]; if(cp && cp.stepHidden) continue;
     const col=(c.id===SELECTED_CHAIN)?sel:base;
     const last=c.closed?n:n-1;
     for(let k=0;k<last;k++){
@@ -1163,7 +1199,7 @@ function updateStamps(){
   if(!STAMPS.length) return;
   const pos=[];
   for(const s of STAMPS){
-    const p=PANEL_BY_ID[s.panelId]; if(!p) continue;
+    const p=PANEL_BY_ID[s.panelId]; if(!p || p.stepHidden) continue;
     const n=s.pts.length; if(n<2) continue;
     const last=(s.closed!==false)?n:n-1;
     for(let k=0;k<last;k++){
@@ -1188,6 +1224,8 @@ function updateThread(){
   const run=[], cross=[];
   for(const seam of SEAMS){
     const ca=CHAIN_BY_ID[seam.chainA], cb=CHAIN_BY_ID[seam.chainB]; if(!ca||!cb) continue;
+    const pa=PANEL_BY_ID[ca.panelId], pb=PANEL_BY_ID[cb.panelId];
+    if((pa && pa.stepHidden) || (pb && pb.stepHidden)) continue;   // step limit: seam not sewn yet
     const pairs=seamPairs(seam, ca, cb);
     for(const pr of pairs){
       const A=holeWorld(ca, pr[0]), B=holeWorld(cb, pr[1]);
@@ -1339,6 +1377,29 @@ window.setConstructRenderMode=function(m){ RENDER_MODE=(m==="mockup")?"mockup":"
 // panel.X (holes, thread, stamps, decals) follows automatically.
 let EXPLODE=0;
 window.setConstructExplode=function(f){ EXPLODE=Math.max(0, Math.min(1, +f||0)); needsPose=true; };
+
+// ---- assembly steps ----------------------------------------------------------
+// The stitch solver's BFS seating order doubles as the build order. A step limit
+// of k shows only the first k panels of that order (fully posed); -1 shows all.
+// View state only — geometry, fit reports, and file exports are never affected.
+let STEP_LIMIT=-1;
+window.setConstructStep=function(k){ STEP_LIMIT=(k===null||k===undefined)?-1:+k; needsPose=true; };
+function applyStepVisibility(){
+  for(const p of PANELS){
+    if(p.stepHidden){
+      if(p.mesh) p.mesh.visible=false;
+      if(p.shell) p.shell.visible=false;
+      if(p.wire) p.wire.visible=false;
+      if(p.foldLine) p.foldLine.visible=false;
+      if(p.decalMesh && p.decalMesh.visible){ p.decalMesh.visible=false; p._stepHidDecal=true; }
+    }else{
+      if(p.mesh) p.mesh.visible=true;
+      if(p.shell) p.shell.visible=true;
+      if(p._stepHidDecal){ if(p.decalMesh) p.decalMesh.visible=true; p._stepHidDecal=false; }
+      // wire/foldLine are owned by applyRenderMode, which already ran this pose.
+    }
+  }
+}
 function applyExplode(){
   if(EXPLODE<=0 || PANELS.length<2) return;
   const cents=PANELS.map(p=>centroidX(p));

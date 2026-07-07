@@ -85,6 +85,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushRenderMode()
         context.coordinator.pushShaderMode()
         context.coordinator.pushExplode()
+        context.coordinator.pushStep()
         context.coordinator.pushMat()
         context.coordinator.pushLighting()
         context.coordinator.pushTexture()
@@ -114,6 +115,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastRenderToken = -1
         private var lastShaderToken = -1
         private var lastExplodeToken = -1
+        private var lastStepToken = -1
         private var lastMatToken = -1
         private var lastLightingToken = -1
         private var lastTextureToken = -1
@@ -162,6 +164,7 @@ struct ConstructViewport: NSViewRepresentable {
                     self.lastRenderToken = -1
                     self.lastShaderToken = -1
                     self.lastExplodeToken = -1
+                    self.lastStepToken = -1
                     self.lastMatToken = -1
                     self.lastLightingToken = -1
                     self.lastTextureToken = -1
@@ -170,6 +173,7 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushRenderMode()
                     self.pushShaderMode()
                     self.pushExplode()
+                    self.pushStep()
                     self.pushMat()
                     self.pushLighting()
                     self.pushTexture()
@@ -287,6 +291,25 @@ struct ConstructViewport: NSViewRepresentable {
                     self.state.constructFinishedD = (r["d"] as? Double) ?? 0
                     self.state.constructLeatherAreaMm2 = (r["area"] as? Double) ?? 0
                     self.state.constructReadoutPanels = (r["panels"] as? Int) ?? 0
+                }
+            case "assemblySteps":
+                // The stitch solver's BFS seating order — the build order the
+                // Steps panel scrubs through.
+                let raw = json["steps"] as? [[String: Any]] ?? []
+                let steps = raw.map { s in
+                    ConstructAsmStep(id: (s["id"] as? Int) ?? -1,
+                                     root: (s["root"] as? Bool) ?? false,
+                                     via: (s["via"] as? String) ?? "start",
+                                     partner: (s["partner"] as? Int) ?? -1)
+                }
+                DispatchQueue.main.async {
+                    if self.state.constructAssemblySteps != steps {
+                        self.state.constructAssemblySteps = steps
+                        // A rebuild can shrink the order below the current limit.
+                        if self.state.constructStepLimit > steps.count {
+                            self.state.setConstructStep(-1)
+                        }
+                    }
                 }
             case "panelXf":
                 let handle = json["handle"] as? String ?? ""
@@ -424,6 +447,13 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastExplodeToken != state.constructExplodeToken else { return }
             lastExplodeToken = state.constructExplodeToken
             webView.evaluateJavaScript("setConstructExplode(\(state.constructExplode));", completionHandler: nil)
+        }
+
+        func pushStep() {
+            guard ready, let webView = webView else { return }
+            guard lastStepToken != state.constructStepToken else { return }
+            lastStepToken = state.constructStepToken
+            webView.evaluateJavaScript("setConstructStep(\(state.constructStepLimit));", completionHandler: nil)
         }
 
         func pushMat() {

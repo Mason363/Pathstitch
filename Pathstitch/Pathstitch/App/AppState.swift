@@ -2301,6 +2301,12 @@ class AppState {
     // and the viewport collapses it before gathering export geometry.
     var constructExplode: Double = 0
     var constructExplodeToken: Int = 0
+    // Assembly steps: the solver's BFS seating order, reported by the viewport.
+    // A step limit of k shows only the first k placed panels (-1 = show all) —
+    // scrubbing it turns the solve into build instructions. View state only.
+    var constructAssemblySteps: [ConstructAsmStep] = []
+    var constructStepLimit: Int = -1
+    var constructStepToken: Int = 0
     // How panels are shaded, independent of edit/mockup: wireframe | solid (flat
     // unlit) | flat (flat-shaded lit) | realistic (PBR leather, default).
     var constructShaderMode: String = "realistic"
