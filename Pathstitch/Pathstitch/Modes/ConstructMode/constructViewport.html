@@ -24,6 +24,7 @@
 <div id="snaptag" style="position:absolute;pointer-events:none;display:none;font:11px -apple-system,sans-serif;color:#0b0c0e;background:rgba(255,255,255,0.92);padding:1px 5px;border-radius:3px;transform:translate(12px,12px);white-space:nowrap;z-index:5;"></div>
 <div id="foldhud" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(255,154,60,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
 <div id="measuretag" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(80,200,255,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
+<div id="stephud" style="position:absolute;pointer-events:none;display:none;left:50%;top:14px;transform:translateX(-50%);font:600 13px -apple-system,sans-serif;color:#e8e9ec;background:rgba(20,21,24,0.92);border:1px solid rgba(255,154,60,0.65);padding:5px 14px;border-radius:8px;white-space:nowrap;z-index:6;"></div>
 <script>
 "use strict";
 
@@ -97,6 +98,15 @@ function setGizmoSnap(on){
 setGizmoSnap(true);
 window.addEventListener("keydown", e=>{ if(e.key==="Shift") setGizmoSnap(false); });
 window.addEventListener("keyup",   e=>{ if(e.key==="Shift") setGizmoSnap(true);  });
+// Escape backs out of whatever is half-done, nearest first: a half-drawn
+// crease or measure point cancels locally; everything Swift owns (pin mode,
+// artwork placement, selection, the step filter) is posted up as one event.
+window.addEventListener("keydown", e=>{
+  if(e.key!=="Escape") return;
+  if(typeof CREASE_PT!=="undefined" && CREASE_PT){ CREASE_PT=null; hideCreaseMark(); hideSnapIndicator(); return; }
+  if(TOOL==="measure" && (MEASURE.a||MEASURE.b)){ clearMeasure(false); return; }
+  post({op:"escape"});
+});
 const gizmoProxy=new THREE.Object3D(); scene.add(gizmoProxy);
 let gizmoPanel=null;
 
@@ -1506,7 +1516,16 @@ window.setConstructExplode=function(f){ EXPLODE=Math.max(0, Math.min(1, +f||0));
 // View state only — geometry, fit reports, and file exports are never affected.
 let STEP_LIMIT=-1;
 window.setConstructStep=function(k){ STEP_LIMIT=(k===null||k===undefined)?-1:+k; needsPose=true; };
+function updateStepHUD(){
+  const el=document.getElementById("stephud"); if(!el) return;
+  const steps=window._ASM_STEPS||[];
+  if(STEP_LIMIT<0 || STEP_LIMIT>steps.length || !steps.length){ el.style.display="none"; return; }
+  const cap=(typeof stepCaptionJS==="function") ? stepCaptionJS(STEP_LIMIT-1) : "";
+  el.innerHTML="<span style='color:#ff9a3c'>Step "+STEP_LIMIT+" / "+steps.length+"</span>&nbsp;&nbsp;"+cap;
+  el.style.display="block";
+}
 function applyStepVisibility(){
+  updateStepHUD();
   for(const p of PANELS){
     if(p.stepHidden){
       if(p.mesh) p.mesh.visible=false;

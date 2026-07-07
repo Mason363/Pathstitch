@@ -295,6 +295,23 @@ struct ConstructViewport: NSViewRepresentable {
                     self.state.constructLeatherAreaMm2 = (r["area"] as? Double) ?? 0
                     self.state.constructReadoutPanels = (r["panels"] as? Int) ?? 0
                 }
+            case "escape":
+                // Back out one layer of viewport state, nearest first. Local
+                // cancels (half-drawn crease / measure) already happened in JS.
+                DispatchQueue.main.async {
+                    let s = self.state
+                    if s.constructArtworkMode {
+                        s.exitArtworkPlacement()
+                    } else if s.stitchPinMode {
+                        s.setStitchPinMode(s.activeSeamForPins, false)
+                    } else if s.selectedChainForStitch != nil {
+                        s.selectedChainForStitch = nil
+                    } else if s.selectedFoldId != nil {
+                        s.selectedFoldId = nil
+                    } else if s.constructStepLimit >= 0 {
+                        s.setConstructStep(-1)
+                    }
+                }
             case "measure":
                 let mm = json["mm"] as? Double ?? -1
                 DispatchQueue.main.async { self.state.constructMeasureMm = mm }
