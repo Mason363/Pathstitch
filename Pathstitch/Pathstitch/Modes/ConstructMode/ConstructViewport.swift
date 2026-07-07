@@ -86,6 +86,7 @@ struct ConstructViewport: NSViewRepresentable {
         context.coordinator.pushShaderMode()
         context.coordinator.pushExplode()
         context.coordinator.pushStep()
+        context.coordinator.pushMeasureClear()
         context.coordinator.pushMat()
         context.coordinator.pushLighting()
         context.coordinator.pushTexture()
@@ -116,6 +117,7 @@ struct ConstructViewport: NSViewRepresentable {
         private var lastShaderToken = -1
         private var lastExplodeToken = -1
         private var lastStepToken = -1
+        private var lastMeasureClearToken = 0
         var stepSheetDir: URL?      // step-sheet export destination while PNGs stream in
         private var lastMatToken = -1
         private var lastLightingToken = -1
@@ -293,6 +295,9 @@ struct ConstructViewport: NSViewRepresentable {
                     self.state.constructLeatherAreaMm2 = (r["area"] as? Double) ?? 0
                     self.state.constructReadoutPanels = (r["panels"] as? Int) ?? 0
                 }
+            case "measure":
+                let mm = json["mm"] as? Double ?? -1
+                DispatchQueue.main.async { self.state.constructMeasureMm = mm }
             case "assemblySteps":
                 // The stitch solver's BFS seating order — the build order the
                 // Steps panel scrubs through.
@@ -479,6 +484,13 @@ struct ConstructViewport: NSViewRepresentable {
             guard lastStepToken != state.constructStepToken else { return }
             lastStepToken = state.constructStepToken
             webView.evaluateJavaScript("setConstructStep(\(state.constructStepLimit));", completionHandler: nil)
+        }
+
+        func pushMeasureClear() {
+            guard ready, let webView = webView else { return }
+            guard lastMeasureClearToken != state.constructMeasureClearToken else { return }
+            lastMeasureClearToken = state.constructMeasureClearToken
+            webView.evaluateJavaScript("clearConstructMeasure();", completionHandler: nil)
         }
 
         func pushMat() {

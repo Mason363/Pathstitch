@@ -15,6 +15,7 @@ enum ConstructTool: String, CaseIterable, Identifiable {
     case ground     // click a panel to pin it as the ground
     case stitch     // click chain A then chain B to sew them together
     case glue       // click two panels to glue (weld) their meeting edges
+    case measure    // click two points on the leather → live distance readout
 
     var id: String { rawValue }
 
@@ -27,6 +28,7 @@ enum ConstructTool: String, CaseIterable, Identifiable {
         case .ground: return "Ground"
         case .stitch: return "Stitch"
         case .glue:   return "Glue"
+        case .measure: return "Measure"
         }
     }
 
@@ -40,11 +42,12 @@ enum ConstructTool: String, CaseIterable, Identifiable {
         case .ground: return "square.grid.3x3.fill.square"
         case .stitch: return "point.topleft.down.to.point.bottomright.curvepath"
         case .glue:   return "link"
+        case .measure: return "ruler"
         }
     }
 
     /// Tools shipped so far.
-    static var available: [ConstructTool] { [.select, .move, .fold, .crease, .ground, .stitch, .glue] }
+    static var available: [ConstructTool] { [.select, .move, .fold, .crease, .ground, .stitch, .glue, .measure] }
 }
 
 /// A fold line the user drew in 3D (two points in a panel's 2D space), re-fed to

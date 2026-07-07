@@ -23,6 +23,7 @@
 <div id="hud">construct · drop a .dxf / .stch, or fold the active sketch</div>
 <div id="snaptag" style="position:absolute;pointer-events:none;display:none;font:11px -apple-system,sans-serif;color:#0b0c0e;background:rgba(255,255,255,0.92);padding:1px 5px;border-radius:3px;transform:translate(12px,12px);white-space:nowrap;z-index:5;"></div>
 <div id="foldhud" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(255,154,60,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
+<div id="measuretag" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(80,200,255,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
 <script>
 "use strict";
 
@@ -359,6 +360,7 @@ function clearPanels(){
   if(chainLineMesh){ root.remove(chainLineMesh); chainLineMesh.geometry.dispose(); chainLineMesh.material.dispose(); chainLineMesh=null; }
   if(stampMesh){ root.remove(stampMesh); stampMesh.geometry.dispose(); stampMesh.material.dispose(); stampMesh=null; }
   disposeHardware();
+  clearMeasure(true);
   if(typeof detachGizmo==="function") detachGizmo();
   hoverPanelId=-1; if(typeof clearHoverLine==="function") clearHoverLine();   // stale hover refs gone
   if(typeof clearFoldHi==="function") clearFoldHi();
@@ -1113,6 +1115,7 @@ function recomputePose(silent){
   updateChainLines();
   updateStamps();
   updateHardware();
+  updateMeasure();   // tape anchors ride the mesh; distance re-reads live
   updateThread();
   // Drag-start fold calibration re-poses twice; stay silent so it doesn't spam the
   // readout / seam-fit / stretch messages back to Swift mid-gesture.
@@ -1260,6 +1263,75 @@ function updateHardware(){
     hw._back.position.set(w[0]-nv.x*(THICKNESS+0.46), w[1]-nv.y*(THICKNESS+0.46), w[2]-nv.z*(THICKNESS+0.46));
     hw._cap.quaternion.copy(q); hw._back.quaternion.copy(q);
   }
+}
+
+// Measure tool — two points anchored INTO the mesh (panel + triangle +
+// barycentric, like sewing holes), so the tape stays glued to the leather and
+// the distance re-reads live as the model folds, seats, or explodes.
+const COL_MEASURE=0x50c8ff;
+let MEASURE={a:null, b:null};       // anchors {panelId, tri, bary}
+let measureObjs=null;               // {ma, mb, line}
+function baryIn3D(p, A, B, C){
+  const v0=sub(B,A), v1=sub(C,A), v2=sub(p,A);
+  const d00=dot(v0,v0), d01=dot(v0,v1), d11=dot(v1,v1), d20=dot(v2,v0), d21=dot(v2,v1);
+  const den=(d00*d11-d01*d01)||1e-12;
+  const v=(d11*d20-d01*d21)/den, w=(d00*d21-d01*d20)/den;
+  return [1-v-w, v, w];
+}
+function clearMeasure(silent){
+  MEASURE={a:null, b:null};
+  if(measureObjs){
+    for(const k of ["ma","mb"]){ const o=measureObjs[k]; root.remove(o); o.geometry.dispose(); o.material.dispose(); }
+    root.remove(measureObjs.line); measureObjs.line.geometry.dispose(); measureObjs.line.material.dispose();
+    measureObjs=null;
+  }
+  const tag=document.getElementById("measuretag"); if(tag) tag.style.display="none";
+  if(!silent) post({op:"measure", mm:-1});
+}
+window.clearConstructMeasure=function(){ clearMeasure(false); };
+function measureAnchorWorld(an){
+  const p=PANEL_BY_ID[an.panelId]; if(!p) return null;
+  const t=p.triangles[an.tri]; if(!t) return null;
+  return embeddedWorld(p, an);
+}
+function updateMeasure(){
+  if(!MEASURE.a){ return; }
+  const wa=measureAnchorWorld(MEASURE.a);
+  const wb=MEASURE.b ? measureAnchorWorld(MEASURE.b) : null;
+  if(!wa || (MEASURE.b && !wb)){ clearMeasure(false); return; }   // panel rebuilt away
+  if(!measureObjs){
+    const mk=()=>new THREE.Mesh(new THREE.SphereGeometry(1.4,14,10),
+                                new THREE.MeshBasicMaterial({color:COL_MEASURE}));
+    const lg=new THREE.BufferGeometry();
+    lg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6),3));
+    const line=new THREE.Line(lg, new THREE.LineBasicMaterial({color:COL_MEASURE}));
+    line.renderOrder=4;
+    measureObjs={ma:mk(), mb:mk(), line};
+    root.add(measureObjs.ma); root.add(measureObjs.mb); root.add(measureObjs.line);
+  }
+  measureObjs.ma.position.set(wa[0],wa[1],wa[2]);
+  measureObjs.mb.visible=!!wb;
+  measureObjs.line.visible=!!wb;
+  if(wb){
+    measureObjs.mb.position.set(wb[0],wb[1],wb[2]);
+    const pos=measureObjs.line.geometry.attributes.position.array;
+    pos[0]=wa[0];pos[1]=wa[1];pos[2]=wa[2];pos[3]=wb[0];pos[4]=wb[1];pos[5]=wb[2];
+    measureObjs.line.geometry.attributes.position.needsUpdate=true;
+    const d=len(sub(wa,wb));
+    if(Math.abs(d-(window._lastMeasure||-1))>0.05){ window._lastMeasure=d; post({op:"measure", mm:d}); }
+  }
+  updateMeasureLabel();
+}
+function updateMeasureLabel(){
+  const tag=document.getElementById("measuretag"); if(!tag) return;
+  if(!measureObjs || !MEASURE.b){ tag.style.display="none"; return; }
+  const wa=measureObjs.ma.position, wb=measureObjs.mb.position;
+  const mid=new THREE.Vector3().addVectors(wa,wb).multiplyScalar(0.5).project(camera);
+  if(mid.z>1){ tag.style.display="none"; return; }   // behind the camera
+  tag.style.display="block";
+  tag.style.left=((mid.x*0.5+0.5)*window.innerWidth)+"px";
+  tag.style.top=((-mid.y*0.5+0.5)*window.innerHeight)+"px";
+  tag.textContent=wa.distanceTo(wb).toFixed(1)+" mm";
 }
 
 // Stitch rendering — make a sewn seam *read* like real saddle stitching:
@@ -1789,6 +1861,7 @@ window.setConstructControls=function(jsonStr){
 window.setConstructTool=function(t){
   TOOL=t||"select";
   if(TOOL!=="crease"){ CREASE_PT=null; hideCreaseMark(); hideSnapIndicator(); }   // abandon a half-drawn crease
+  if(TOOL!=="measure") clearMeasure(false);   // tape measure lives with its tool
   if(TOOL!=="move") detachGizmo();   // hide the transform gizmo outside the Move tool
   if(typeof clearHover==="function") clearHover();   // drop stale hover highlight
   if(typeof updateGlueSelHi==="function") updateGlueSelHi();   // glue first-pick tint follows the tool
@@ -2359,6 +2432,29 @@ renderer.domElement.addEventListener("pointerup",e=>{
     if(cid>=0) post({op:"selectChain", chainId:cid});
     return;
   }
+  if(TOOL==="measure"){
+    setMouse(e.clientX,e.clientY); ray.setFromCamera(mouse,camera);
+    const hit=ray.intersectObjects(PANELS.filter(p=>!p.stepHidden).map(p=>p.mesh),false)[0];
+    if(!hit) return;
+    const panel=PANEL_BY_ID[hit.object.userData.panelId];
+    const tri=hit.faceIndex, t=panel.triangles[tri]; if(!t) return;
+    let anchor;
+    // Snap to a nearby sewing hole (within ~10 px) — hole-to-hole runs are the
+    // measurements makers actually need exact.
+    let snapped=null, sd=1e18;
+    const hp=[hit.point.x,hit.point.y,hit.point.z];
+    for(const c of CHAINS){ if(c.panelId!==panel.id) continue;
+      for(let k=0;k<c.holes.length;k++){ const d=len(sub(holeWorld(c,k),hp));
+        if(d<sd){ sd=d; snapped={tri:c.holes[k].tri, bary:c.holes[k].bary}; } } }
+    if(snapped && sd<Math.max(2.5, hit.distance*0.012)) anchor={panelId:panel.id, tri:snapped.tri, bary:snapped.bary.slice()};
+    else anchor={panelId:panel.id, tri,
+                 bary:baryIn3D(hp, panel.X[t[0]], panel.X[t[1]], panel.X[t[2]])};
+    if(!MEASURE.a || MEASURE.b){ clearMeasure(true); MEASURE={a:anchor, b:null}; }
+    else MEASURE.b=anchor;
+    window._lastMeasure=-1;
+    updateMeasure();
+    return;
+  }
   if(TOOL==="ground" || TOOL==="glue"){
     const hit=panelHitAt(e.clientX,e.clientY);
     if(hit){ const panel=PANEL_BY_ID[hit.object.userData.panelId];
@@ -2390,6 +2486,7 @@ function tick(){
   try{
     if(needsPose){ needsPose=false; recomputePose(); }
     controls.update();
+    updateMeasureLabel();   // screen-space tag follows the camera
     renderer.render(scene,camera);
   }catch(e){ if(!window.__rerr){ window.__rerr=1; post({op:"consoleError", message:"RENDER: "+((e&&e.message)||e)+" @ "+((e&&e.stack)||"").slice(0,300)}); } }
 }

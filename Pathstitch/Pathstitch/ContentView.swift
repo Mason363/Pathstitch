@@ -3704,6 +3704,7 @@ extension ContentView {
         case .ground: return "Ground — click a panel to pin it to the ground plane"
         case .stitch: return "Stitch — click one hole chain, then another, to sew them"
         case .glue:   return "Glue — click two panels to weld their meeting edges (glue tabs)"
+        case .measure: return "Measure — click two points on the leather for a live distance"
         }
     }
 

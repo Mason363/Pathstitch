@@ -2307,6 +2307,10 @@ class AppState {
     var constructAssemblySteps: [ConstructAsmStep] = []
     var constructStepLimit: Int = -1
     var constructStepToken: Int = 0
+    // Measure tool: last two-point distance the viewport reported (-1 = none),
+    // and a token that tells the viewport to drop the tape.
+    var constructMeasureMm: Double = -1
+    var constructMeasureClearToken: Int = 0
     // How panels are shaded, independent of edit/mockup: wireframe | solid (flat
     // unlit) | flat (flat-shaded lit) | realistic (PBR leather, default).
     var constructShaderMode: String = "realistic"

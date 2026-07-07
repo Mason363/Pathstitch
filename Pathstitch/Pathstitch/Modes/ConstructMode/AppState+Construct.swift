@@ -662,6 +662,12 @@ extension AppState {
         constructExplodeToken += 1
     }
 
+    /// Drops the measure tool's tape (both points + label) in the viewport.
+    func clearConstructMeasurement() {
+        constructMeasureMm = -1
+        constructMeasureClearToken += 1
+    }
+
     /// Limits the view to the first `k` panels of the build order (-1 = all).
     func setConstructStep(_ k: Int) {
         constructStepLimit = k

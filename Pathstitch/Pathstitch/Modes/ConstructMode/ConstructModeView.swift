@@ -113,6 +113,9 @@ struct ConstructModeView: View {
             }
             return ToolGuide(icon: "link", name: "Glue",
                              step: "Click two panels in turn to weld their meeting edges (glue tabs).")
+        case .measure:
+            return ToolGuide(icon: "ruler", name: "Measure",
+                             step: "Click two points on the leather — the tape sticks to the surface and re-reads as you fold. Clicks near a sewing hole snap to it.")
         }
     }
 
@@ -490,6 +493,7 @@ struct ConstructModeView: View {
         case .ground: groundSection
         case .stitch: seamSection
         case .glue:   glueSection
+        case .measure: measureSection
         }
     }
 
@@ -616,6 +620,31 @@ struct ConstructModeView: View {
             }
             TOSecondaryButton(title: "Add fold (Crease tool)", icon: ConstructTool.crease.icon) {
                 state.setConstructTool(.crease)
+            }
+        }
+    }
+
+    // MARK: Measure — two points on the folded leather, live distance
+
+    private var measureSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if state.constructMeasureMm >= 0 {
+                HStack(spacing: 8) {
+                    Image(systemName: "ruler").font(.system(size: 13)).foregroundColor(.to_accent)
+                    Text(String(format: "%.1f mm", state.constructMeasureMm))
+                        .font(.system(size: 17, weight: .semibold)).monospacedDigit()
+                        .foregroundColor(.to_textPri)
+                    Text(String(format: "(%.2f in)", state.constructMeasureMm / 25.4))
+                        .font(.system(size: 12)).monospacedDigit()
+                        .foregroundColor(.to_textMut)
+                    Spacer()
+                }
+                TOHint("Straight-line distance. The endpoints stick to the leather, so it re-reads as you fold or explode.")
+                TOSecondaryButton(title: "Clear measurement", icon: "xmark", tint: .to_textMut) {
+                    state.clearConstructMeasurement()
+                }
+            } else {
+                TOHint("Click two points on the leather to measure. Clicks near a sewing hole snap to the hole for exact hole-to-hole runs.")
             }
         }
     }
