@@ -158,6 +158,7 @@
         // fires a native `click` even after a big drag (mousedown/up land on the
         // same element), so without this every rotate selected a face on release.
         let pointerDownX = 0, pointerDownY = 0;
+        let pointerIsDown = false;   // a button is held (orbit / pan / gizmo drag)
         const CLICK_MOVE_TOL = 5; // px
 
         // Body move tool state (MAS-125)
@@ -1079,6 +1080,21 @@
                 return;
             }
 
+            // While a button is held (orbiting / panning / gizmo drag) the face
+            // under the stationary cursor changes every frame as the camera moves,
+            // so running the hover raycast just flickers highlights and wastes work
+            // on dense models. Clear any highlight once, then skip hover until release.
+            if (pointerIsDown) {
+                if (hoveredFace || hoveredEdge) {
+                    hoveredFace = null;
+                    hoveredEdge = null;
+                    updateVisuals();
+                    document.body.style.cursor = 'default';
+                    infoOverlay.style.display = 'none';
+                }
+                return;
+            }
+
             // Check if arrow is hovered first (highest priority if visible)
             if (isPlaneSelectionActive && selectedProjectionPlane && hitboxMesh) {
                 const intersects = raycaster.intersectObject(hitboxMesh);
@@ -1197,6 +1213,7 @@
             // from the tail end of an orbit/pan.
             pointerDownX = event.clientX;
             pointerDownY = event.clientY;
+            pointerIsDown = true;
 
             raycaster.setFromCamera(mouse, camera);
             
@@ -1216,6 +1233,7 @@
         }
 
         function onMouseUp(event) {
+            pointerIsDown = false;
             if (isDraggingArrow) {
                 isDraggingArrow = false;
                 controls.enabled = true; // Re-enable orbit controls
