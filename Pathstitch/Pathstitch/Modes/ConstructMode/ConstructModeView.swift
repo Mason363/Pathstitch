@@ -11,6 +11,10 @@ struct ConstructModeView: View {
     /// disclosure so the inspector leads with the active tool, not view chrome.
     @State private var showDisplay = false
 
+    /// Tool help (the "what to click next" copy) is collapsed behind the ⓘ
+    /// toggle, matching the 2D tool panels — a tool is used hundreds of times.
+    @State private var showToolHelp = false
+
     /// Overlap chooser: apply the picked treatment to every undecided area at once
     /// (a whole row of holes/areas) rather than one prompt at a time.
     @State private var overlapApplyToAll = false
@@ -44,10 +48,6 @@ struct ConstructModeView: View {
                     homeToken: state.triggerConstructHomeToken,
                     state: state
                 )
-                // Always-on "what does this tool do, what do I click next" banner —
-                // the single biggest clarity fix. Sits where the eye already is.
-                toolHUD
-                    .padding(12)
                 if let first = state.pendingEngulfed.first { overlapChooser(first) }
                 if state.isBuildingConstructModel {
                     HStack(spacing: 8) {
@@ -119,45 +119,12 @@ struct ConstructModeView: View {
         }
     }
 
-    private var toolHUD: some View {
-        let g = toolGuide
-        return HStack(spacing: 10) {
-            Image(systemName: g.icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.to_accent)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(g.name).font(.system(size: 12.5, weight: .semibold)).foregroundColor(.to_textPri)
-                Text(g.step).font(.system(size: 12, weight: .medium)).foregroundColor(.to_textTer)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 11)
-                .fill(Color.to_panel.opacity(0.94))
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.to_accent.opacity(0.35), lineWidth: 1))
-        )
-        .frame(maxWidth: 360, alignment: .leading)
-        .shadow(color: .black.opacity(0.3), radius: 12, y: 6)
-    }
-
+    /// Active tool title with the circular ⓘ help toggle — the same chrome as the
+    /// 2D tool panels (TOToolTitle). The "what to click next" copy lives in the
+    /// collapsed help card, not in always-on banners.
     private var stepCard: some View {
         let g = toolGuide
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: g.icon).font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.to_accent).frame(width: 18)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(g.name).font(.system(size: 13, weight: .semibold)).tracking(0.4)
-                    .textCase(.uppercase).foregroundColor(.to_textPri)
-                Text(g.step).font(.system(size: 12, weight: .medium)).foregroundColor(.to_textTer)
-                    .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 11).fill(Color.to_accentTint))
-        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color.to_accent.opacity(0.35), lineWidth: 1))
+        return TOToolTitle(icon: g.icon, title: g.name, help: g.step, helpOpen: $showToolHelp)
     }
 
     // One enclosed area sits inside another — ask how to treat the inner one.
