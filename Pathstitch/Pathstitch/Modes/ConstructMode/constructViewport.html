@@ -579,6 +579,7 @@ function buildPanelMeshes(panel){
   sgeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(N*2*3),3));
   sgeo.setIndex(sidx);
   panel.shell=new THREE.Mesh(sgeo, mat); panel.shell.castShadow=true; panel.shell.receiveShadow=true;
+  panel.shell.userData.panelId=panel.id;   // clicks on the underside/rim resolve too
   root.add(panel.shell);
 
   // Clean panel outline (boundary edges only) — not the full triangulation, which
@@ -1344,12 +1345,15 @@ function updateMeasure(){
   const wb=MEASURE.b ? measureAnchorWorld(MEASURE.b) : null;
   if(!wa || (MEASURE.b && !wb)){ clearMeasure(false); return; }   // panel rebuilt away
   if(!measureObjs){
-    const mk=()=>new THREE.Mesh(new THREE.SphereGeometry(1.4,14,10),
-                                new THREE.MeshBasicMaterial({color:COL_MEASURE}));
+    // X-ray: the tape must read from EITHER side of the leather — a marker
+    // depth-hidden inside the piece looks like it snapped to the wrong face.
+    const mk=()=>{ const m=new THREE.Mesh(new THREE.SphereGeometry(1.4,14,10),
+                                new THREE.MeshBasicMaterial({color:COL_MEASURE, depthTest:false}));
+                   m.renderOrder=8; return m; };
     const lg=new THREE.BufferGeometry();
     lg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6),3));
-    const line=new THREE.Line(lg, new THREE.LineBasicMaterial({color:COL_MEASURE}));
-    line.renderOrder=4;
+    const line=new THREE.Line(lg, new THREE.LineBasicMaterial({color:COL_MEASURE, depthTest:false, transparent:true, opacity:0.9}));
+    line.renderOrder=7;
     measureObjs={ma:mk(), mb:mk(), line};
     root.add(measureObjs.ma); root.add(measureObjs.mb); root.add(measureObjs.line);
   }
@@ -1391,8 +1395,8 @@ function updateMeasure(){
           clearMeasurePath();
           const g=new THREE.BufferGeometry();
           g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(embeds.length*3),3));
-          measurePath=new THREE.Line(g, new THREE.LineBasicMaterial({color:COL_MEASURE}));
-          measurePath.renderOrder=4;
+          measurePath=new THREE.Line(g, new THREE.LineBasicMaterial({color:COL_MEASURE, depthTest:false, transparent:true, opacity:0.9}));
+          measurePath.renderOrder=7;
           root.add(measurePath);
         }
         const arr=measurePath.geometry.attributes.position.array;
@@ -1825,7 +1829,7 @@ function applyDecalToPanel(panel, dataURL, xf){
 // Called from the drop handler with normalized device coords of the drop point.
 window.applyDroppedDecal=function(dataURL, ndcX, ndcY){
   mouse.x=ndcX; mouse.y=ndcY; ray.setFromCamera(mouse,camera);
-  const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
+  const hit=ray.intersectObjects(PANELS.flatMap(p=>p.shell?[p.mesh,p.shell]:[p.mesh]),false)[0];
   const panel = hit ? PANEL_BY_ID[hit.object.userData.panelId] : (PANELS[CONTROLS.groundPanel]||PANELS[0]);
   if(panel){ applyDecalToPanel(panel, dataURL, null); post({op:"decalApplied", panelId:panel.id, dataURL:dataURL}); }
 };
@@ -1854,9 +1858,35 @@ function bary3(p,a,b,c){
   const den=d00*d11-d01*d01||1e-9, v=(d11*d20-d01*d21)/den, w=(d00*d21-d01*d20)/den;
   return [1-v-w, v, w];
 }
+// Shell (underside + rim) faces index into the doubled vertex buffer: i and
+// N+i are the same flat-pattern point on the two surfaces. Folding indices
+// back mod N lets every hit — top, bottom, or rim — resolve to 2D coords, so
+// tools act on the face the user actually sees instead of the hidden top.
+function normFace(panel, face){
+  const n=panel.X.length;
+  if(face.a<n && face.b<n && face.c<n) return face;
+  return {a:face.a%n, b:face.b%n, c:face.c%n};
+}
+// The top-surface triangle index for a hit on either surface. The shell's
+// index buffer lists one underside face per top face, in the same order, so
+// shell faceIndex < triangles.length maps 1:1; rim faces return -1.
+function hitTriIndex(panel, hit){
+  if(hit.object===panel.shell)
+    return (hit.faceIndex<panel.triangles.length) ? hit.faceIndex : -1;
+  return hit.faceIndex;
+}
 function hitTo2D(panel, face, point){
-  const bc=bary3([point.x,point.y,point.z], panel.X[face.a], panel.X[face.b], panel.X[face.c]);
-  const A=panel.v2d[face.a], B=panel.v2d[face.b], C=panel.v2d[face.c];
+  const f=normFace(panel, face);
+  if(f.a===f.b || f.b===f.c || f.a===f.c){
+    // A rim quad folds to a repeated vertex — project onto the boundary edge.
+    const i=f.a, j=(f.a===f.b)?f.c:f.b;
+    const A=panel.X[i], B=panel.X[j], P=[point.x,point.y,point.z];
+    const ab=sub(B,A), t=Math.max(0,Math.min(1, dot(sub(P,A),ab)/(dot(ab,ab)||1e-9)));
+    const A2=panel.v2d[i], B2=panel.v2d[j];
+    return [A2[0]+(B2[0]-A2[0])*t, A2[1]+(B2[1]-A2[1])*t];
+  }
+  const bc=bary3([point.x,point.y,point.z], panel.X[f.a], panel.X[f.b], panel.X[f.c]);
+  const A=panel.v2d[f.a], B=panel.v2d[f.b], C=panel.v2d[f.c];
   return [A[0]*bc[0]+B[0]*bc[1]+C[0]*bc[2], A[1]*bc[0]+B[1]*bc[1]+C[1]*bc[2]];
 }
 // World → screen pixels (for screen-space snap thresholds).
@@ -1920,15 +1950,15 @@ const SNAP_COL={endpoint:0x35c1ff, midpoint:0xffd24a, center:0x6ee06e, intersect
 function showSnapIndicator(sp, clientX, clientY){
   const tag=document.getElementById("snaptag");
   if(!sp || !sp.snapped){ if(snapMark) snapMark.visible=false; if(tag) tag.style.display="none"; return; }
-  if(!snapMark){ snapMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:0xffffff})); snapMark.scale.setScalar(2.2); snapMark.renderOrder=6; scene.add(snapMark); }
+  if(!snapMark){ snapMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:0xffffff, depthTest:false})); snapMark.scale.setScalar(2.2); snapMark.renderOrder=8; scene.add(snapMark); }
   snapMark.visible=true; snapMark.material.color.setHex(SNAP_COL[sp.type]||0xffffff); snapMark.position.set(sp.world[0],sp.world[1],sp.world[2]);
   if(tag){ tag.textContent=sp.type; tag.style.left=clientX+"px"; tag.style.top=clientY+"px"; tag.style.display="block"; }
 }
 function hideSnapIndicator(){ if(snapMark) snapMark.visible=false; const t=document.getElementById("snaptag"); if(t) t.style.display="none"; }
 window.setConstructSnap=function(on){ SNAP_ENABLED=!!on; if(!on) hideSnapIndicator(); };
 function showCreaseMark(w){
-  if(!creaseMark){ creaseMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:COL_FOLD}));
-    creaseMark.scale.setScalar(3); scene.add(creaseMark); }
+  if(!creaseMark){ creaseMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:COL_FOLD, depthTest:false}));
+    creaseMark.scale.setScalar(3); creaseMark.renderOrder=8; scene.add(creaseMark); }
   creaseMark.visible=true; creaseMark.position.set(w[0],w[1],w[2]);
 }
 function hideCreaseMark(){ if(creaseMark) creaseMark.visible=false; clearCreasePreview(); }
@@ -2173,7 +2203,12 @@ function pickFoldAt(cx,cy){
   return best;
 }
 function panelHitAt(cx,cy){ setMouse(cx,cy); ray.setFromCamera(mouse,camera);
-  return ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0]||null; }
+  // Both surfaces are pickable: from below the shell (the face the user SEES)
+  // is the nearest hit, so clicks land where they look — not on the hidden
+  // top surface a thickness away.
+  const targets=[];
+  for(const p of PANELS){ if(p.stepHidden) continue; targets.push(p.mesh); if(p.shell) targets.push(p.shell); }
+  return ray.intersectObjects(targets,false)[0]||null; }
 function chainNearestAt(hit){
   if(!hit) return -1; const pid=hit.object.userData.panelId, hp=[hit.point.x,hit.point.y,hit.point.z];
   let best=-1,bd=1e18;
@@ -2345,11 +2380,11 @@ function snapFoldDeg(d){
 // The foldable region under the cursor (a non-root region with a parent fold), or
 // null for the base / empty space (which should orbit instead).
 function foldableUnder(cx,cy){
-  setMouse(cx,cy); ray.setFromCamera(mouse,camera);
-  const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
+  const hit=panelHitAt(cx,cy);
   if(!hit || hit.faceIndex==null) return null;
   const panel=PANEL_BY_ID[hit.object.userData.panelId]; if(!panel||!panel.tree) return null;
-  const T=panel.tree, ri=T.regOf[hit.faceIndex];
+  const fi=hitTriIndex(panel, hit); if(fi<0) return null;   // rim face — nothing to fold
+  const T=panel.tree, ri=T.regOf[fi];
   if(ri==null || ri===T.rootR || T.parent[ri]<0) return null;   // base/root → not foldable
   const fid=T.parentFold[ri]; if(fid<0) return null;
   return {panel, regIdx:ri, foldId:fid, hit};
@@ -2453,8 +2488,8 @@ renderer.domElement.addEventListener("pointermove",e=>{
   if(TOOL==="crease"){
     mouse.x=(cx/window.innerWidth)*2-1; mouse.y=-(cy/window.innerHeight)*2+1; ray.setFromCamera(mouse,camera);
     const target = CREASE_PT ? PANEL_BY_ID[CREASE_PT.panelId] : null;
-    const hit = target ? ray.intersectObject(target.mesh,false)[0]
-                       : ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
+    const hit = target ? ray.intersectObjects(target.shell?[target.mesh,target.shell]:[target.mesh],false)[0]
+                       : ray.intersectObjects(PANELS.flatMap(p=>p.shell?[p.mesh,p.shell]:[p.mesh]),false)[0];
     if(!hit){ hideSnapIndicator(); return; }
     const panel = target || PANEL_BY_ID[hit.object.userData.panelId];
     const sp=snapCreasePoint(panel, hit, cx, cy); showSnapIndicator(sp, cx, cy);
@@ -2507,8 +2542,7 @@ renderer.domElement.addEventListener("pointerup",e=>{
   }
   if(moved>4) return; // a camera drag, not a click
   if(TOOL==="crease"){
-    setMouse(e.clientX,e.clientY); ray.setFromCamera(mouse,camera);
-    const hit=ray.intersectObjects(PANELS.map(p=>p.mesh),false)[0];
+    const hit=panelHitAt(e.clientX,e.clientY);
     if(hit){ const panel=PANEL_BY_ID[hit.object.userData.panelId]; const sp=snapCreasePoint(panel, hit, e.clientX, e.clientY);
       if(!CREASE_PT || CREASE_PT.panelId!==panel.id){ CREASE_PT={panelId:panel.id, p2d:sp.p2d, world:sp.world}; showCreaseMark(CREASE_PT.world); }
       else { post({op:"addFold", panelId:panel.id, seg:[CREASE_PT.p2d, sp.p2d]}); CREASE_PT=null; hideCreaseMark(); } }
@@ -2535,11 +2569,18 @@ renderer.domElement.addEventListener("pointerup",e=>{
     return;
   }
   if(TOOL==="measure"){
-    setMouse(e.clientX,e.clientY); ray.setFromCamera(mouse,camera);
-    const hit=ray.intersectObjects(PANELS.filter(p=>!p.stepHidden).map(p=>p.mesh),false)[0];
+    const hit=panelHitAt(e.clientX,e.clientY);
     if(!hit) return;
     const panel=PANEL_BY_ID[hit.object.userData.panelId];
-    const tri=hit.faceIndex, t=panel.triangles[tri]; if(!t) return;
+    let tri=hitTriIndex(panel, hit);
+    if(tri<0){
+      // rim hit — resolve through the flat pattern instead
+      const p2=hitTo2D(panel, hit.face, hit.point);
+      const em=embed2DPoint(panel, p2[0], p2[1]);
+      if(!em) return;
+      tri=em.tri;
+    }
+    const t=panel.triangles[tri]; if(!t) return;
     let anchor;
     // Snap to a nearby sewing hole (within ~10 px) — hole-to-hole runs are the
     // measurements makers actually need exact.
@@ -2565,7 +2606,7 @@ renderer.domElement.addEventListener("pointerup",e=>{
       // normal against the view ray so glue seats on the face the user sees — fixes
       // bonds landing on the opposite (back) side of the material.
       let side=0;
-      const t=hit.face, A=panel.X[t.a], B=panel.X[t.b], C=panel.X[t.c];
+      const t=normFace(panel, hit.face), A=panel.X[t.a], B=panel.X[t.b], C=panel.X[t.c];
       const wn=norm(cross(sub(B,A),sub(C,A)));
       const toCam=sub([camera.position.x,camera.position.y,camera.position.z],[hit.point.x,hit.point.y,hit.point.z]);
       side = dot(wn,toCam)>=0 ? 1 : -1;

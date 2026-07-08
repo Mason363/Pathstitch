@@ -5030,7 +5030,14 @@ struct DxfCanvasView: View {
         for cand in candidates {
             let candScreen = toScreen(dx: Double(cand.modelPoint.x), dy: Double(cand.modelPoint.y), size: size, bounds: bounds)
             let dist = hypot(screenPt.x - candScreen.x, screenPt.y - candScreen.y)
-            if dist <= 12.0 {
+            // A "coincident" candidate is the nearest point ON the curve — one
+            // exists under the cursor everywhere along any entity, so with a
+            // full-size radius it fires constantly and snapping reads as a
+            // label following the mouse instead of a magnet. Real (discrete)
+            // snaps get a wide magnet; on-curve only engages when you're
+            // practically touching the line.
+            let capture: CGFloat = (cand.type == .coincident) ? 5.0 : 14.0
+            if dist <= capture {
                 let res = SnapResult(snappedModelPt: cand.modelPoint, snappedScreenPt: candScreen, type: cand.type)
                 if let best = bestCandidate {
                     let bestPri = getPriority(best.type)
