@@ -144,6 +144,13 @@ struct ConstructViewport: NSViewRepresentable {
             case "ready":
                 DispatchQueue.main.async {
                     self.ready = true
+                    // Restore the user's orbit BEFORE the model pushes: it sets
+                    // CAMERA_FRAMED, so loadConstructModel won't re-frame over it.
+                    if let p = self.state.constructCamPose, p.count == 6 {
+                        self.webView?.evaluateJavaScript(
+                            "restoreCameraPose(\(p[0]),\(p[1]),\(p[2]),\(p[3]),\(p[4]),\(p[5]));",
+                            completionHandler: nil)
+                    }
                     self.lastModelToken = -1
                     self.lastFoldToken = -1
                     self.lastSeamToken = -1
@@ -186,6 +193,14 @@ struct ConstructViewport: NSViewRepresentable {
                     self.pushArtwork()
                     self.lastStitchPinToken = -1
                     self.pushStitchPin()
+                }
+            case "camPose":
+                // Viewport reports the orbit/zoom after each interaction; kept so
+                // a webview reload can restore it instead of re-framing.
+                let pos = json["pos"] as? [Double] ?? []
+                let target = json["target"] as? [Double] ?? []
+                if pos.count == 3 && target.count == 3 {
+                    DispatchQueue.main.async { self.state.constructCamPose = pos + target }
                 }
             case "selectFold":
                 let panelId = json["panelId"] as? Int ?? 0
@@ -600,7 +615,12 @@ struct ConstructViewport: NSViewRepresentable {
         func pushHome() {
             guard ready, let webView = webView else { return }
             guard lastHomeToken != state.triggerConstructHomeToken else { return }
+            // First sync on a fresh coordinator just adopts the current token —
+            // firing recenterCamera() here re-framed over the restored camera
+            // pose every time the mode was re-entered ("camera keeps resetting").
+            let first = (lastHomeToken == -1)
             lastHomeToken = state.triggerConstructHomeToken
+            if first { return }
             webView.evaluateJavaScript("recenterCamera();", completionHandler: nil)
         }
 

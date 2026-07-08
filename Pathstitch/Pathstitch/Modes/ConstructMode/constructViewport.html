@@ -21,7 +21,11 @@
 <body>
 <canvas id="c"></canvas>
 <div id="hud">construct · drop a .dxf / .stch, or fold the active sketch</div>
-<div id="snaptag" style="position:absolute;pointer-events:none;display:none;font:11px -apple-system,sans-serif;color:#0b0c0e;background:rgba(255,255,255,0.92);padding:1px 5px;border-radius:3px;transform:translate(12px,12px);white-space:nowrap;z-index:5;"></div>
+<!-- Snap glyphs: identical to the 2D canvas — an orange square outline pinned to
+     the snap point (constant screen size at any zoom) + an orange type label. -->
+<div id="snapbox" style="position:absolute;pointer-events:none;display:none;width:10px;height:10px;box-sizing:border-box;border:2px solid #ff9500;transform:translate(-50%,-50%);z-index:5;"></div>
+<div id="snaptag" style="position:absolute;pointer-events:none;display:none;font:600 9px -apple-system,sans-serif;color:#ff9500;white-space:nowrap;z-index:5;"></div>
+<div id="creasebox" style="position:absolute;pointer-events:none;display:none;width:10px;height:10px;box-sizing:border-box;border:2px solid #ff9500;transform:translate(-50%,-50%);z-index:5;"></div>
 <div id="foldhud" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(255,154,60,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
 <div id="measuretag" style="position:absolute;pointer-events:none;display:none;font:600 13px ui-monospace,monospace;color:#fff;background:rgba(20,21,24,0.92);border:1px solid rgba(80,200,255,0.8);padding:2px 8px;border-radius:5px;transform:translate(-50%,-150%);white-space:nowrap;z-index:6;"></div>
 <div id="stephud" style="position:absolute;pointer-events:none;display:none;left:50%;top:14px;transform:translateX(-50%);font:600 13px -apple-system,sans-serif;color:#e8e9ec;background:rgba(20,21,24,0.92);border:1px solid rgba(255,154,60,0.65);padding:5px 14px;border-radius:8px;white-space:nowrap;z-index:6;"></div>
@@ -78,6 +82,19 @@ controls.screenSpacePanning=true;   // pan moves the object across the screen, i
 // picking — only actual drags drive the camera.
 controls.mouseButtons={ LEFT:THREE.MOUSE.ROTATE, MIDDLE:THREE.MOUSE.DOLLY, RIGHT:THREE.MOUSE.PAN };
 controls.touches={ ONE:THREE.TOUCH.ROTATE, TWO:THREE.TOUCH.DOLLY_PAN };
+
+// Persist the camera pose up to Swift after every interaction, so anything that
+// reloads this page (re-entering the mode recreates the WKWebView, a content-
+// process restart, dev live-reload) restores the user's orbit/zoom instead of
+// re-framing — the surviving cause of "the camera keeps resetting".
+controls.addEventListener('end', ()=>{ post({op:"camPose",
+  pos:[camera.position.x, camera.position.y, camera.position.z],
+  target:[controls.target.x, controls.target.y, controls.target.z]}); });
+window.restoreCameraPose=function(px,py,pz,tx,ty,tz){
+  camera.position.set(px,py,pz); controls.target.set(tx,ty,tz);
+  controls.update();
+  CAMERA_FRAMED=true;   // a restored pose counts as framed — don't re-frame over it
+};
 
 // Blender-style object transform gizmo (move/rotate/scale a panel in 3D). It's a
 // pose override stored per-panel — it never edits the 2D sketch — and the panel
@@ -257,14 +274,16 @@ const FINISHES={ matte:{roughness:0.85,clearcoat:0.04,ccRough:0.6},
 let FINISH=FINISHES.satin;
 function makeLeatherMaterial(hex){
   // MeshPhysicalMaterial = MeshStandard + a clearcoat layer for the leather sheen,
-  // lit by the procedural studio environment. Flat shading keeps every rigid region
-  // a clean plane and sharp folds crisp; rounded fillets read via the bump/normal +
-  // env reflection. Crease lines are still drawn on top in edit mode.
+  // lit by the procedural studio environment. SMOOTH shading (vertex normals are
+  // recomputed each pose): flat regions stay visually planar — their interior
+  // normals are all identical — while the fillet band at every fold shades as a
+  // continuous curve, so light rolls across the bend like real leather instead
+  // of breaking into hard facets. Crease lines are still drawn on top in edit mode.
   const m=new THREE.MeshPhysicalMaterial({
     color:hex, roughness:FINISH.roughness, metalness:0.0, side:THREE.DoubleSide,
     bumpMap:leatherBump(), bumpScale:0.22, roughnessMap:leatherRough(),
     clearcoat:FINISH.clearcoat, clearcoatRoughness:FINISH.ccRough,
-    envMapIntensity:1.0, flatShading:true,
+    envMapIntensity:1.0, flatShading:false,
   });
   if(LEATHER_TEX){ m.map=LEATHER_TEX; m.color.setHex(0xffffff); }
   return m;
@@ -310,7 +329,7 @@ window.setConstructLeatherTexture=function(dataURL, tiling){
 let MODEL=null;           // {panels:[...], groundPanel}
 let PANELS=[];            // per-panel runtime: {rest, X, edges, regions, tree, mesh, foldLine, wire}
 let PANEL_BY_ID={};       // id -> panel
-let CONTROLS={ groundPanel:0, foldAngle:{}, foldRound:{} };  // foldAngle["pid-fid"]=deg, foldRound=0..1
+let CONTROLS={ groundPanel:0, foldAngle:{}, foldRound:{}, foldBendR:{} };  // foldAngle["pid-fid"]=deg, foldRound=0..1, foldBendR=mm
 let BASE_PT={};           // panelId -> [x,y] base region point ("which side stays flat")
 let USER_XF={};           // handle -> {t:[x,y,z], q:[x,y,z,w], s} pose override (move/rotate/scale)
 let TOOL="select";
@@ -326,10 +345,8 @@ let GLUE_SEL=null;        // first pick pending a partner {panelId, p2d, side}
 let SHOW_THREAD=true;
 let SELECTED_CHAIN=-1;    // chain the user has picked (first half of a stitch)
 let CREASE_PT=null;       // first clicked point of a new fold being drawn in 3D
-let creaseMark=null;      // marker dot for that first point
 let creaseLine=null;      // rubber-band preview from the first point to the cursor
 let SNAP_ENABLED=true;    // mirrors the 2D snap toggle (snapActive), pushed from Swift
-let snapMark=null;        // live osnap indicator dot under the cursor (crease tool)
 let holeMesh=null;        // InstancedMesh of all hole markers (rides the fold)
 let chainLineMesh=null;   // LineSegments linking each chain's holes (always shown)
 let STAMPS=[];            // decoration-stamp outlines [{panelId, closed, pts:[{tri,bary}]}]
@@ -437,14 +454,30 @@ function buildRegions(panel, isGround, preferredPoint){
     if(di>dr || (di===dr && region[i].verts.size>region[rootR].verts.size)) rootR=i;
   }
   // User override: the region containing the clicked base point stays flat (root).
+  // The click is AUTHORITATIVE: if the barycentric containment test misses (a
+  // click right on a crease/edge lands in no triangle strictly), fall back to
+  // the nearest region by vertex distance instead of silently letting the
+  // fold-degree heuristic win — that silent fallthrough was "ground mode
+  // sometimes gets ignored".
   if(preferredPoint){
     const P=preferredPoint;
+    let found=-1;
     outer: for(let r=0;r<region.length;r++){
       for(const fi of region[r].faces){ const t=tris[fi];
         const bc=bary3([P[0],0,P[1]], [panel.v2d[t[0]][0],0,panel.v2d[t[0]][1]], [panel.v2d[t[1]][0],0,panel.v2d[t[1]][1]], [panel.v2d[t[2]][0],0,panel.v2d[t[2]][1]]);
-        if(bc[0]>=-1e-3 && bc[1]>=-1e-3 && bc[2]>=-1e-3){ rootR=r; break outer; }
+        if(bc[0]>=-1e-3 && bc[1]>=-1e-3 && bc[2]>=-1e-3){ found=r; break outer; }
       }
     }
+    if(found<0){
+      let bestD=Infinity;
+      for(let r=0;r<region.length;r++){
+        region[r].verts.forEach(v=>{
+          const d=Math.hypot(panel.v2d[v][0]-P[0], panel.v2d[v][1]-P[1]);
+          if(d<bestD){ bestD=d; found=r; }
+        });
+      }
+    }
+    if(found>=0) rootR=found;
   }
   // BFS tree
   const parent=region.map(()=>-1), parentFold=region.map(()=>-1), parentVerts=region.map(()=>null);
@@ -479,6 +512,10 @@ function collectFoldAxis(panel, foldId, regionVerts){
 
 // ---- load model -----------------------------------------------------------
 window.loadConstructModel=function(jsonStr){
+  try{ _loadConstructModel(jsonStr); }
+  catch(e){ post({op:"consoleError", message:"loadConstructModel: "+((e&&e.message)||e)+" @ "+((e&&e.stack)||"").slice(0,400)}); }
+};
+function _loadConstructModel(jsonStr){
   let m; try{ m=JSON.parse(jsonStr); }catch(e){ post({op:"consoleError",message:"bad model json"}); return; }
   MODEL=m; clearPanels();
   for(const pj of (m.panels||[])){
@@ -596,8 +633,11 @@ function buildPanelMeshes(panel){
   panel.foldSegs=fsegs;
   const fpos=new Float32Array(Math.max(fsegs.length,1)*2*3);
   const fgeo=new THREE.BufferGeometry(); fgeo.setAttribute("position", new THREE.BufferAttribute(fpos,3));
-  panel.foldLine=new THREE.LineSegments(fgeo, new THREE.LineBasicMaterial({color:COL_FOLD}));
-  panel.foldLine.renderOrder=2;
+  // depthTest OFF so the crease lines always read: they sit exactly ON the
+  // surface (and inside the rounded fillet band the straight chord dips a hair
+  // under it), so depth testing hid them entirely.
+  panel.foldLine=new THREE.LineSegments(fgeo, new THREE.LineBasicMaterial({color:COL_FOLD, depthTest:false}));
+  panel.foldLine.renderOrder=6;
   panel.foldLine.userData.segs=segMeta; panel.foldLine.userData.panelId=panel.id;
   root.add(panel.foldLine);
 }
@@ -1002,6 +1042,7 @@ function foldPanel(panel){
   // zero stretch (the perpendicular profile is arc-length-preserving and the
   // along-hinge coordinate is untouched). The far field is the same rigid rotation,
   // just translated by the arc, so descendant folds keep composing correctly.
+  const bandVerts=new Set();   // verts riding a fillet band this pose (see below)
   for(const r of T.order){
     if(T.parent[r]<0) continue;
     const fid=T.parentFold[r];
@@ -1020,16 +1061,30 @@ function foldPanel(panel){
     let aDir=sub(cen,o); aDir=sub(aDir, scl(u, dot(aDir,u)));
     const al=len(aDir); aDir = al<1e-9 ? [1,0,0] : scl(aDir,1/al);
     const nDir=norm(cross(u,aDir));
-    // Fillet band: roundness consumes a strip of width W of the child region's
-    // material next to the hinge; r = W/|A| is the true bend radius.
-    const round=(CONTROLS.foldRound&&CONTROLS.foldRound[key])||0;
+    // Fillet band: the fold consumes a strip of width W of the child region's
+    // material next to the hinge and bends it over a true circular arc —
+    // r = W/|A| is the bend radius. W comes from the leather's physics:
+    // W = |A|·rₙ where rₙ is the fold's neutral-axis radius (inside radius +
+    // K·thickness) pushed from Swift — i.e. W is exactly the bend allowance.
+    // Real leather can't crease to a knife edge, so every fold gets this
+    // fillet by default; at 180° the flap arcs over the radius and lands
+    // ~2rₙ (a material thickness) ABOVE the base instead of clipping through
+    // it. The roundness slider opens the radius further via bendR.
     let dmax=0; for(const v of T.region[r].verts){ const d=dot(sub(panel.X[v],o),aDir); if(d>dmax) dmax=d; }
-    const W = round>0 ? round*dmax*0.8 : 0;
+    const bendR=(CONTROLS.foldBendR&&CONTROLS.foldBendR[key])||THICKNESS*0.75;
+    // Cap the band so it never eats most of a small flap (keeps tiny tabs rigid-ish).
+    const W = Math.min(Math.abs(A)*bendR, dmax*0.9);
     const WA = W/A, cosA=Math.cos(A), sinA=Math.sin(A);
     const Epa = WA*sinA, Epn = WA*(1-cosA);    // arc end-point (→ 0 when W=0 ⇒ rigid)
     for(const v of sub_){
       const rel=sub(panel.X[v],o);
       const along=dot(rel,u), d=dot(rel,aDir);
+      // Verts in (or one ring around) the fillet band follow the analytic arc.
+      // Their bars' straight chords are SHORTER than the flat rest lengths —
+      // that's curvature, not strain — so mark them for the relax pass and the
+      // stretch report to leave alone (otherwise PBD "fixes" the fillet flat
+      // and the HUD reports phantom stretch).
+      if(W>0 && d>-W*0.5 && d<W*1.5) bandVerts.add(v);
       let pa, pn;
       if(W>0 && d>0 && d<W){ const th=A*(d/W); pa=WA*Math.sin(th); pn=WA*(1-Math.cos(th)); }
       else if(d<=0){ pa=d; pn=0; }
@@ -1039,19 +1094,52 @@ function foldPanel(panel){
       panel.X[v][2]=o[2]+along*u[2]+pa*aDir[2]+pn*nDir[2];
     }
   }
+  // Bars touching a fillet band are "soft": their chord shortening is the bend
+  // itself, so the inextensibility projection and the stretch HUD skip them.
+  panel.softBars=new Set();
+  if(bandVerts.size){
+    for(let i=0;i<panel.edges.length;i++){ const e=panel.edges[i];
+      if(bandVerts.has(e[0])||bandVerts.has(e[1])) panel.softBars.add(i); }
+  }
+  // The GROUND panel sits on a real table: if a downward FOLD drives geometry
+  // below the mat, the whole panel rides up rigidly — exactly what the physical
+  // piece does when a flap is folded underneath. Done from the rigid pose,
+  // before drape, so the gentle sag below doesn't inflate the lift.
+  const isGroundPanel = panel.id===CONTROLS.groundPanel;
+  if(isGroundPanel){
+    let minY=Infinity; for(const v of panel.X){ if(v[1]<minY) minY=v[1]; }
+    if(isFinite(minY) && minY<-1e-6){ for(const v of panel.X){ v[1]-=minY; } }
+  }
   // PBD distance relax: keep the root region (base / pinned ground) anchored;
   // project every bar to rest length so curved folds settle without stretching.
   // The same inextensible-bar solver the stitch coupling above reuses.
+  // A whisper of gravity is applied before each projection pass: free flaps
+  // relax into a supple droop — leather, not sheet steel — while the bar
+  // projections keep every length at rest (zero stretch) and the pinned base
+  // never moves. The droop concentrates naturally at the parts farthest from
+  // a pin, because that's where the constraint chain has the most slack.
   const pinned=new Set();
   T.region[T.rootR].verts.forEach(v=>pinned.add(v));
-  for(let it=0; it<10; it++){
-    for(const [a,b,rest] of panel.edges){
+  const SAG=THICKNESS*0.05;   // per-iteration droop; ~supple veg-tan at 2mm
+  const anyFree = pinned.size < panel.X.length;
+  // Gravity only in the early iterations; the remaining passes are pure length
+  // projection, so the drape KEEPS its shape while the bars settle back to
+  // rest — max stretch stays ~0% instead of carrying the last gravity nudge
+  // around as strain.
+  for(let it=0; it<20; it++){
+    if(anyFree && it<4){ for(let v=0;v<panel.X.length;v++){ if(!pinned.has(v)) panel.X[v][1]-=SAG; } }
+    for(let i=0;i<panel.edges.length;i++){
+      if(panel.softBars.has(i)) continue;   // fillet-band bars follow the analytic arc
+      const [a,b,rest]=panel.edges[i];
       const wa=pinned.has(a)?0:1, wb=pinned.has(b)?0:1; const wsum=wa+wb; if(wsum===0) continue;
       const dx=sub(panel.X[b],panel.X[a]); const d=len(dx)||1e-9; const s=(d-rest)/d;
       const ca=scl(dx, (wa/wsum)*s), cb=scl(dx, (wb/wsum)*s);
       if(wa){ panel.X[a][0]+=ca[0]; panel.X[a][1]+=ca[1]; panel.X[a][2]+=ca[2]; }
       if(wb){ panel.X[b][0]-=cb[0]; panel.X[b][1]-=cb[1]; panel.X[b][2]-=cb[2]; }
     }
+    // Table contact: the ground panel's leather rests ON the mat — a sagging
+    // flat flap lies on the table instead of dipping through it.
+    if(isGroundPanel){ for(const v of panel.X){ if(v[1]<0) v[1]=0; } }
   }
 }
 // Rotate vector v by quaternion q [x,y,z,w].
@@ -1595,7 +1683,9 @@ function writePanelGeometry(panel){
 let lastStretch=-1;
 function reportStretch(){
   let mx=0;
-  for(const panel of PANELS) for(const [a,b,rest] of panel.edges){
+  for(const panel of PANELS) for(let i=0;i<panel.edges.length;i++){
+    if(panel.softBars && panel.softBars.has(i)) continue;   // bend-band chords: curvature, not strain
+    const [a,b,rest]=panel.edges[i];
     const d=len(sub(panel.X[a],panel.X[b])); const e=Math.abs(d-rest)/(rest||1); if(e>mx) mx=e;
   }
   const pct=mx*100;
@@ -1981,8 +2071,9 @@ function snapCreasePoint(panel, hit, clientX, clientY){
   for(const [a,b] of panel.boundaryEdges.concat(panel.foldSegs))
     cands.push({world:lerp3(panel.X[a],panel.X[b],0.5), p2d:lerp2(panel.v2d[a],panel.v2d[b],0.5), type:"midpoint", prio:3});
   // centers: hole-chain holes on this panel + each region's centroid
-  for(const c of CHAINS){ if(c.panelId!==panel.id) continue; for(let k=0;k<c.holes.length;k++){ const h=c.holes[k]; cands.push({world:holeWorld(c,k), p2d:[h.x,h.y], type:"center", prio:2}); } }
-  if(panel.tree && panel.tree.region){ for(const reg of panel.tree.region){ let cx=0,cy=0,cz=0,px=0,py=0,n=0; reg.verts.forEach(v=>{ const X=panel.X[v],V=panel.v2d[v]; cx+=X[0];cy+=X[1];cz+=X[2];px+=V[0];py+=V[1];n++; }); if(n) cands.push({world:[cx/n,cy/n,cz/n], p2d:[px/n,py/n], type:"center", prio:2}); } }
+  // (priority 4 matches 2D, where midpoint beats center)
+  for(const c of CHAINS){ if(c.panelId!==panel.id) continue; for(let k=0;k<c.holes.length;k++){ const h=c.holes[k]; cands.push({world:holeWorld(c,k), p2d:[h.x,h.y], type:"center", prio:4}); } }
+  if(panel.tree && panel.tree.region){ for(const reg of panel.tree.region){ let cx=0,cy=0,cz=0,px=0,py=0,n=0; reg.verts.forEach(v=>{ const X=panel.X[v],V=panel.v2d[v]; cx+=X[0];cy+=X[1];cz+=X[2];px+=V[0];py+=V[1];n++; }); if(n) cands.push({world:[cx/n,cy/n,cz/n], p2d:[px/n,py/n], type:"center", prio:4}); } }
   // intersections of boundary edges (skip shared endpoints — already endpoints)
   const be=panel.boundaryEdges;
   if(be.length<=220){ for(let i=0;i<be.length;i++){ for(let j=i+1;j<be.length;j++){
@@ -1994,34 +2085,59 @@ function snapCreasePoint(panel, hit, clientX, clientY){
   for(const cd of cands){ const s=worldToScreen(cd.world); const d=Math.hypot(s[0]-clientX, s[1]-clientY); if(d>TH) continue;
     const score=d+cd.prio*3; if(score<bestScore){ bestScore=score; best=cd; } }
   if(best) return {world:best.world, p2d:best.p2d, snapped:true, type:best.type};
-  // fallback: nearest point along a boundary edge (lands the fold edge-to-edge)
+  // fallback: nearest point along a boundary edge — the on-curve "Coincident"
+  // snap. It tracks the cursor continuously along the edge (smooth, like 2D)
+  // and lands the fold edge-to-edge.
   let edgeD=TH;
   for(const [a,b] of be){
     const A=panel.X[a], B=panel.X[b], P=raw.world;
     const ab=sub(B,A), t=Math.max(0,Math.min(1, dot(sub(P,A),ab)/(dot(ab,ab)||1e-9)));
     const w=[A[0]+ab[0]*t, A[1]+ab[1]*t, A[2]+ab[2]*t];
     const s=worldToScreen(w); const dd=Math.hypot(s[0]-clientX, s[1]-clientY);
-    if(dd<edgeD){ edgeD=dd; best={world:w, p2d:lerp2(panel.v2d[a],panel.v2d[b],t), snapped:true, type:"edge"}; }
+    if(dd<edgeD){ edgeD=dd; best={world:w, p2d:lerp2(panel.v2d[a],panel.v2d[b],t), snapped:true, type:"coincident"}; }
   }
   return best||raw;
 }
-const SNAP_COL={endpoint:0x35c1ff, midpoint:0xffd24a, center:0x6ee06e, intersection:0xff6ec7, edge:0xffffff};
-// Live osnap indicator: a colour-coded dot at the snap + a text tag by the cursor.
-function showSnapIndicator(sp, clientX, clientY){
-  const tag=document.getElementById("snaptag");
-  if(!sp || !sp.snapped){ if(snapMark) snapMark.visible=false; if(tag) tag.style.display="none"; return; }
-  if(!snapMark){ snapMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:0xffffff, depthTest:false})); snapMark.scale.setScalar(2.2); snapMark.renderOrder=8; scene.add(snapMark); }
-  snapMark.visible=true; snapMark.material.color.setHex(SNAP_COL[sp.type]||0xffffff); snapMark.position.set(sp.world[0],sp.world[1],sp.world[2]);
-  if(tag){ tag.textContent=sp.type; tag.style.left=clientX+"px"; tag.style.top=clientY+"px"; tag.style.display="block"; }
+// Live osnap indicator — visually identical to the 2D canvas: an orange square
+// outline pinned to the snap point + a capitalized orange type label. Screen-
+// space DOM, so it's a constant size at any zoom and glides smoothly. The world
+// anchors are cached and reprojected every frame (updateSnapDom in the render
+// loop) so the glyphs stay glued to the model while orbiting.
+const SNAP_LABEL={endpoint:"Endpoint", midpoint:"Midpoint", center:"Center", intersection:"Intersection", coincident:"Coincident"};
+let SNAP_MARK_W=null, CREASE_MARK_W=null;
+function placeSnapDom(id, w, dx, dy){
+  const el=document.getElementById(id); if(!el||!w) return;
+  const s=worldToScreen(w);
+  el.style.left=(s[0]+(dx||0))+"px"; el.style.top=(s[1]+(dy||0))+"px";
 }
-function hideSnapIndicator(){ if(snapMark) snapMark.visible=false; const t=document.getElementById("snaptag"); if(t) t.style.display="none"; }
+function updateSnapDom(){
+  if(SNAP_MARK_W){ placeSnapDom("snapbox", SNAP_MARK_W, 0, 0); placeSnapDom("snaptag", SNAP_MARK_W, 8, -13); }
+  if(CREASE_MARK_W) placeSnapDom("creasebox", CREASE_MARK_W, 0, 0);
+}
+function showSnapIndicator(sp){
+  const box=document.getElementById("snapbox"), tag=document.getElementById("snaptag");
+  if(!sp || !sp.snapped){ hideSnapIndicator(); return; }
+  SNAP_MARK_W=sp.world.slice();
+  if(box) box.style.display="block";
+  if(tag){ tag.textContent=SNAP_LABEL[sp.type]||sp.type; tag.style.display="block"; }
+  updateSnapDom();
+}
+function hideSnapIndicator(){
+  SNAP_MARK_W=null;
+  const b=document.getElementById("snapbox"), t=document.getElementById("snaptag");
+  if(b) b.style.display="none"; if(t) t.style.display="none";
+}
 window.setConstructSnap=function(on){ SNAP_ENABLED=!!on; if(!on) hideSnapIndicator(); };
 function showCreaseMark(w){
-  if(!creaseMark){ creaseMark=new THREE.Mesh(_SPHERE, new THREE.MeshBasicMaterial({color:COL_FOLD, depthTest:false}));
-    creaseMark.scale.setScalar(3); creaseMark.renderOrder=8; scene.add(creaseMark); }
-  creaseMark.visible=true; creaseMark.position.set(w[0],w[1],w[2]);
+  CREASE_MARK_W=w.slice();
+  const el=document.getElementById("creasebox"); if(el) el.style.display="block";
+  updateSnapDom();
 }
-function hideCreaseMark(){ if(creaseMark) creaseMark.visible=false; clearCreasePreview(); }
+function hideCreaseMark(){
+  CREASE_MARK_W=null;
+  const el=document.getElementById("creasebox"); if(el) el.style.display="none";
+  clearCreasePreview();
+}
 // Rubber-band from the first crease point to the cursor so the user can see the
 // fold line they're about to commit (second click finishes it).
 function showCreasePreview(a,b){
@@ -2042,10 +2158,11 @@ let LINKED_FOLDS=new Set();   // "panelId-foldId" keys of folds that move togeth
 window.setConstructControls=function(jsonStr){
   let c; try{ c=JSON.parse(jsonStr); }catch(e){ return; }
   CONTROLS.groundPanel=c.groundPanel||0;
-  CONTROLS.foldAngle={}; CONTROLS.foldRound={}; LINKED_FOLDS=new Set();
+  CONTROLS.foldAngle={}; CONTROLS.foldRound={}; CONTROLS.foldBendR={}; LINKED_FOLDS=new Set();
   for(const f of (c.folds||[])){
     const k=f.panelId+"-"+f.foldId;
     CONTROLS.foldAngle[k]=f.angleDeg||0; CONTROLS.foldRound[k]=f.roundness||0;
+    CONTROLS.foldBendR[k]=f.bendR||0;   // neutral-axis radius (mm) from the leather DFM params
     if(f.linked) LINKED_FOLDS.add(k);   // linked folds share one angle (drag moves the group)
   }
   needsPose=true;
@@ -2284,10 +2401,13 @@ function chainPolyWorld(cid){ const c=CHAIN_BY_ID[cid]; if(!c) return null;
 // On selecting a fold we tint its two regions: GREEN = stays flat (base), ORANGE
 // = folds up. Removes the "which way will it go" guesswork; a Swift "Flip" button
 // re-roots to the other side (we post each side's representative 2D point).
-let SEL_FOLD=null, foldHi=[], foldHandles=[];
+let SEL_FOLD=null, foldHi=[], foldHandles=[], foldSelLine=[];
 function clearFoldHi(){
   for(const m of foldHi){ scene.remove(m); m.geometry.dispose(); m.material.dispose(); } foldHi=[];
   for(const m of foldHandles){ scene.remove(m); m.material.dispose(); } foldHandles=[];   // _SPHERE geo is shared
+  for(const m of foldSelLine){ scene.remove(m); }                   // _SELCYL geo is shared;
+  if(foldSelLine.length) foldSelLine[0].material.dispose();         // …the material is one per rebuild
+  foldSelLine=[];
 }
 function regionsOfFold(panel, foldId){
   const T=panel.tree; let childR=-1;
@@ -2316,6 +2436,26 @@ function updateFoldHi(){
   const baseM=regionFaceMesh(p, rr.base, 0x39d27a), moveM=regionFaceMesh(p, rr.move, 0xff9a3c);
   if(baseM){ scene.add(baseM); foldHi.push(baseM); }
   if(moveM){ scene.add(moveM); foldHi.push(moveM); }
+  // The selected fold's crease line itself, drawn bright cyan on top — so which
+  // line the slider is driving is unmistakable. Rendered as a chain of small
+  // beads (the same shared-sphere path as the endpoint handles, which renders
+  // reliably everywhere): GL lines are 1 device px and all but vanish on Retina.
+  {
+    const segs=p.foldLine&&p.foldLine.userData.segs||[];
+    const mat=new THREE.MeshBasicMaterial({color:0x35c1ff, depthTest:false});
+    const seen=new Set();
+    let used=false;
+    const bead=(w)=>{ const m=new THREE.Mesh(_SPHERE, mat); m.scale.setScalar(1.5);
+      m.position.set(w[0],w[1],w[2]); m.renderOrder=9; scene.add(m); foldSelLine.push(m); used=true; };
+    for(let i=0;i<segs.length;i++){ if(segs[i].foldId!==SEL_FOLD.foldId) continue;
+      const [a,b]=p.foldSegs[i];
+      if(!seen.has(a)){ seen.add(a); bead(p.X[a]); }
+      if(!seen.has(b)){ seen.add(b); bead(p.X[b]); }
+      // midpoint bead keeps the chain reading as a continuous line
+      bead([(p.X[a][0]+p.X[b][0])/2,(p.X[a][1]+p.X[b][1])/2,(p.X[a][2]+p.X[b][2])/2]);
+    }
+    if(!used) mat.dispose();
+  }
   // Draggable endpoint handles (Fold / Select tools) so the crease can be moved in 3D.
   if(TOOL==="fold" || TOOL==="select"){
     const ax=collectFoldAxis(p, SEL_FOLD.foldId);
@@ -2418,6 +2558,10 @@ window.recenterCamera=function(){
   camera.position.set(c.x+dist*0.6, c.y+dist*0.7, c.z+dist*0.9);
   camera.near=Math.max(r*0.01,0.1); camera.far=r*100; camera.updateProjectionMatrix();
   CAMERA_FRAMED=true;   // an explicit frame counts; rebuilds won't override it
+  // Report the framed pose so the Swift-side cache never goes stale (OrbitControls
+  // only fires 'end' for user drags, not programmatic moves).
+  post({op:"camPose", pos:[camera.position.x,camera.position.y,camera.position.z],
+        target:[controls.target.x,controls.target.y,controls.target.z]});
 };
 
 // ---- picking --------------------------------------------------------------
@@ -2670,6 +2814,7 @@ function tick(){
     if(needsPose){ needsPose=false; recomputePose(); }
     controls.update();
     updateMeasureLabel();   // screen-space tag follows the camera
+    updateSnapDom();        // snap glyphs stay glued to their world anchors
     renderer.render(scene,camera);
   }catch(e){ if(!window.__rerr){ window.__rerr=1; post({op:"consoleError", message:"RENDER: "+((e&&e.message)||e)+" @ "+((e&&e.stack)||"").slice(0,300)}); } }
 }

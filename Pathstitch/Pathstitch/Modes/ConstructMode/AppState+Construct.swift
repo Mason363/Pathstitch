@@ -606,6 +606,15 @@ extension AppState {
         return max(p.t * 0.5, spec.roundness * comfortable)
     }
 
+    /// One fold's neutral-axis radius (inside radius + K·T), mm — what the
+    /// viewport's bend band uses: the flat band consumed by the fold is
+    /// W = θ·rₙ (the bend allowance), and a 180° fold arcs over this radius to
+    /// land ~2rₙ above the base instead of clipping through itself.
+    func constructFoldNeutralRadius(_ spec: FoldSpec) -> Double {
+        let p = bendParams(for: spec)
+        return constructFoldRadius(spec) + p.k * p.t
+    }
+
     /// Bend allowance for one fold — the developed neutral-axis arc, mm. Mirrors
     /// `construct_ops.bend_allowance`: BA = θ·(R + K·T).
     func constructBendAllowance(_ spec: FoldSpec) -> Double {
@@ -1097,7 +1106,8 @@ extension AppState {
     var constructControlsJSON: String {
         let folds = constructFolds.map {
             ["panelId": $0.panelId, "foldId": $0.foldId, "angleDeg": $0.angleDeg,
-             "roundness": $0.roundness, "linked": $0.linked ?? false] as [String: Any]
+             "roundness": $0.roundness, "bendR": constructFoldNeutralRadius($0),
+             "linked": $0.linked ?? false] as [String: Any]
         }
         let payload: [String: Any] = ["groundPanel": constructGroundPanel,
                                       "folds": folds]

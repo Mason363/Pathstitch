@@ -2171,6 +2171,10 @@ class AppState {
     var constructMaxStretchPct: Double = 0     // solver-quality HUD readout (should stay ~0)
     var constructToolToken: Int = 0           // bump to push the active tool to the viewport
     var triggerConstructHomeToken: Int = 0    // bump to recenter the construct camera
+    // Last camera pose reported by the viewport ([px,py,pz, tx,ty,tz]). Restored
+    // on every page "ready" so a WKWebView reload (re-entering the mode, a web
+    // content-process restart) keeps the user's orbit instead of re-framing.
+    var constructCamPose: [Double]? = nil
 
     // Stitch flagship: sewing-hole chains (auto-detected from the sketch) and the
     // seams the user stitches between them. Chains re-derive from the live sketch

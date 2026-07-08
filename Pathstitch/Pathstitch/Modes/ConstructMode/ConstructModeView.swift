@@ -516,6 +516,15 @@ struct ConstructModeView: View {
                     state.undoLastUserFold()
                 }
             }
+            // The creases' angles, right where they were made — same rows as the
+            // Fold tab, so a fresh crease can be angled without switching tools.
+            if !state.constructFolds.isEmpty {
+                TODivider()
+                sectionHeader("Fold angles")
+                ForEach(state.constructFolds) { spec in
+                    foldRow(spec)
+                }
+            }
         }
     }
 
@@ -755,10 +764,12 @@ struct ConstructModeView: View {
                     .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
                     .foregroundColor(.to_textPri)
             }
+            // Full-width track (wide: true) — the angle readout lives in the row
+            // header, so every pixel here goes to drag precision.
             TOSlider(
                 value: Binding(get: { spec.angleDeg },
                                set: { state.setConstructFoldAngle(spec.id, $0) }),
-                range: -180...180, unit: "°", maxFrac: 0, step: 1,
+                range: -180...180, unit: "°", maxFrac: 0, step: 1, wide: true,
                 onBegin: { state.pushConstructUndo() })
             // One-tap presets for the angles leatherwork actually uses: box sides
             // (±90°), gusset half-folds (±45°), fold-flat (180°), and open (0°).
@@ -767,11 +778,22 @@ struct ConstructModeView: View {
                                          set: { state.pushConstructUndo()
                                                 state.setConstructFoldAngle(spec.id, $0) }),
                           unit: "°", maxFrac: 0)
+            // Fold radius: how much material the bend consumes (the offset band
+            // around the crease). Never truly zero — real leather can't crease to
+            // a knife edge — the floor is the leather's own minimum (½ thickness).
+            HStack {
+                Text("Fold radius")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.to_textSec)
+                Spacer()
+                Text(String(format: "%.1f mm", state.constructFoldRadius(spec)))
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                    .foregroundColor(.to_textPri)
+            }
             TOSlider(
                 value: Binding(get: { spec.roundness },
                                set: { state.setConstructFoldRoundness(spec.id, $0) }),
-                range: 0...1, unit: "",
-                minLabel: "sharp", maxLabel: "round", maxFrac: 2,
+                range: 0...1, unit: "", maxFrac: 2, wide: true,
                 onBegin: { state.pushConstructUndo() })
             // Bend allowance for this fold (sheet-metal: BA = θ·(R + K·T)), plus a
             // soft warning when the fold is tighter than the leather can take.

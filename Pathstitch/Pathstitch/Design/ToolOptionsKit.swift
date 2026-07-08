@@ -491,7 +491,10 @@ struct TOCheck: View {
 // MARK: Slider + readout
 
 /// Native range with brand-blue accent, min/max labels at each end, plus a
-/// separate readout pill with the live value + unit.
+/// separate readout pill with the live value + unit. Set `wide: true` to drop
+/// the flanking labels and readout so the track itself spans the full column —
+/// for sliders whose value is already shown elsewhere (e.g. the fold angle in
+/// its row header) and where drag precision matters more than chrome.
 struct TOSlider: View {
     @Binding var value: Double
     var range: ClosedRange<Double>
@@ -500,35 +503,42 @@ struct TOSlider: View {
     var maxLabel: String? = nil
     var maxFrac: Int = 1
     var step: Double? = nil
+    var wide: Bool = false
     /// Called when a drag begins — lets a tool push one undo step per drag.
     var onBegin: (() -> Void)? = nil
     var onCommit: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 11) {
-            Text(minLabel ?? toNum(range.lowerBound, maxFrac: 0))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color.to_textMut)
+        if wide {
             slider
-            .tint(Color.to_accent)
-            Text(maxLabel ?? toNum(range.upperBound, maxFrac: 0))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Color.to_textMut)
-            HStack(spacing: 3) {
-                Text(toNum(value, maxFrac: maxFrac))
-                    .monospacedDigit()
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundColor(Color.to_textPri)
-                if !unit.isEmpty {
-                    Text(unit)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundColor(Color.to_textMut)
+                .tint(Color.to_accent)
+                .frame(maxWidth: .infinity)
+        } else {
+            HStack(spacing: 11) {
+                Text(minLabel ?? toNum(range.lowerBound, maxFrac: 0))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Color.to_textMut)
+                slider
+                .tint(Color.to_accent)
+                Text(maxLabel ?? toNum(range.upperBound, maxFrac: 0))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Color.to_textMut)
+                HStack(spacing: 3) {
+                    Text(toNum(value, maxFrac: maxFrac))
+                        .monospacedDigit()
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(Color.to_textPri)
+                    if !unit.isEmpty {
+                        Text(unit)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundColor(Color.to_textMut)
+                    }
                 }
+                .frame(minWidth: 62)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.to_field))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.to_fieldBorder, lineWidth: 1))
             }
-            .frame(minWidth: 62)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.to_field))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.to_fieldBorder, lineWidth: 1))
         }
     }
 
