@@ -39,7 +39,10 @@ struct DxfCanvasView: View {
     @State private var isDragging = false
     @State private var mouseLocation = CGPoint.zero
     @State private var hoverCoords: CGPoint? = nil
-    
+    // The polyline corner under the cursor in Fillet/Chamfer mode — highlighted so
+    // it's clear which corner a click will round/cut (handle + vertex index).
+    @State private var hoveredFilletCorner: (handle: String, index: Int)? = nil
+
     @State private var dragSelectionStart: CGPoint? = nil
     @State private var dragSelectionEnd: CGPoint? = nil
     
@@ -200,6 +203,14 @@ struct DxfCanvasView: View {
                 )
                 .modifier(MouseTrackerModifier(mouseLocation: $mouseLocation, hoverCoords: $hoverCoords, size: geo.size, bounds: modelBounds, scale: state.canvasScale, offset: state.canvasOffset))
                 .onChange(of: hoverCoords) { _, newCoords in
+                    // Fillet/Chamfer: light up the corner a click would round/cut so
+                    // the target is unambiguous before committing.
+                    let corner = state.currentTool.isCornerTool
+                        ? nearestFilletCorner(at: mouseLocation, size: geo.size, modelBounds: modelBounds)
+                        : nil
+                    if hoveredFilletCorner?.handle != corner?.handle || hoveredFilletCorner?.index != corner?.index {
+                        hoveredFilletCorner = corner
+                    }
                     if let coords = newCoords {
                         if let nearest = findNearestEntity(modelPt: coords, maxDistanceScreen: 12.0, size: geo.size, bounds: modelBounds) {
                             state.hoveredHandle = nearest.handle
@@ -2343,19 +2354,25 @@ struct DxfCanvasView: View {
     /// misses every polyline corner, fall back to joining two separate lines that
     /// meet near the click into one filletable corner — so the tools work on the
     /// junction of two lines, imported geometry, etc.
-    private func pickFilletCorner(at point: CGPoint, size: CGSize, modelBounds: CGRect) {
-        var bestHandle: String? = nil
-        var bestIndex = -1
+    /// The polyline corner nearest `point` within the pick radius, or nil. Shared
+    /// by the click (pickFilletCorner) and the hover highlight so what lights up is
+    /// exactly what a click acts on — no indicator/action mismatch.
+    private func nearestFilletCorner(at point: CGPoint, size: CGSize, modelBounds: CGRect) -> (handle: String, index: Int)? {
+        var best: (handle: String, index: Int)? = nil
         var bestDist: CGFloat = 10.0
         for ent in state.entities {
             for c in cornerHandles(for: ent) {
                 let s = toScreen(dx: c.pt[0], dy: c.pt[1], size: size, bounds: modelBounds)
                 let d = hypot(point.x - s.x, point.y - s.y)
-                if d < bestDist { bestDist = d; bestHandle = ent.handle; bestIndex = c.index }
+                if d < bestDist { bestDist = d; best = (ent.handle, c.index) }
             }
         }
-        if let h = bestHandle, bestIndex >= 0 {
-            state.toggleCorner(handle: h, index: bestIndex)
+        return best
+    }
+
+    private func pickFilletCorner(at point: CGPoint, size: CGSize, modelBounds: CGRect) {
+        if let hit = nearestFilletCorner(at: point, size: size, modelBounds: modelBounds) {
+            state.toggleCorner(handle: hit.handle, index: hit.index)
             return
         }
         // No existing polyline corner under the cursor: try to join two lines.
@@ -2463,10 +2480,16 @@ struct DxfCanvasView: View {
         for ent in state.entities {
             for c in cornerHandles(for: ent) {
                 let s = toScreen(dx: c.pt[0], dy: c.pt[1], size: size, bounds: modelBounds)
-                let r: CGFloat = c.hasMod ? 5.0 : 3.5
+                let isHovered = hoveredFilletCorner?.handle == ent.handle && hoveredFilletCorner?.index == c.index
+                // The hovered corner grows into a clear target ring so it's obvious
+                // which corner a click will round/cut.
+                let r: CGFloat = isHovered ? 7.0 : (c.hasMod ? 5.0 : 3.5)
                 var p = SwiftUI.Path()
                 p.addEllipse(in: CGRect(x: s.x - r, y: s.y - r, width: r * 2, height: r * 2))
-                if c.hasMod {
+                if isHovered {
+                    context.fill(p, with: .color(Color.accent.opacity(c.hasMod ? 1.0 : 0.35)))
+                    context.stroke(p, with: .color(Color.accent), lineWidth: 2.0)
+                } else if c.hasMod {
                     context.fill(p, with: .color(Color.accent))
                     context.stroke(p, with: .color(.white), lineWidth: 1.5)
                 } else {
