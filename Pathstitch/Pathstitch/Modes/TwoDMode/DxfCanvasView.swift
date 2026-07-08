@@ -1963,10 +1963,12 @@ struct DxfCanvasView: View {
             }
         }
 
-        // Draw Snapping Hover Indicator (only when snapping is on)
+        // Draw Snapping Hover Indicator (only when snapping is on). Uses the
+        // same resolver as placement, so an ortho-coincident override shows the
+        // exact point a click would land on.
         if state.snapActive, let hover = hoverCoords {
             let hoverScreen = toScreen(dx: Double(hover.x), dy: Double(hover.y), size: size, bounds: modelBounds)
-            if let snap = getSnappedPoint(for: hoverScreen, size: size, bounds: modelBounds, ref: orthoReferencePoint()) {
+            if let snap = resolveSnappedPoint(forScreen: hoverScreen, ref: orthoReferencePoint(), size: size, bounds: modelBounds).snap {
                 let snapPt = snap.snappedScreenPt
                 let snapRect = CGRect(x: snapPt.x - 4, y: snapPt.y - 4, width: 8, height: 8)
                 var snapPath = SwiftUI.Path()
@@ -5087,6 +5089,46 @@ struct DxfCanvasView: View {
         // each circle/arc. Endpoints/vertices of each curve are tracked so a
         // crossing that merely lands on a shared endpoint (already an endpoint
         // snap) is skipped.
+        let (curves, curveEnds) = collectSnapCurves()
+        // O(n²) over curves — cap to keep mouse-move cheap on dense outlines.
+        if curves.count <= 600 {
+            let eps: CGFloat = 1e-4
+            for i in 0..<curves.count {
+                for j in (i + 1)..<curves.count {
+                    for pt in curveIntersections(curves[i], curves[j]) {
+                        // Skip crossings sitting on a shared endpoint of either edge.
+                        let onEndpoint = (curveEnds[i] + curveEnds[j]).contains {
+                            hypot(pt.x - $0.x, pt.y - $0.y) < eps
+                        }
+                        if onEndpoint { continue }
+                        list.append(SnapCandidate(modelPoint: pt, type: .intersection))
+                    }
+                }
+            }
+            // Tangent points are defined relative to where the current segment
+            // started — only meaningful while rubber-banding from a reference.
+            if let ref = ref {
+                for curve in curves {
+                    if case let .arc(center, r, a0, a1, full) = curve {
+                        for pt in tangentPoints(from: ref, center: center, radius: r, a0: a0, a1: a1, full: full) {
+                            list.append(SnapCandidate(modelPoint: pt, type: .tangent))
+                        }
+                    }
+                }
+            }
+        }
+        return list
+    }
+
+    /// Every visible edge as an analytic curve (straight segment or circular
+    /// arc) plus each curve's endpoints — shared by the pairwise-intersection
+    /// osnap above and the ortho-axis crossing below.
+    private func collectSnapCurves() -> (curves: [SnapCurve], ends: [[CGPoint]]) {
+        var layerLookup: [String: DXFLayer] = [:]
+        for layer in state.layers {
+            layerLookup[layer.id] = layer
+            layerLookup[layer.name] = layer
+        }
         var curves: [SnapCurve] = []
         var curveEnds: [[CGPoint]] = []
         for ent in state.entities {
@@ -5116,34 +5158,7 @@ struct DxfCanvasView: View {
                 }
             }
         }
-        // O(n²) over curves — cap to keep mouse-move cheap on dense outlines.
-        if curves.count <= 600 {
-            let eps: CGFloat = 1e-4
-            for i in 0..<curves.count {
-                for j in (i + 1)..<curves.count {
-                    for pt in curveIntersections(curves[i], curves[j]) {
-                        // Skip crossings sitting on a shared endpoint of either edge.
-                        let onEndpoint = (curveEnds[i] + curveEnds[j]).contains {
-                            hypot(pt.x - $0.x, pt.y - $0.y) < eps
-                        }
-                        if onEndpoint { continue }
-                        list.append(SnapCandidate(modelPoint: pt, type: .intersection))
-                    }
-                }
-            }
-            // Tangent points are defined relative to where the current segment
-            // started — only meaningful while rubber-banding from a reference.
-            if let ref = ref {
-                for curve in curves {
-                    if case let .arc(center, r, a0, a1, full) = curve {
-                        for pt in tangentPoints(from: ref, center: center, radius: r, a0: a0, a1: a1, full: full) {
-                            list.append(SnapCandidate(modelPoint: pt, type: .tangent))
-                        }
-                    }
-                }
-            }
-        }
-        return list
+        return (curves, curveEnds)
     }
 
     func getSnappedPoint(for screenPt: CGPoint, size: CGSize, bounds: CGRect, ref: CGPoint? = nil) -> SnapResult? {
@@ -5196,16 +5211,7 @@ struct DxfCanvasView: View {
     }
     
     func snappedMouseLocation(size: CGSize, bounds: CGRect) -> (point: CGPoint, snap: SnapResult?) {
-        // A real geometry snap (endpoint/midpoint/centre) under the cursor wins.
-        if state.snapActive, let snap = getSnappedPoint(for: mouseLocation, size: size, bounds: bounds, ref: orthoReferencePoint()) {
-            return (snap.snappedModelPt, snap)
-        }
-        var modelPt = toModel(point: mouseLocation, size: size, bounds: bounds)
-        // Otherwise faintly snap a line/ruler segment to 90° increments.
-        if state.snapActive, let ref = orthoReferencePoint() {
-            modelPt = orthoConstrained(from: ref, to: modelPt)
-        }
-        return (modelPt, nil)
+        return resolveSnappedPoint(forScreen: mouseLocation, ref: orthoReferencePoint(), size: size, bounds: bounds)
     }
 
     /// The segment start for ortho (90°) snapping — only for line/ruler tools.
@@ -5215,32 +5221,86 @@ struct DxfCanvasView: View {
         return nil
     }
 
-    /// If the segment `ref → pt` is within ~7° of a 0/90/180/270° axis, rotate
-    /// `pt` (keeping its distance) exactly onto that axis; otherwise unchanged.
-    private func orthoConstrained(from ref: CGPoint, to pt: CGPoint) -> CGPoint {
+    /// The point `pt` rotated (keeping its distance from `ref`) exactly onto the
+    /// nearest 0/90/180/270° axis — or nil when `ref → pt` is more than ~7° off
+    /// every axis and ortho should not engage.
+    private func orthoAxisPoint(from ref: CGPoint, to pt: CGPoint) -> CGPoint? {
         let dx = pt.x - ref.x, dy = pt.y - ref.y
         let len = hypot(dx, dy)
-        guard len > 0.0001 else { return pt }
+        guard len > 0.0001 else { return nil }
         let deg = atan2(dy, dx) * 180.0 / .pi
         let nearest = (deg / 90.0).rounded() * 90.0
-        if abs(nearest - deg) < 7.0 {
-            let r = nearest * .pi / 180.0
-            return CGPoint(x: ref.x + CGFloat(cos(r)) * len, y: ref.y + CGFloat(sin(r)) * len)
+        guard abs(nearest - deg) < 7.0 else { return nil }
+        let r = nearest * .pi / 180.0
+        return CGPoint(x: ref.x + CGFloat(cos(r)) * len, y: ref.y + CGFloat(sin(r)) * len)
+    }
+
+    /// Where the engaged H/V axis (from `ref` through `orthoPt`) crosses a
+    /// visible curve near the cursor — the "ortho AND coincident" landing spot.
+    /// Returns nil when no crossing sits within the snap magnet radius.
+    private func orthoCurveCrossing(ref: CGPoint, orthoPt: CGPoint, cursorScreen: CGPoint,
+                                    size: CGSize, bounds: CGRect) -> CGPoint? {
+        let dx = orthoPt.x - ref.x, dy = orthoPt.y - ref.y
+        let len = hypot(dx, dy)
+        guard len > 1e-6 else { return nil }
+        // Model units per screen pixel, so the search reach matches the 14 px magnet.
+        let m0 = toModel(point: cursorScreen, size: size, bounds: bounds)
+        let m1 = toModel(point: CGPoint(x: cursorScreen.x + 1, y: cursorScreen.y), size: size, bounds: bounds)
+        let mpp = max(hypot(m1.x - m0.x, m1.y - m0.y), 1e-9)
+        // Extend the axis a magnet's worth past the cursor so a crossing just
+        // beyond the raw mouse position is still found.
+        let ext = CGPoint(x: ref.x + dx / len * (len + 20 * mpp), y: ref.y + dy / len * (len + 20 * mpp))
+        let axis = SnapCurve.segment(ref, ext)
+        var best: CGPoint? = nil
+        var bestDist = CGFloat.greatestFiniteMagnitude
+        for curve in collectSnapCurves().curves {
+            for pt in curveIntersections(axis, curve) {
+                // The crossing at the segment's own start isn't a landing spot.
+                if hypot(pt.x - ref.x, pt.y - ref.y) < 3 * mpp { continue }
+                let scr = toScreen(dx: Double(pt.x), dy: Double(pt.y), size: size, bounds: bounds)
+                let d = hypot(cursorScreen.x - scr.x, cursorScreen.y - scr.y)
+                if d < bestDist { bestDist = d; best = pt }
+            }
         }
-        return pt
+        return bestDist <= 14.0 ? best : nil
+    }
+
+    /// Single source of truth for "where does this cursor land, and what glyph
+    /// shows" — used by both the hover preview and click placement so they
+    /// always agree. A near-H/V segment OVERRIDES the weak snaps (midpoint /
+    /// center / on-curve) that would otherwise pull it a hair off axis: the
+    /// point lands where the axis crosses the hovered curve — exactly
+    /// orthogonal AND exactly on the edge — shown as Coincident. Strong snaps
+    /// (endpoint / intersection / tangent) still win, so corner-to-corner
+    /// drawing keeps working while nearly horizontal.
+    private func resolveSnappedPoint(forScreen point: CGPoint, ref: CGPoint?,
+                                     size: CGSize, bounds: CGRect) -> (point: CGPoint, snap: SnapResult?) {
+        let rawModel = toModel(point: point, size: size, bounds: bounds)
+        guard state.snapActive else { return (rawModel, nil) }
+        let snap = getSnappedPoint(for: point, size: size, bounds: bounds, ref: ref)
+        let orthoPt = ref.flatMap { orthoAxisPoint(from: $0, to: rawModel) }
+
+        if let snap = snap {
+            let strong = getPriority(snap.type) < getPriority(.midpoint)
+            if strong || orthoPt == nil { return (snap.snappedModelPt, snap) }
+        } else if orthoPt == nil {
+            return (rawModel, nil)
+        }
+
+        // Ortho engaged (and anything under the cursor is at most a weak snap).
+        let ortho = orthoPt!
+        if let ref = ref,
+           let hit = orthoCurveCrossing(ref: ref, orthoPt: ortho, cursorScreen: point, size: size, bounds: bounds) {
+            let scr = toScreen(dx: Double(hit.x), dy: Double(hit.y), size: size, bounds: bounds)
+            return (hit, SnapResult(snappedModelPt: hit, snappedScreenPt: scr, type: .coincident))
+        }
+        return (ortho, nil)
     }
 
     /// Snapped model point for a screen click (placement), honouring `snapEnabled`
     /// and ortho relative to an optional reference (e.g. the ruler's first point).
     private func snappedModelPoint(forScreen point: CGPoint, ref: CGPoint?, size: CGSize, bounds: CGRect) -> CGPoint {
-        if state.snapActive, let s = getSnappedPoint(for: point, size: size, bounds: bounds, ref: ref) {
-            return s.snappedModelPt
-        }
-        var m = toModel(point: point, size: size, bounds: bounds)
-        if state.snapActive, let ref = ref {
-            m = orthoConstrained(from: ref, to: m)
-        }
-        return m
+        return resolveSnappedPoint(forScreen: point, ref: ref, size: size, bounds: bounds).point
     }
     
     private func cycleDimension(size: CGSize, modelBounds: CGRect) {
