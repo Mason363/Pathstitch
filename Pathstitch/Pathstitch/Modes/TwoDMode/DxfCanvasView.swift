@@ -1578,6 +1578,25 @@ struct DxfCanvasView: View {
             }
         }
 
+        // Mandala centre indicator: the tool replicates the seed around the ORIGIN
+        // (0,0), but nothing on the canvas showed where that is — so copies
+        // appeared to fly off to an unmarked point. Mark the origin + label it so
+        // the centre of symmetry is obvious before baking.
+        if state.currentTool == .mandala {
+            let o = toScreen(dx: 0, dy: 0, size: size, bounds: modelBounds)
+            let r: CGFloat = 9
+            var cross = SwiftUI.Path()
+            cross.move(to: CGPoint(x: o.x - r, y: o.y)); cross.addLine(to: CGPoint(x: o.x + r, y: o.y))
+            cross.move(to: CGPoint(x: o.x, y: o.y - r)); cross.addLine(to: CGPoint(x: o.x, y: o.y + r))
+            context.stroke(cross, with: .color(Color.accent), lineWidth: 1.5)
+            var ring = SwiftUI.Path()
+            ring.addEllipse(in: CGRect(x: o.x - 4, y: o.y - 4, width: 8, height: 8))
+            context.stroke(ring, with: .color(Color.accent), lineWidth: 1.5)
+            context.draw(Text("origin — copies rotate around here")
+                .font(.system(size: 9, weight: .semibold)).foregroundColor(.accent),
+                at: CGPoint(x: o.x + r + 4, y: o.y), anchor: .leading)
+        }
+
         // Trim tool hover preview (MAS-98): highlight, in red, the exact piece the
         // cursor is over — i.e. what a click/drag would remove.
         if state.currentTool == .trim {
