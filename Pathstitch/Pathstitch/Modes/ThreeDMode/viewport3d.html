@@ -153,6 +153,12 @@
         let dragStartOffset = 0;
         let dragStartMouse = new THREE.Vector2();
         let hasDragged = false;
+        // Where the pointer went down, so a click that ends a camera orbit/pan
+        // doesn't get treated as a face/edge selection. A full-window canvas
+        // fires a native `click` even after a big drag (mousedown/up land on the
+        // same element), so without this every rotate selected a face on release.
+        let pointerDownX = 0, pointerDownY = 0;
+        const CLICK_MOVE_TOL = 5; // px
 
         // Body move tool state (MAS-125)
         let bodyMoveActive = false;
@@ -1187,7 +1193,11 @@
         function onMouseDown(event) {
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-            
+            // Remember where the press started so onClick can tell a real click
+            // from the tail end of an orbit/pan.
+            pointerDownX = event.clientX;
+            pointerDownY = event.clientY;
+
             raycaster.setFromCamera(mouse, camera);
             
             if (isPlaneSelectionActive && selectedProjectionPlane && hitboxMesh) {
@@ -1224,6 +1234,12 @@
         }
 
         function onClick(event) {
+            // If the pointer travelled more than a few px between press and
+            // release, this "click" is really the end of a camera orbit/pan —
+            // don't select/toggle a face, edge, body, or plane under the cursor.
+            if (Math.hypot(event.clientX - pointerDownX, event.clientY - pointerDownY) > CLICK_MOVE_TOL) {
+                return;
+            }
             raycaster.setFromCamera(mouse, camera);
 
             // Body move tool: a click selects a body; the gizmo handles dragging
