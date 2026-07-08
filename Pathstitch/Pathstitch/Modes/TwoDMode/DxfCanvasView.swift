@@ -2725,7 +2725,14 @@ struct DxfCanvasView: View {
     @ViewBuilder
     private func mirrorAxisOverlay(size: CGSize, bounds: CGRect) -> some View {
         let start = state.mirrorAxisStart
-        let end = state.mirrorAxisEnd
+        // After the first axis point, follow the (snapped) cursor as a provisional
+        // second point so the axis + mirrored ghost preview live — placing the
+        // second point is no longer blind.
+        let provisional: CGPoint? = (state.mirrorAxisEnd == nil && start != nil && state.mirrorLineMode)
+            ? snappedModelPoint(forScreen: mouseLocation, ref: start, size: size, bounds: bounds)
+            : nil
+        let end = state.mirrorAxisEnd ?? provisional
+        let isProvisional = state.mirrorAxisEnd == nil && provisional != nil
         return ZStack {
             if let a = start {
                 let pa = toScreen(dx: Double(a.x), dy: Double(a.y), size: size, bounds: bounds)
@@ -2740,7 +2747,8 @@ struct DxfCanvasView: View {
                         p.move(to: CGPoint(x: pa.x - ux * ext, y: pa.y - uy * ext))
                         p.addLine(to: CGPoint(x: pb.x + ux * ext, y: pb.y + uy * ext))
                     }
-                    .stroke(Color.accent, style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+                    .stroke(Color.accent.opacity(isProvisional ? 0.55 : 1.0),
+                            style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
 
                     // Dynamic ghost of the mirrored geometry (MAS-119): reflect the
                     // selection across the axis using a Canvas so any entity type
@@ -2753,7 +2761,7 @@ struct DxfCanvasView: View {
                         ctx.scaleBy(x: 1, y: -1)               // reflect across the axis
                         ctx.rotate(by: Angle(radians: -theta))
                         ctx.translateBy(x: -pa.x, y: -pa.y)
-                        let ghost = Color.accent.opacity(0.5)
+                        let ghost = Color.accent.opacity(isProvisional ? 0.3 : 0.5)
                         for ent in selected {
                             drawEntity(ent, baseColor: ghost, strokeColor: ghost, strokeWidth: 1.0,
                                        size: size, modelBounds: bounds, context: &ctx)
@@ -2761,7 +2769,8 @@ struct DxfCanvasView: View {
                     }
                     .allowsHitTesting(false)
 
-                    Circle().fill(Color.accent).frame(width: 7, height: 7).position(pb)
+                    Circle().fill(Color.accent.opacity(isProvisional ? 0.5 : 1.0))
+                        .frame(width: 7, height: 7).position(pb)
                 }
                 Circle().fill(Color.accent).frame(width: 7, height: 7).position(pa)
             }
