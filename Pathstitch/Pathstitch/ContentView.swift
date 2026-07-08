@@ -2069,7 +2069,11 @@ extension ContentView {
                                             .font(.system(size: 10))
                                             .foregroundColor(Color.accent)
                                     } else {
-                                        // Layer visibility toggle
+                                        // Layer visibility toggle. This is one of the
+                                        // most-clicked controls in the panel, so give
+                                        // it a comfortable hit area (the whole 18px box,
+                                        // via contentShape) rather than just the 12px
+                                        // glyph — a near-miss used to do nothing.
                                         Button(action: {
                                             if let idx = state.layers.firstIndex(where: { $0.id == item.id }) {
                                                 state.layers[idx].visible.toggle()
@@ -2078,9 +2082,11 @@ extension ContentView {
                                             Image(systemName: item.visible ? "eye" : "eye.slash")
                                                 .font(.system(size: 10))
                                                 .foregroundColor(item.visible ? Color.text_primary : Color.text_muted)
-                                                .frame(width: 12, height: 12)
+                                                .frame(width: 18, height: 18)
+                                                .contentShape(Rectangle())
                                         }
                                         .buttonStyle(PlainButtonStyle())
+                                        .help(item.visible ? "Hide layer" : "Show layer")
                                         
                                         if item.isReferenceImageLayer {
                                             Image(systemName: "photo")
