@@ -1681,7 +1681,32 @@ struct DxfCanvasView: View {
                 anchor: .center
             )
         }
-        
+
+        // Dimension tool — two-point reference dimension in progress. Between the
+        // first and second click, preview the dashed dimension line + live value
+        // to the snapped cursor, so the second point isn't placed blind (same
+        // pattern as Measure / Mirror).
+        if state.currentTool == .dimension, let first = dimensionFirstPoint {
+            let firstScreen = toScreen(dx: first.x, dy: first.y, size: size, bounds: modelBounds)
+            let endModel = snappedModelPoint(forScreen: mouseLocation, ref: first, size: size, bounds: modelBounds)
+            let endScreen = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
+            var dPath = SwiftUI.Path()
+            dPath.move(to: firstScreen)
+            dPath.addLine(to: endScreen)
+            context.stroke(dPath, with: .color(Color.accent), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+            // Endpoint ticks so it reads as a dimension, not just a line.
+            for p in [firstScreen, endScreen] {
+                var tick = SwiftUI.Path()
+                tick.addEllipse(in: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5))
+                context.fill(tick, with: .color(Color.accent))
+            }
+            let dist = Double(hypot(first.x - endModel.x, first.y - endModel.y))
+            let mid = CGPoint(x: (firstScreen.x + endScreen.x) / 2, y: (firstScreen.y + endScreen.y) / 2)
+            context.draw(Text(String(format: "%.2f mm", dist))
+                .font(.system(size: 10, weight: .bold)).foregroundColor(.accent),
+                at: CGPoint(x: mid.x, y: mid.y - 10), anchor: .center)
+        }
+
         // Draw Sketch Tools Live Preview
         if state.currentTool == .sketchLine, let startModel = sketchStartPoint {
             let snapped = snappedMouseLocation(size: size, bounds: modelBounds)
