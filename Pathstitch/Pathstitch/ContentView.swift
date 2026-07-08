@@ -1444,6 +1444,15 @@ extension ContentView {
                         help: "Turn selected segments into dashed crease folds, or generate glue tabs along selected paths for paper / leather modeling.",
                         helpOpen: $toolHelpOpen)
 
+            // Both actions below need a selection — say so, so the disabled Apply
+            // buttons aren't just greyed out with no explanation (matches Offset).
+            if state.selectedHandles.isEmpty {
+                TOStatus(color: .to_textFaint, text: "Nothing selected", hint: "click a segment or path first")
+            } else {
+                let n = state.selectedHandles.count
+                TOStatus(color: .to_accent, text: "\(n) path\(n == 1 ? "" : "s") selected")
+            }
+
             TOGroupLabel("Crease pattern")
             TOHint("Turns selected segments into dashed crease folds.")
             TOPrimaryButton(title: "Apply Dashed Creases", enabled: !state.selectedHandles.isEmpty) {
@@ -3347,6 +3356,17 @@ extension ContentView {
                     state.reconvertGroup(gid, style: style, settings: state.convertLineSettings[style])
                 }
             } else {
+                // Explain a disabled Convert button instead of leaving it greyed
+                // with no reason — distinguish "nothing picked" from "picked, but
+                // nothing convertible" (e.g. a circle or text has no straight lines).
+                if !state.selectionHasConvertibleLines {
+                    if state.selectedHandles.isEmpty {
+                        TOStatus(color: .to_textFaint, text: "Nothing selected", hint: "select lines to convert")
+                    } else {
+                        TOStatus(color: .to_textFaint, text: "No straight lines in selection",
+                                 hint: "convert works on lines / polyline segments")
+                    }
+                }
                 TOPrimaryButton(title: "Convert Selection", enabled: state.selectionHasConvertibleLines) {
                     state.convertSelectedLines(style: style, settings: state.convertLineSettings[style] ?? [:])
                 }
