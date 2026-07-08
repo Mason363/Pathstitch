@@ -1655,18 +1655,23 @@ struct DxfCanvasView: View {
         // Draw Live Measurement Line
         if state.currentTool == .measure, let startModel = state.activeMeasureStart {
             let startScreen = toScreen(dx: startModel.x, dy: startModel.y, size: size, bounds: modelBounds)
+            // Preview to where the second point will ACTUALLY land — snapped to
+            // geometry and ortho-constrained to the start — so the live distance
+            // matches what a click records. A measure tool whose readout jumps the
+            // instant you click is worse than useless: the number is the product.
+            let endModel = snappedModelPoint(forScreen: mouseLocation, ref: startModel, size: size, bounds: modelBounds)
+            let endScreen = toScreen(dx: endModel.x, dy: endModel.y, size: size, bounds: modelBounds)
             var mPath = SwiftUI.Path()
             mPath.move(to: startScreen)
-            mPath.addLine(to: mouseLocation)
+            mPath.addLine(to: endScreen)
             context.stroke(mPath, with: .color(Color.status_warn), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [4, 4]))
-            
-            let endModel = toModel(point: mouseLocation, size: size, bounds: modelBounds)
+
             let dist = Double(hypot(startModel.x - endModel.x, startModel.y - endModel.y))
             let labelText = String(format: "%.2f mm", dist)
-            
+
             let midScreen = CGPoint(
-                x: (startScreen.x + mouseLocation.x) / 2,
-                y: (startScreen.y + mouseLocation.y) / 2
+                x: (startScreen.x + endScreen.x) / 2,
+                y: (startScreen.y + endScreen.y) / 2
             )
             context.draw(
                 Text(labelText)
