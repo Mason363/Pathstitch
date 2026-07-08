@@ -6400,6 +6400,16 @@ class AppState {
 
         previewTask = Task {
             do {
+                // Debounce: the hole pipeline is two Python subprocess round-trips
+                // through a temp DXF. Dragging a spacing/margin slider fires this
+                // per tick; without a settle window each tick spawns work and the
+                // slider stutters. `updateLivePreview` cancels the prior task on
+                // every change, so this sleep means a burst of changes cancels all
+                // but the last BEFORE it launches any subprocess — the pipeline
+                // runs once, on the value the user settles on.
+                try await Task.sleep(nanoseconds: 130_000_000)   // 130 ms
+                try Task.checkCancellation()
+
                 let tempDir = sessionTempDirectory
                 try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
                 let previewDxf = tempDir.appendingPathComponent("preview_temp.dxf")
