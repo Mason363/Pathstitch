@@ -1874,12 +1874,17 @@ struct DxfCanvasView: View {
             // Rubber-band preview from the last anchor to the cursor (not while
             // re-editing a closed loop — there is nothing to extend).
             if let last = penAnchors.last, !penDraggingHandle, !(editingPenHandle != nil && penEditingClosed) {
+                // Rubber-band to where the next anchor will ACTUALLY land — the
+                // snapped / ortho-constrained point, not the raw cursor — so the
+                // preview matches the click (same class as the snap-indicator fix).
+                let nextModel = snappedModelPoint(forScreen: mouseLocation, ref: last.point, size: size, bounds: modelBounds)
+                let nextScreen = toScreen(dx: nextModel.x, dy: nextModel.y, size: size, bounds: modelBounds)
                 var rb = SwiftUI.Path()
                 rb.move(to: scr(last.point))
                 if let hOut = last.handleOut {
-                    rb.addCurve(to: mouseLocation, control1: scr(hOut), control2: mouseLocation)
+                    rb.addCurve(to: nextScreen, control1: scr(hOut), control2: nextScreen)
                 } else {
-                    rb.addLine(to: mouseLocation)
+                    rb.addLine(to: nextScreen)
                 }
                 context.stroke(rb, with: .color(Color.accent.opacity(0.5)), style: StrokeStyle(lineWidth: 1.0, dash: [4, 4]))
             }
@@ -1897,7 +1902,9 @@ struct DxfCanvasView: View {
                     }
                 }
                 let isClosable = (idx == 0 && penAnchors.count >= 2)
-                let nearFirst = isClosable && hypot(mouseLocation.x - s.x, mouseLocation.y - s.y) < 10
+                // Match the 12px close radius the click uses, so the green
+                // close-ring appears exactly when a click would close the path.
+                let nearFirst = isClosable && hypot(mouseLocation.x - s.x, mouseLocation.y - s.y) <= 12
                 var sq = SwiftUI.Path(); sq.addRect(CGRect(x: s.x - 2.5, y: s.y - 2.5, width: 5, height: 5))
                 context.fill(sq, with: .color(nearFirst ? Color.status_ok : Color.accent))
                 if nearFirst {
