@@ -361,29 +361,41 @@ struct DxfCanvasView: View {
                         if state.currentTool != .select { state.currentTool = .select }
                         return
                     }
+                    // Two-stage Escape (CAD muscle memory): the FIRST Esc only
+                    // cancels the in-progress action and keeps the drawing tool
+                    // active, so a mis-started line doesn't kick you out of Line.
+                    // Esc again (nothing in progress) exits to Select.
+                    var cancelledInProgress = false
                     if state.currentTool == .pen && !penAnchors.isEmpty {
                         // Esc abandons the in-progress pen path, or cancels a
                         // re-edit and restores the original (parametric pen lines).
                         resetPenState()
+                        cancelledInProgress = true
                     } else if isCurveTool && !curvePoints.isEmpty {
                         // Esc abandons the in-progress arc / conic curve.
                         curvePoints = []
+                        cancelledInProgress = true
                     } else if state.isEditingText {
                         state.cancelTextEditing()
+                        cancelledInProgress = true
                     } else if gizmoDimKind != nil {
                         // Esc dismisses the precision dimension box first (MAS-57).
                         gizmoDimKind = nil
                         isGizmoDimFocused = false
+                        cancelledInProgress = true
                     } else if sketchStartPoint != nil {
                         sketchStartPoint = nil
                         sketchAwaitingSecondClick = false
+                        cancelledInProgress = true
                     } else {
                         state.selectedHandles.removeAll()
                         state.selectedFaces3D.removeAll()
                     }
-                    // Escape always falls back to the Select tool — a universal
-                    // shortcut to it, on top of cancelling the current action.
-                    if state.currentTool != .select { state.currentTool = .select }
+                    // Only fall back to Select once there's nothing left to cancel,
+                    // so Esc mid-draw keeps you on the tool for the next attempt.
+                    if !cancelledInProgress && state.currentTool != .select {
+                        state.currentTool = .select
+                    }
                 }
                 .onChange(of: state.currentTool) { oldTool, newTool in
                     sketchStartPoint = nil
@@ -514,7 +526,7 @@ struct DxfCanvasView: View {
                 }
                 
                 canvasOverlays(size: geo.size, modelBounds: modelBounds)
-                coordinatesOverlay()
+                coordinatesOverlay(size: geo.size, modelBounds: modelBounds)
                 activeToolPill()
                 editingTextFieldsOverlay(size: geo.size, modelBounds: modelBounds)
             }
@@ -1244,12 +1256,37 @@ struct DxfCanvasView: View {
     }
 
     @ViewBuilder
-    private func coordinatesOverlay() -> some View {
+    private func coordinatesOverlay(size: CGSize, modelBounds: CGRect) -> some View {
         Group {
-            if let coords = hoverCoords {
+            if hoverCoords != nil {
+                // Report the point a click would actually place — the snapped
+                // location when the magnet has engaged, not the raw cursor. A raw
+                // readout beside an active snap is exactly the "the number lies"
+                // problem: the dot is on the endpoint but X/Y read the mouse.
+                let snap = state.snapActive
+                    ? getSnappedPoint(for: mouseLocation, size: size, bounds: modelBounds, ref: orthoReferencePoint())
+                    : nil
+                let coords = snap?.snappedModelPt ?? snappedMouseLocation(size: size, bounds: modelBounds).point
                 HStack(spacing: 8) {
-                    Text("X: \(String(format: "%.2f", coords.x)) mm")
-                    Text("Y: \(String(format: "%.2f", coords.y)) mm")
+                    if let s = snap {
+                        Image(systemName: "scope").font(.system(size: 9))
+                            .foregroundColor(.accent)
+                        Text(s.type.rawValue)
+                            .foregroundColor(.accent)
+                        Divider().frame(height: 10)
+                    }
+                    Text("X: \(String(format: "%.2f", coords.x))")
+                    Text("Y: \(String(format: "%.2f", coords.y))")
+                    // While drawing, show the run relative to the start point —
+                    // length + Δ, the numbers you're actually reasoning about.
+                    if let start = sketchStartPoint {
+                        let dx = coords.x - start.x, dy = coords.y - start.y
+                        Divider().frame(height: 10)
+                        Text("L: \(String(format: "%.2f", hypot(dx, dy))) mm")
+                            .foregroundColor(.accent)
+                        Text("Δ \(String(format: "%.1f, %.1f", dx, dy))")
+                            .foregroundColor(.text_muted)
+                    }
                 }
                 .font(PlasticityFont.label)
                 .foregroundColor(.text_secondary)
