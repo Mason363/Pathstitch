@@ -1339,6 +1339,63 @@ function measureAnchorWorld(an){
   const t=p.triangles[an.tri]; if(!t) return null;
   return embeddedWorld(p, an);
 }
+// The measure anchor a click at (cx,cy) would place — embedded in the panel
+// mesh, snapped to a nearby sewing hole if one is close. Shared by the click
+// and the hover preview so the marker shows exactly where the point will land.
+function measureAnchorAt(cx,cy){
+  const hit=panelHitAt(cx,cy); if(!hit) return null;
+  const panel=PANEL_BY_ID[hit.object.userData.panelId];
+  let tri=hitTriIndex(panel, hit);
+  if(tri<0){                       // rim hit — resolve through the flat pattern
+    const p2=hitTo2D(panel, hit.face, hit.point);
+    const em=embed2DPoint(panel, p2[0], p2[1]); if(!em) return null;
+    tri=em.tri;
+  }
+  const t=panel.triangles[tri]; if(!t) return null;
+  const hp=[hit.point.x,hit.point.y,hit.point.z];
+  let snapped=null, sd=1e18;
+  for(const c of CHAINS){ if(c.panelId!==panel.id) continue;
+    for(let k=0;k<c.holes.length;k++){ const d=len(sub(holeWorld(c,k),hp));
+      if(d<sd){ sd=d; snapped={tri:c.holes[k].tri, bary:c.holes[k].bary}; } } }
+  const onHole = snapped && sd<Math.max(2.5, hit.distance*0.012);
+  const anchor = onHole ? {panelId:panel.id, tri:snapped.tri, bary:snapped.bary.slice()}
+                        : {panelId:panel.id, tri, bary:baryIn3D(hp, panel.X[t[0]], panel.X[t[1]], panel.X[t[2]])};
+  return {anchor, world:measureAnchorWorld(anchor), onHole:!!onHole};
+}
+// Live hover for the measure tool: a dot at the landing point (brighter when
+// snapped to a hole), and — once the first point is placed — a dashed
+// provisional tape + distance to the cursor, so the second point isn't blind.
+let measureHoverMark=null;
+function showMeasureHover(cx,cy){
+  const a=measureAnchorAt(cx,cy);
+  if(!a || !a.world){ hideMeasureHover(); renderer.domElement.style.cursor="default"; return; }
+  if(!measureHoverMark){
+    measureHoverMark=new THREE.Mesh(new THREE.SphereGeometry(1.5,14,10),
+      new THREE.MeshBasicMaterial({color:COL_MEASURE, depthTest:false}));
+    measureHoverMark.renderOrder=8; scene.add(measureHoverMark);
+  }
+  measureHoverMark.visible=true;
+  measureHoverMark.scale.setScalar(a.onHole?1.5:1.0);
+  measureHoverMark.position.set(a.world[0],a.world[1],a.world[2]);
+  renderer.domElement.style.cursor="crosshair";
+  // Provisional tape from the first placed point to the cursor.
+  const tag=document.getElementById("measuretag");
+  if(MEASURE.a && !MEASURE.b){
+    const wa=measureAnchorWorld(MEASURE.a);
+    if(wa){
+      showHoverPts([wa, a.world]);
+      if(tag){
+        const d=Math.hypot(a.world[0]-wa[0], a.world[1]-wa[1], a.world[2]-wa[2]);
+        const mid=new THREE.Vector3((wa[0]+a.world[0])/2,(wa[1]+a.world[1])/2,(wa[2]+a.world[2])/2).project(camera);
+        tag.style.display="block";
+        tag.style.left=((mid.x*0.5+0.5)*window.innerWidth)+"px";
+        tag.style.top=((-mid.y*0.5+0.5)*window.innerHeight)+"px";
+        tag.textContent=d.toFixed(1)+" mm";
+      }
+    }
+  } else { clearHoverLine(); if(tag && (!measureObjs||!MEASURE.b)) tag.style.display="none"; }
+}
+function hideMeasureHover(){ if(measureHoverMark) measureHoverMark.visible=false; }
 function updateMeasure(){
   if(!MEASURE.a){ return; }
   const wa=measureAnchorWorld(MEASURE.a);
@@ -1420,6 +1477,9 @@ function updateMeasure(){
 }
 function updateMeasureLabel(){
   const tag=document.getElementById("measuretag"); if(!tag) return;
+  // During the provisional phase (first point placed, aiming the second) the
+  // hover handler owns the tag with the live distance — don't fight it.
+  if(TOOL==="measure" && MEASURE.a && !MEASURE.b) return;
   if(!measureObjs || !MEASURE.b){ tag.style.display="none"; return; }
   const wa=measureObjs.ma.position, wb=measureObjs.mb.position;
   const mid=new THREE.Vector3().addVectors(wa,wb).multiplyScalar(0.5).project(camera);
@@ -2095,7 +2155,7 @@ function setHoverPanel(pid){
   hoverPanelId=pid;
   if(pid>=0){ const p=PANEL_BY_ID[pid]; if(p&&p.mat){ hoverPanelEmis=p.mat.emissive.clone(); p.mat.emissive.setHex(0x16384a); } }
 }
-function clearHover(){ clearHoverLine(); setHoverPanel(-1); clearGlueHoverHi(); renderer.domElement.style.cursor="default"; }
+function clearHover(){ clearHoverLine(); setHoverPanel(-1); clearGlueHoverHi(); if(typeof hideMeasureHover==="function") hideMeasureHover(); renderer.domElement.style.cursor="default"; }
 
 // ---- glue highlight: show exactly what a glue click will grab -----------------
 // CYAN = what's under the cursor (will be picked); GREEN = the locked first pick
@@ -2518,6 +2578,8 @@ renderer.domElement.addEventListener("pointermove",e=>{
     const cid=chainNearestAt(panelHitAt(cx,cy)); const poly=cid>=0?chainPolyWorld(cid):null;
     if(poly) showHoverPts(poly); else clearHoverLine(); setHoverPanel(-1);
     renderer.domElement.style.cursor=cid>=0?"pointer":"default";
+  } else if(TOOL==="measure"){
+    setHoverPanel(-1); showMeasureHover(cx,cy);
   } else { clearHover(); }
 });
 renderer.domElement.addEventListener("pointerup",e=>{
@@ -2569,31 +2631,9 @@ renderer.domElement.addEventListener("pointerup",e=>{
     return;
   }
   if(TOOL==="measure"){
-    const hit=panelHitAt(e.clientX,e.clientY);
-    if(!hit) return;
-    const panel=PANEL_BY_ID[hit.object.userData.panelId];
-    let tri=hitTriIndex(panel, hit);
-    if(tri<0){
-      // rim hit — resolve through the flat pattern instead
-      const p2=hitTo2D(panel, hit.face, hit.point);
-      const em=embed2DPoint(panel, p2[0], p2[1]);
-      if(!em) return;
-      tri=em.tri;
-    }
-    const t=panel.triangles[tri]; if(!t) return;
-    let anchor;
-    // Snap to a nearby sewing hole (within ~10 px) — hole-to-hole runs are the
-    // measurements makers actually need exact.
-    let snapped=null, sd=1e18;
-    const hp=[hit.point.x,hit.point.y,hit.point.z];
-    for(const c of CHAINS){ if(c.panelId!==panel.id) continue;
-      for(let k=0;k<c.holes.length;k++){ const d=len(sub(holeWorld(c,k),hp));
-        if(d<sd){ sd=d; snapped={tri:c.holes[k].tri, bary:c.holes[k].bary}; } } }
-    if(snapped && sd<Math.max(2.5, hit.distance*0.012)) anchor={panelId:panel.id, tri:snapped.tri, bary:snapped.bary.slice()};
-    else anchor={panelId:panel.id, tri,
-                 bary:baryIn3D(hp, panel.X[t[0]], panel.X[t[1]], panel.X[t[2]])};
-    if(!MEASURE.a || MEASURE.b){ clearMeasure(true); MEASURE={a:anchor, b:null}; }
-    else MEASURE.b=anchor;
+    const a=measureAnchorAt(e.clientX,e.clientY); if(!a) return;
+    if(!MEASURE.a || MEASURE.b){ clearMeasure(true); MEASURE={a:a.anchor, b:null}; }
+    else MEASURE.b=a.anchor;
     window._lastMeasure=-1;
     updateMeasure();
     return;
