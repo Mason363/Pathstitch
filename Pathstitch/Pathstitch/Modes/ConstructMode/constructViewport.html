@@ -2044,59 +2044,128 @@ function worldToScreen(p){
   const v=new THREE.Vector3(p[0],p[1],p[2]).project(camera);
   return [(v.x*0.5+0.5)*window.innerWidth, (-v.y*0.5+0.5)*window.innerHeight];
 }
-// 2D segment intersection: param t on (p1→p2) if the segments cross, else null.
-function seg2dIntersectT(p1,p2,p3,p4){
-  const x1=p1[0],y1=p1[1],x2=p2[0],y2=p2[1],x3=p3[0],y3=p3[1],x4=p4[0],y4=p4[1];
-  const den=(x1-x2)*(y3-y4)-(y1-y2)*(x3-x4); if(Math.abs(den)<1e-9) return null;
-  const t=((x1-x3)*(y3-y4)-(y1-y3)*(x3-x4))/den;
-  const u=((x1-x3)*(y1-y2)-(y1-y3)*(x1-x2))/den;
-  if(t<-1e-6||t>1+1e-6||u<-1e-6||u>1+1e-6) return null;
-  return t;
+// ---- crease-tool snap features: the LOGICAL geometry, not the tessellation.
+// The old snap treated every boundary mesh vertex as an "endpoint" (and every
+// tessellation segment's middle as a "midpoint"), so with a ~5–10 mm mesh pitch
+// the cursor was always inside some fake endpoint's magnet — the marker hopped
+// vertex-to-vertex at the mesh resolution and the continuous on-edge snap never
+// fired. This builds what the 2D canvas actually snaps to: CORNERS (where the
+// outline really turns, or where a crease meets it), whole-edge MIDPOINTS
+// (arc-length middle of each run between corners), crease↔crease INTERSECTIONS,
+// and continuous sliding (infinite resolution) along every edge in between.
+// Topology is static per model load, so it's computed once and cached; positions
+// are always read live from panel.X so every candidate rides the fold.
+function buildSnapFeatures(panel){
+  const feat={corners:new Set(), runs:[], foldChains:[], mids:[], xings:new Set()};
+  // fold chains (grouped per foldId); their ends + boundary junctions are corners
+  const segsMeta=(panel.foldLine&&panel.foldLine.userData.segs)||[];
+  const byFold={}, foldOfVert={};
+  for(let i=0;i<segsMeta.length;i++){
+    const fid=segsMeta[i].foldId; (byFold[fid]||(byFold[fid]=[])).push(panel.foldSegs[i]);
+    for(const v of panel.foldSegs[i]){
+      if(foldOfVert[v]!==undefined && foldOfVert[v]!==fid) feat.xings.add(v);  // two creases cross here
+      foldOfVert[v]=fid;
+    }
+  }
+  for(const fid in byFold){
+    const fadj={}; for(const [a,b] of byFold[fid]){ (fadj[a]||(fadj[a]=[])).push(b); (fadj[b]||(fadj[b]=[])).push(a); }
+    const ends=Object.keys(fadj).map(Number).filter(v=>fadj[v].length===1);
+    const start=ends.length?ends[0]:Number(Object.keys(fadj)[0]);
+    if(start==null||isNaN(start)) continue;
+    const chain=[start]; let prev=-1, cur=start;
+    for(let guard=0; guard<100000; guard++){
+      const nx=(fadj[cur]||[]).find(n=>n!==prev); if(nx==null||nx===start) break;
+      chain.push(nx); prev=cur; cur=nx;
+    }
+    if(chain.length<2) continue;
+    feat.foldChains.push({verts:chain, closed:ends.length===0});
+    if(ends.length){ feat.corners.add(chain[0]); feat.corners.add(chain[chain.length-1]); }
+  }
+  // boundary loops → corners where the outline turns (>25°, so flattened arcs
+  // stay smooth runs), plus crease junctions; runs are the edges between corners
+  const adj={};
+  for(const [a,b] of panel.boundaryEdges){ (adj[a]||(adj[a]=[])).push(b); (adj[b]||(adj[b]=[])).push(a); }
+  const ek=(a,b)=>a<b?a+"_"+b:b+"_"+a;
+  const visited=new Set();
+  for(const [a0,b0] of panel.boundaryEdges){
+    if(visited.has(ek(a0,b0))) continue;
+    const loop=[a0]; let prev=a0, cur=b0; visited.add(ek(a0,b0));
+    for(let guard=0; guard<200000 && cur!==a0; guard++){
+      loop.push(cur);
+      const nx=(adj[cur]||[]).find(n=>n!==prev&&!visited.has(ek(cur,n)));
+      if(nx==null) break;
+      visited.add(ek(cur,nx)); prev=cur; cur=nx;
+    }
+    const n=loop.length; if(n<2) continue;
+    const cornerIdx=[];
+    for(let i=0;i<n;i++){
+      const p0=panel.v2d[loop[(i-1+n)%n]], p1=panel.v2d[loop[i]], p2=panel.v2d[loop[(i+1)%n]];
+      const a1=Math.atan2(p1[1]-p0[1],p1[0]-p0[0]), a2=Math.atan2(p2[1]-p1[1],p2[0]-p1[0]);
+      let t=a2-a1; while(t>Math.PI)t-=2*Math.PI; while(t<-Math.PI)t+=2*Math.PI;
+      if(Math.abs(t)>25*Math.PI/180 || feat.corners.has(loop[i])) cornerIdx.push(i);
+    }
+    for(const i of cornerIdx) feat.corners.add(loop[i]);
+    if(cornerIdx.length===0){ feat.runs.push({verts:loop.concat([loop[0]]), closed:true}); }
+    else for(let k=0;k<cornerIdx.length;k++){
+      const i0=cornerIdx[k], i1=cornerIdx[(k+1)%cornerIdx.length];
+      const run=[loop[i0]]; let i=i0;
+      for(let guard=0; guard<=n; guard++){ i=(i+1)%n; run.push(loop[i]); if(i===i1) break; }
+      if(run.length>=2) feat.runs.push({verts:run, closed:false});
+    }
+  }
+  // arc-length midpoint of each open run / crease, cached as [vA, vB, t] so the
+  // live position interpolates across the folded mesh
+  const midOf=(verts)=>{
+    let L=0; const seg=[];
+    for(let i=0;i<verts.length-1;i++){ const a=panel.v2d[verts[i]], b=panel.v2d[verts[i+1]];
+      const l=Math.hypot(b[0]-a[0],b[1]-a[1]); seg.push(l); L+=l; }
+    let h=L/2;
+    for(let i=0;i<seg.length;i++){ if(h<=seg[i]) return [verts[i], verts[i+1], seg[i]>1e-9?h/seg[i]:0]; h-=seg[i]; }
+    return null;
+  };
+  for(const r of feat.runs){ if(!r.closed){ const m=midOf(r.verts); if(m) feat.mids.push(m); } }
+  for(const c of feat.foldChains){ if(!c.closed){ const m=midOf(c.verts); if(m) feat.mids.push(m); } }
+  return feat;
 }
 // Full osnap for the crease tool (parity with 2D): endpoint / intersection /
-// center / midpoint, picked by nearest within a screen-px radius (priority breaks
-// near-ties). Gated by SNAP_ENABLED (the global snap toggle). Returns
-// {world, p2d, snapped, type}; falls back to the nearest boundary-edge point so a
-// fold still lands edge-to-edge.
+// midpoint / center as discrete magnets, then CONTINUOUS coincident sliding
+// along any outline edge or crease line — the marker glides with the cursor at
+// infinite resolution instead of stepping at the mesh pitch, and the click
+// lands exactly where the marker shows. Gated by SNAP_ENABLED.
 function snapCreasePoint(panel, hit, clientX, clientY){
   const raw={world:[hit.point.x,hit.point.y,hit.point.z], p2d:hitTo2D(panel, hit.face, hit.point), snapped:false, type:""};
   if(!SNAP_ENABLED) return raw;
-  const cands=[];
+  if(!panel.snapFeat) panel.snapFeat=buildSnapFeatures(panel);
+  const F=panel.snapFeat;
   const lerp3=(a,b,t)=>[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
   const lerp2=(a,b,t)=>[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t];
-  // endpoints (boundary + fold vertices)
-  const bv=new Set(); for(const [a,b] of panel.boundaryEdges){ bv.add(a); bv.add(b); } for(const [a,b] of panel.foldSegs){ bv.add(a); bv.add(b); }
-  for(const i of bv) cands.push({world:panel.X[i].slice(), p2d:panel.v2d[i].slice(), type:"endpoint", prio:0});
-  // midpoints (boundary + fold segments)
-  for(const [a,b] of panel.boundaryEdges.concat(panel.foldSegs))
-    cands.push({world:lerp3(panel.X[a],panel.X[b],0.5), p2d:lerp2(panel.v2d[a],panel.v2d[b],0.5), type:"midpoint", prio:3});
-  // centers: hole-chain holes on this panel + each region's centroid
-  // (priority 4 matches 2D, where midpoint beats center)
+  const cands=[];
+  for(const v of F.corners) cands.push({world:panel.X[v].slice(), p2d:panel.v2d[v].slice(), type:"endpoint", prio:0});
+  for(const v of F.xings) cands.push({world:panel.X[v].slice(), p2d:panel.v2d[v].slice(), type:"intersection", prio:1});
+  for(const [a,b,t] of F.mids) cands.push({world:lerp3(panel.X[a],panel.X[b],t), p2d:lerp2(panel.v2d[a],panel.v2d[b],t), type:"midpoint", prio:3});
   for(const c of CHAINS){ if(c.panelId!==panel.id) continue; for(let k=0;k<c.holes.length;k++){ const h=c.holes[k]; cands.push({world:holeWorld(c,k), p2d:[h.x,h.y], type:"center", prio:4}); } }
-  if(panel.tree && panel.tree.region){ for(const reg of panel.tree.region){ let cx=0,cy=0,cz=0,px=0,py=0,n=0; reg.verts.forEach(v=>{ const X=panel.X[v],V=panel.v2d[v]; cx+=X[0];cy+=X[1];cz+=X[2];px+=V[0];py+=V[1];n++; }); if(n) cands.push({world:[cx/n,cy/n,cz/n], p2d:[px/n,py/n], type:"center", prio:4}); } }
-  // intersections of boundary edges (skip shared endpoints — already endpoints)
-  const be=panel.boundaryEdges;
-  if(be.length<=220){ for(let i=0;i<be.length;i++){ for(let j=i+1;j<be.length;j++){
-    const [a,b]=be[i], [c,d]=be[j]; if(a===c||a===d||b===c||b===d) continue;
-    const t=seg2dIntersectT(panel.v2d[a],panel.v2d[b],panel.v2d[c],panel.v2d[d]); if(t==null) continue;
-    cands.push({world:lerp3(panel.X[a],panel.X[b],t), p2d:lerp2(panel.v2d[a],panel.v2d[b],t), type:"intersection", prio:1});
-  } } }
-  const TH=14; let best=null, bestScore=1e18;
-  for(const cd of cands){ const s=worldToScreen(cd.world); const d=Math.hypot(s[0]-clientX, s[1]-clientY); if(d>TH) continue;
-    const score=d+cd.prio*3; if(score<bestScore){ bestScore=score; best=cd; } }
-  if(best) return {world:best.world, p2d:best.p2d, snapped:true, type:best.type};
-  // fallback: nearest point along a boundary edge — the on-curve "Coincident"
-  // snap. It tracks the cursor continuously along the edge (smooth, like 2D)
-  // and lands the fold edge-to-edge.
-  let edgeD=TH;
-  for(const [a,b] of be){
-    const A=panel.X[a], B=panel.X[b], P=raw.world;
-    const ab=sub(B,A), t=Math.max(0,Math.min(1, dot(sub(P,A),ab)/(dot(ab,ab)||1e-9)));
-    const w=[A[0]+ab[0]*t, A[1]+ab[1]*t, A[2]+ab[2]*t];
-    const s=worldToScreen(w); const dd=Math.hypot(s[0]-clientX, s[1]-clientY);
-    if(dd<edgeD){ edgeD=dd; best={world:w, p2d:lerp2(panel.v2d[a],panel.v2d[b],t), snapped:true, type:"coincident"}; }
+  // strongest snap type within the magnet wins; distance breaks ties (like 2D)
+  const TH=14; let best=null;
+  for(const cd of cands){
+    const s=worldToScreen(cd.world); const d=Math.hypot(s[0]-clientX, s[1]-clientY); if(d>TH) continue;
+    if(!best || cd.prio<best.prio || (cd.prio===best.prio && d<best.d)){ cd.d=d; best=cd; }
   }
-  return best||raw;
+  if(best) return {world:best.world, p2d:best.p2d, snapped:true, type:best.type};
+  // Coincident: slide continuously along the nearest outline edge or crease
+  // line (exact nearest point, not a mesh vertex) — lands folds edge-to-edge.
+  let edgeD=TH, out=null;
+  const scan=(verts)=>{
+    for(let i=0;i<verts.length-1;i++){
+      const a=verts[i], b=verts[i+1], A=panel.X[a], B=panel.X[b], P=raw.world;
+      const ab=sub(B,A), t=Math.max(0,Math.min(1, dot(sub(P,A),ab)/(dot(ab,ab)||1e-9)));
+      const w=[A[0]+ab[0]*t, A[1]+ab[1]*t, A[2]+ab[2]*t];
+      const s=worldToScreen(w); const dd=Math.hypot(s[0]-clientX, s[1]-clientY);
+      if(dd<edgeD){ edgeD=dd; out={world:w, p2d:lerp2(panel.v2d[a],panel.v2d[b],t), snapped:true, type:"coincident"}; }
+    }
+  };
+  for(const r of F.runs) scan(r.verts);
+  for(const c of F.foldChains) scan(c.verts);
+  return out||raw;
 }
 // Live osnap indicator — visually identical to the 2D canvas: an orange square
 // outline pinned to the snap point + a capitalized orange type label. Screen-
