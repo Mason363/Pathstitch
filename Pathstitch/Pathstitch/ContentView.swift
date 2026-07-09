@@ -3591,7 +3591,7 @@ extension ContentView {
         let pendingCount = state.pendingConstraintPoints.count + state.pendingConstraintEntities.count
         return VStack(alignment: .leading, spacing: 14) {
             TOToolTitle(icon: "link", title: "Constrain",
-                        help: "Pick a constraint kind, then click geometry on the canvas: endpoints/centers for point constraints, whole lines/circles for the rest. Under-constrained geometry stays draggable (the solver maintains relations); fully-constrained geometry locks and turns green. Ground pins a point or shape in place. Rectangles/polylines can't be constrained yet — explode them to lines first. Click a badge on canvas and press Delete to remove a constraint.",
+                        help: "Pick a constraint kind, then click geometry on the canvas: endpoints/centers for point constraints, whole lines/circles for the rest. Under-constrained geometry stays draggable (the solver maintains relations); fully-constrained geometry locks and turns green. Ground pins a point or shape in place. Clicking a rectangle/polyline explodes it into constrainable lines (auto-stitched). Click a badge on canvas and press Delete to remove a constraint.",
                         helpOpen: $toolHelpOpen)
 
             constraintSolveStatus
@@ -3637,6 +3637,11 @@ extension ContentView {
             TOHint(pendingCount == 0
                    ? state.pendingConstraintKind.pickHint
                    : "\(pendingCount) of \(state.pendingConstraintKind.pickCount) picked — \(state.pendingConstraintKind.pickHint)")
+
+            // Live inference toggle (Phase 2): snapped sketching auto-creates
+            // coincident/horizontal/vertical/tangent constraints on commit.
+            TOCheck(label: "Infer constraints while sketching",
+                    isOn: $state.constraintInferenceEnabled)
 
             // Constraint list.
             if !state.sketchConstraints.isEmpty {

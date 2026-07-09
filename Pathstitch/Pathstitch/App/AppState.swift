@@ -1493,6 +1493,11 @@ class AppState {
     /// True while a live solver drag session owns the working buffer; no other
     /// buffer write may run until it commits or aborts.
     var isSolverDragActive: Bool = false
+    /// Live relationship inference while sketching (Phase 2): snapped/exact
+    /// geometry auto-creates its constraints on commit. Persisted app-wide.
+    var constraintInferenceEnabled: Bool = UserDefaults.standard.object(forKey: "constraintInferenceEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(constraintInferenceEnabled, forKey: "constraintInferenceEnabled") }
+    }
     // The creation fillet handle shows only right after a rectangle is drawn,
     // never again on mere re-selection (MAS-62).
     var justCreatedRectangleHandle: String? = nil
@@ -4891,6 +4896,81 @@ class AppState {
         runSketchSolve(constraints: sketchConstraints)
     }
 
+    /// Live inference (Phase 2): proposes constraints the just-committed
+    /// geometry already satisfies exactly (endpoint snap → coincident,
+    /// ortho → horizontal/vertical, tangent placement → tangent) and adopts
+    /// them. Deliberately NO history entry of its own — the inferred
+    /// constraints belong to the creation/edit step, so one undo removes the
+    /// geometry and its constraints together.
+    func inferConstraints(for handles: [String]) {
+        guard constraintInferenceEnabled, !handles.isEmpty else { return }
+        let payload = sketchConstraints.map { $0.asDictionary }
+        Task {
+            await reconcileBufferIfNeeded()
+            guard let input = await MainActor.run(body: { self.currentFilePath }) else { return }
+            guard let res = try? await PythonBridge.shared.run(
+                module: "sketch_constraints",
+                op: "infer_constraints",
+                args: ["input": input.path, "handles": handles, "constraints": payload]
+            ) else { return }
+            let data = res["data"] as? [String: Any] ?? [:]
+            guard let proposed = Self.decodeConstraints(data["proposed"]), !proposed.isEmpty else { return }
+            await MainActor.run {
+                self.logEntries.append(LogEntry(
+                    action: "Infer Constraints",
+                    details: "Inferred \(proposed.count) constraint\(proposed.count == 1 ? "" : "s") while sketching"))
+                self.runSketchSolve(constraints: self.sketchConstraints + proposed)
+            }
+        }
+    }
+
+    /// Explodes the selected polylines into independent LINE/ARC entities and
+    /// immediately runs inference over the pieces, so a rectangle becomes four
+    /// lines already stitched with coincident + horizontal/vertical — ready
+    /// for the Constrain tool.
+    func explodeSelectedToLines() {
+        let handles = entities.filter {
+            selectedHandles.contains($0.handle) && $0.type == "LWPOLYLINE"
+        }.map { $0.handle }
+        guard !handles.isEmpty else {
+            errorMessage = "Select a polyline (e.g. a rectangle) to explode into lines."
+            return
+        }
+        saveToHistory()
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        Task {
+            await reconcileBufferIfNeeded()
+            guard let input = currentFilePath else { return }
+            do {
+                let res = try await PythonBridge.shared.run(
+                    module: "sketch_constraints",
+                    op: "explode_to_lines",
+                    args: ["input": input.path, "output": activeDxfURL.path, "handles": handles]
+                )
+                let data = res["data"] as? [String: Any] ?? [:]
+                let newByOld = data["new_handles"] as? [String: [String]] ?? [:]
+                let newHandles = newByOld.values.flatMap { $0 }
+                await MainActor.run {
+                    // The source polylines are gone: drop their side-models so
+                    // nothing dangles (constraints are pruned by reloadDXF).
+                    for h in newByOld.keys {
+                        self.parametricShapes.removeValue(forKey: h)
+                        self.cornerSnapPoints.removeValue(forKey: h)
+                        self.penPaths.removeValue(forKey: h)
+                    }
+                    self.currentFilePath = activeDxfURL
+                    self.selectedHandles = Set(newHandles)
+                    self.reloadDXF()
+                    self.inferConstraints(for: newHandles)
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Explode to lines failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     /// History entry whose DXF snapshot is the supplied bytes (already read),
     /// used by the drag session where the buffer file is about to be replaced.
     private func pushHistorySnapshot(dxfData: Data?) {
@@ -5039,6 +5119,11 @@ class AppState {
             } catch {
                 print("Vertex edit persist failed: \(error)")
             }
+        }
+        // Dropping a line endpoint onto another point/axis infers the
+        // matching constraint (inferConstraints awaits the buffer write).
+        if ent.type == "LINE" {
+            inferConstraints(for: [handle])
         }
     }
 
@@ -6652,6 +6737,11 @@ class AppState {
 
             await MainActor.run {
                 self.reloadDXF()
+                // Live inference (Phase 2): a snapped/axis-aligned/tangent
+                // placement auto-creates its constraints on commit.
+                if let h = handle, ["line", "circle", "arc"].contains(type) {
+                    self.inferConstraints(for: [h])
+                }
             }
             return handle
         } catch {

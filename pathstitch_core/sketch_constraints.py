@@ -29,6 +29,7 @@ real stdout here — the worker's frame channel lives there (see worker.py).
 """
 import json
 import math
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -891,6 +892,222 @@ def op_session_abort(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "ok", "data": {}}
 
 
+# ---------------------------------------------------------------------------
+# Constraint inference (Phase 2: live relationship inference while sketching)
+# ---------------------------------------------------------------------------
+
+INFER_TOL = 1e-6  # mm; snapped geometry is exact, so this only catches intent
+
+_ROLES = {"LINE": ("start", "end"), "CIRCLE": ("center",),
+          "ARC": ("start", "end", "center")}
+
+
+def op_infer_constraints(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Proposes constraints the CURRENT geometry already satisfies exactly.
+
+    Called after a sketch tool commits an entity (and after explode-to-lines):
+    snap placed the geometry exactly, so a tight tolerance recovers the intent
+    — endpoint snap → coincident, ortho/axis-aligned → horizontal/vertical,
+    tangent placement → tangent. Pure analysis: no solve, no write. Coincident
+    proposals are deduped transitively (union-find over existing + proposed
+    pairs) so three endpoints meeting at a corner yield two constraints, not a
+    redundant three.
+    """
+    input_path = args.get("input")
+    handles = args.get("handles") or []
+    constraints = args.get("constraints", [])
+    tol = float(args.get("tolerance", INFER_TOL))
+    if not input_path:
+        return {"status": "error", "message": "Input file must be specified."}
+    try:
+        doc = ezdxf.readfile(input_path)
+    except Exception as e:
+        return {"status": "error", "message": f"Cannot read DXF: {e}"}
+
+    table = ParamTable(_load_solvables(doc))
+    x = table.x0
+
+    # Union-find over (handle, role) point refs for transitive coincidence.
+    parent: Dict[Tuple[str, str], Tuple[str, str]] = {}
+
+    def find(a):
+        parent.setdefault(a, a)
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    existing_keys = set()
+    for c in constraints:
+        pts = frozenset((p.get("handle"), p.get("role")) for p in c.get("points") or [])
+        ents = frozenset(c.get("entities") or [])
+        existing_keys.add((c.get("kind"), pts, ents))
+        if c.get("kind") == "coincident":
+            refs = [(p.get("handle"), p.get("role")) for p in c.get("points") or []]
+            if len(refs) == 2:
+                union(refs[0], refs[1])
+
+    proposals: List[Dict[str, Any]] = []
+
+    def propose(kind, points=None, entities=None):
+        key = (kind,
+               frozenset((p["handle"], p["role"]) for p in points or ()),
+               frozenset(entities or ()))
+        if key in existing_keys:
+            return
+        existing_keys.add(key)
+        rec: Dict[str, Any] = {"id": uuid.uuid4().hex, "kind": kind}
+        if points:
+            rec["points"] = points
+        if entities:
+            rec["entities"] = entities
+        proposals.append(rec)
+
+    curved = [m for m in table.meta if m["type"] in ("CIRCLE", "ARC")]
+    lines = [m for m in table.meta if m["type"] == "LINE"]
+    wanted = [m for m in table.meta if m["handle"] in set(handles)]
+
+    for m in wanted:
+        h, t = m["handle"], m["type"]
+
+        # Coincident: this entity's named points vs every other named point.
+        for role in _ROLES[t]:
+            spec = table.point_spec(h, role)
+            px, py = table.point_xy(x, spec)
+            for om in table.meta:
+                if om["handle"] == h:
+                    continue
+                for orole in _ROLES[om["type"]]:
+                    qx, qy = table.point_xy(x, table.point_spec(om["handle"], orole))
+                    if math.hypot(px - qx, py - qy) < tol:
+                        a, b = (h, role), (om["handle"], orole)
+                        if find(a) != find(b):
+                            union(a, b)
+                            propose("coincident", points=[
+                                {"handle": h, "role": role},
+                                {"handle": om["handle"], "role": orole},
+                            ])
+
+        if t == "LINE":
+            x1, y1, x2, y2 = table.line_pts(x, h)
+            length = math.hypot(x2 - x1, y2 - y1)
+            if length > tol:
+                if abs(y1 - y2) < tol:
+                    propose("horizontal", entities=[h])
+                elif abs(x1 - x2) < tol:
+                    propose("vertical", entities=[h])
+                # Tangency to circles/arcs (tangent point must sit near the
+                # segment, not on its infinite extension).
+                for om in curved:
+                    off = om["offset"]
+                    cx_, cy_, r = x[off], x[off + 1], x[off + 2]
+                    cross = ((x2 - x1) * (cy_ - y1) - (y2 - y1) * (cx_ - x1)) / length
+                    tproj = ((cx_ - x1) * (x2 - x1) + (cy_ - y1) * (y2 - y1)) / (length * length)
+                    if abs(abs(cross) - r) < tol and -0.05 <= tproj <= 1.05:
+                        propose("tangent", entities=[h, om["handle"]])
+
+        else:  # CIRCLE / ARC
+            off = m["offset"]
+            cx_, cy_, r = x[off], x[off + 1], x[off + 2]
+            for om in lines:
+                x1, y1, x2, y2 = table.line_pts(x, om["handle"])
+                length = math.hypot(x2 - x1, y2 - y1)
+                if length <= tol:
+                    continue
+                cross = ((x2 - x1) * (cy_ - y1) - (y2 - y1) * (cx_ - x1)) / length
+                tproj = ((cx_ - x1) * (x2 - x1) + (cy_ - y1) * (y2 - y1)) / (length * length)
+                if abs(abs(cross) - r) < tol and -0.05 <= tproj <= 1.05:
+                    propose("tangent", entities=[m["handle"], om["handle"]])
+            for om in curved:
+                if om["handle"] == h:
+                    continue
+                ooff = om["offset"]
+                d = math.hypot(x[ooff] - cx_, x[ooff + 1] - cy_)
+                r2 = x[ooff + 2]
+                if abs(d - (r + r2)) < tol or (d > tol and abs(d - abs(r - r2)) < tol):
+                    propose("tangent", entities=[h, om["handle"]])
+
+    return {"status": "ok", "data": {"proposed": proposals}}
+
+
+# ---------------------------------------------------------------------------
+# Explode to lines: unlock constraining rectangles/polylines
+# ---------------------------------------------------------------------------
+
+def op_explode_to_lines(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Explodes LWPOLYLINEs into independent LINE segments (bulged segments
+    become true ARCs via ezdxf's bulge math), preserving layer/color, so the
+    result is fully solvable. The counterpart pass to run afterwards is
+    `infer_constraints` on the new handles — a rectangle comes out as four
+    lines already stitched together with coincident + horizontal/vertical.
+    """
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", []) or []
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not handles:
+        return {"status": "error", "message": "Select a polyline to explode."}
+
+    from ezdxf.math import bulge_to_arc
+
+    try:
+        doc = ezdxf.readfile(input_path)
+    except Exception as e:
+        return {"status": "error", "message": f"Cannot read DXF: {e}"}
+    msp = doc.modelspace()
+
+    new_handles: Dict[str, List[str]] = {}
+    kept: List[str] = []
+    for h in handles:
+        try:
+            ent = doc.entitydb[h]
+        except KeyError:
+            continue
+        if ent.dxftype() != "LWPOLYLINE":
+            kept.append(h)
+            continue
+        pts = ent.get_points("xyb")
+        n = len(pts)
+        if n < 2:
+            kept.append(h)
+            continue
+        closed = bool(ent.closed)
+        seg_count = n if closed else n - 1
+        attribs = {"layer": ent.dxf.layer, "color": ent.dxf.color}
+        created: List[str] = []
+        for i in range(seg_count):
+            x1, y1, bulge = pts[i]
+            x2, y2, _ = pts[(i + 1) % n]
+            if math.hypot(x2 - x1, y2 - y1) < 1e-9:
+                continue
+            if abs(bulge) < 1e-9:
+                e = msp.add_line((x1, y1), (x2, y2), dxfattribs=attribs)
+            else:
+                center, sa, ea, radius = bulge_to_arc((x1, y1), (x2, y2), bulge)
+                e = msp.add_arc(center=(center.x, center.y), radius=radius,
+                                start_angle=math.degrees(sa),
+                                end_angle=math.degrees(ea),
+                                dxfattribs=attribs)
+            created.append(e.dxf.handle)
+        if created:
+            msp.delete_entity(ent)
+            new_handles[h] = created
+        else:
+            kept.append(h)
+
+    try:
+        doc.saveas(output_path)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to write DXF: {e}"}
+    return {"status": "ok", "data": {"new_handles": new_handles, "kept": kept}}
+
+
 OPERATIONS = {
     "sketch_solve": op_sketch_solve,
     "sketch_diagnose": op_sketch_diagnose,
@@ -898,6 +1115,8 @@ OPERATIONS = {
     "session_drag": op_session_drag,
     "session_commit": op_session_commit,
     "session_abort": op_session_abort,
+    "infer_constraints": op_infer_constraints,
+    "explode_to_lines": op_explode_to_lines,
 }
 
 

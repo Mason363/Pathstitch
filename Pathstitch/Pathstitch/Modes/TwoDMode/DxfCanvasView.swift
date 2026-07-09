@@ -1704,7 +1704,14 @@ struct DxfCanvasView: View {
             if SketchSolvable.isSolvable(nearest) {
                 entityPick = nearest
             } else if pointPick == nil {
-                state.errorMessage = "\(nearest.type) can't be constrained yet — explode it to lines and arcs first."
+                if nearest.type == "LWPOLYLINE" {
+                    // One-click unlock: explode the polyline into solvable
+                    // lines/arcs (auto-stitched by inference), then constrain.
+                    state.selectedHandles = [nearest.handle]
+                    state.explodeSelectedToLines()
+                } else {
+                    state.errorMessage = "\(nearest.type) can't be constrained yet."
+                }
                 return
             }
         }
@@ -3008,6 +3015,18 @@ struct DxfCanvasView: View {
                         }
                         contextMenuButton("Intersect", systemImage: "circle.lefthalf.filled") {
                             state.booleanCombineSelection("intersect"); contextMenuScreenPos = nil
+                        }
+                    }
+
+                    // Explode a polyline into independent lines/arcs so the
+                    // Constrain tool can grab them (constraint solver); the
+                    // pieces come out auto-stitched by inference.
+                    if state.selectedHandles.contains(where: { h in
+                        state.entities.first(where: { $0.handle == h })?.type == "LWPOLYLINE"
+                    }) {
+                        contextMenuDivider()
+                        contextMenuButton("Explode to Lines", systemImage: "link.badge.plus") {
+                            state.explodeSelectedToLines(); contextMenuScreenPos = nil
                         }
                     }
 

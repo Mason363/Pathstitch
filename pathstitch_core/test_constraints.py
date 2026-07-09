@@ -541,6 +541,138 @@ def test_drag_benchmark():
     assert p95 < 15.0, f"p95 solve time {p95:.1f} ms exceeds 15 ms budget"
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: inference + explode-to-lines
+# ---------------------------------------------------------------------------
+
+def _infer(path, handles, constraints=None):
+    res = sc.op_infer_constraints({"input": path, "handles": handles,
+                                   "constraints": constraints or []})
+    assert res["status"] == "ok", res
+    return res["data"]["proposed"]
+
+
+def test_inference_chain_and_hv():
+    """Snapped chain + axis-aligned line → coincident + horizontal/vertical."""
+    doc, msp = _new_doc()
+    l1 = msp.add_line((0, 0), (10, 0)).dxf.handle          # exactly horizontal
+    l2 = msp.add_line((10, 0), (10, 8)).dxf.handle         # snapped to l1.end, vertical
+    l3 = msp.add_line((3, 2), (9, 7.5)).dxf.handle         # sloppy, touches nothing
+    src = _save(doc, "inf_in.dxf")
+
+    props = _infer(src, [l2])
+    kinds = sorted(p["kind"] for p in props)
+    assert kinds == ["coincident", "vertical"], props
+    co = [p for p in props if p["kind"] == "coincident"][0]
+    refs = {(p["handle"], p["role"]) for p in co["points"]}
+    assert refs == {(l2, "start"), (l1, "end")}, co
+
+    props = _infer(src, [l1])
+    assert sorted(p["kind"] for p in props) == ["coincident", "horizontal"], props
+
+    # The sloppy line proposes nothing (no false positives).
+    assert _infer(src, [l3]) == []
+
+    # Dedupe: with the constraints already present, nothing is re-proposed.
+    existing = [
+        {"id": "c1", "kind": "coincident",
+         "points": [{"handle": l2, "role": "start"}, {"handle": l1, "role": "end"}]},
+        {"id": "v1", "kind": "vertical", "entities": [l2]},
+    ]
+    assert _infer(src, [l2], existing) == []
+    print("  inference: chain coincident + H/V + no false positives + dedupe ok")
+
+
+def test_inference_unionfind():
+    """Three endpoints meeting at one corner → 2 coincidents, never 3."""
+    doc, msp = _new_doc()
+    l1 = msp.add_line((0, 0), (5, 5)).dxf.handle
+    l2 = msp.add_line((5, 5), (10, 0)).dxf.handle
+    l3 = msp.add_line((5, 5), (5, 12)).dxf.handle
+    src = _save(doc, "inf_uf_in.dxf")
+    props = _infer(src, [l1, l2, l3])
+    co = [p for p in props if p["kind"] == "coincident"]
+    assert len(co) == 2, props
+    print("  inference: union-find keeps 3-way corner at 2 coincidents ok")
+
+
+def test_inference_tangent():
+    doc, msp = _new_doc()
+    ci = msp.add_circle((5, 3), 3.0).dxf.handle
+    tan = msp.add_line((0, 0), (10, 0)).dxf.handle          # tangent (dist 3 = r)
+    far = msp.add_line((0, -5), (10, -5)).dxf.handle        # not tangent
+    off_seg = msp.add_line((40, 0), (50, 0)).dxf.handle     # tangent line, wrong span
+    c2 = msp.add_circle((11, 3), 3.0).dxf.handle            # externally tangent to ci
+    src = _save(doc, "inf_tan_in.dxf")
+
+    props = _infer(src, [tan])
+    assert any(p["kind"] == "tangent" and set(p["entities"]) == {tan, ci} for p in props), props
+    assert all(p["kind"] != "tangent" or set(p["entities"]) == {tan, ci} for p in props)
+    assert not any(p["kind"] == "tangent" for p in _infer(src, [far]))
+    assert not any(p["kind"] == "tangent" for p in _infer(src, [off_seg]))
+
+    props = _infer(src, [c2])
+    assert any(p["kind"] == "tangent" and set(p["entities"]) == {c2, ci} for p in props), props
+    print("  inference: tangent (line-circle span-guarded + circle-circle) ok")
+
+
+def test_explode_to_lines_and_constrain():
+    """Rounded-rect polyline → 4 LINEs + 4 ARCs; plain rect explodes then
+    infers into a fully stitched, solvable frame."""
+    doc, msp = _new_doc()
+    # Plain rectangle.
+    rect = msp.add_lwpolyline([(0, 0), (20, 0), (20, 10), (0, 10)], close=True).dxf.handle
+    # Rounded rectangle: bulge = tan(90°/4) on alternating corner segments.
+    b = math.tan(math.radians(90) / 4)
+    rounded = msp.add_lwpolyline(
+        [(32, 0, 0, 0, 0), (40, 0, 0, 0, b), (42, 2, 0, 0, 0), (42, 8, 0, 0, b),
+         (40, 10, 0, 0, 0), (32, 10, 0, 0, b), (30, 8, 0, 0, 0), (30, 2, 0, 0, b)],
+        format="xyseb", close=True).dxf.handle
+    src = _save(doc, "expl_in.dxf")
+    out = os.path.join(TMP, "expl_out.dxf")
+
+    res = sc.op_explode_to_lines({"input": src, "output": out,
+                                  "handles": [rect, rounded]})
+    assert res["status"] == "ok", res
+    new = res["data"]["new_handles"]
+    assert len(new[rect]) == 4
+    assert len(new[rounded]) == 8
+    ents = _entity_map(out)
+    assert sorted(ents[h]["type"] for h in new[rect]) == ["LINE"] * 4
+    assert sorted(ents[h]["type"] for h in new[rounded]) == ["ARC"] * 4 + ["LINE"] * 4
+    assert rect not in ents and rounded not in ents
+
+    # Arc endpoints must land exactly on their neighbouring line endpoints
+    # (bulge conversion correctness) — inference will find the coincidences.
+    props = _infer(out, new[rounded])
+    co = [p for p in props if p["kind"] == "coincident"]
+    assert len(co) == 8, f"expected 8 stitched corners, got {len(co)}"
+
+    # Plain rectangle: explode + infer + ground → solves to dof 0 leaves
+    # geometry unchanged (already consistent).
+    props = _infer(out, new[rect])
+    kinds = sorted(p["kind"] for p in props)
+    assert kinds.count("coincident") == 4 and kinds.count("horizontal") == 2 \
+        and kinds.count("vertical") == 2, kinds
+    cons = props + [{"id": "g", "kind": "ground",
+                     "points": [{"handle": new[rect][0], "role": "start"}]},
+                    {"id": "d1", "kind": "distance", "value": 20.0,
+                     "points": [{"handle": new[rect][0], "role": "start"},
+                                {"handle": new[rect][0], "role": "end"}]},
+                    {"id": "d2", "kind": "distance", "value": 10.0,
+                     "points": [{"handle": new[rect][1], "role": "start"},
+                                {"handle": new[rect][1], "role": "end"}]}]
+    out2 = os.path.join(TMP, "expl_solved.dxf")
+    res = _solve_inproc(out, out2, cons)
+    d = res["data"]["diagnostics"]
+    assert d["converged"], d
+    # DOF counts the whole sketch: the rect is pinned, the 8 unconstrained
+    # rounded-rect pieces stay free (4 lines x 4 + 4 arcs x 5 = 36).
+    assert d["dof"] == 36, d
+    assert sorted(d["fully_constrained"]) == sorted(new[rect]), d
+    print("  explode-to-lines (bulge arcs) + infer -> fully constrained rect ok")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -558,6 +690,10 @@ def run_all():
         test_iteration_cap,
         test_invalid_constraints_are_structured_errors,
         test_cli_roundtrip,
+        test_inference_chain_and_hv,
+        test_inference_unionfind,
+        test_inference_tangent,
+        test_explode_to_lines_and_constrain,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")
