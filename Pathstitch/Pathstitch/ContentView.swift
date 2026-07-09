@@ -1039,6 +1039,10 @@ extension ContentView {
                         TOSegmented(options: [(false, "Normal"), (true, "Construction")],
                                     selection: $state.offsetConstruction)
                     }
+                    // Derived geometry (Phase 7): a linked offset regenerates
+                    // whenever its source changes — kerf compensation and seam
+                    // allowances that follow the pattern.
+                    TOCheck(label: "Keep linked (live offset)", isOn: $state.offsetKeepLink)
                     HStack(spacing: 8) {
                         TOPrimaryButton(title: "Apply Offset", enabled: !state.selectedHandles.isEmpty) {
                             state.applyOffset(exitAfterApply: true)

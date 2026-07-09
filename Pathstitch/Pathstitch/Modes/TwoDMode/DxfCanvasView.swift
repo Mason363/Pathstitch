@@ -2991,6 +2991,20 @@ struct DxfCanvasView: View {
                     contextMenuButton("Toggle Construction", systemImage: "pencil.and.outline") {
                         state.toggleConstructionSelected(); contextMenuScreenPos = nil
                     }
+                    // Break a live offset link: the derived geometry stays as a
+                    // plain entity and stops following its source (Phase 7).
+                    if state.selectedHandles.contains(where: { h in
+                        state.offsetLinks.contains { $0.derived.contains(h) || $0.sources.contains(h) }
+                    }) {
+                        contextMenuButton("Break Offset Link", systemImage: "link.badge.plus") {
+                            state.saveToHistory()
+                            state.offsetLinks.removeAll { link in
+                                !Set(link.derived).isDisjoint(with: state.selectedHandles)
+                                    || !Set(link.sources).isDisjoint(with: state.selectedHandles)
+                            }
+                            contextMenuScreenPos = nil
+                        }
+                    }
                     if state.selectedHandles.contains(where: { state.isRectangleHandle($0) }) {
                         contextMenuButton("Expand", systemImage: "arrow.up.left.and.arrow.down.right") {
                             state.expandSelectedRectangle(); contextMenuScreenPos = nil

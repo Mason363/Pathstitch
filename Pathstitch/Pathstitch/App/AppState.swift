@@ -259,6 +259,9 @@ struct HistoryState {
     // re-drive constrained geometry, so undo must restore the values that
     // matched the snapshotted DXF.
     let userParameters: [DimensionParameter]
+    // Live offset links (derived geometry): must restore with the geometry so
+    // undo never leaves a link pointing at handles from the wrong snapshot.
+    let offsetLinks: [OffsetLink]
 }
 
 /// One parametric corner modifier on a shape (MAS-62).
@@ -783,6 +786,9 @@ struct ProjectSaveContainer: Codable {
     /// User-defined named parameters (parameter model, Phase 3). Optional →
     /// older .stch files decode fine.
     var userParameters: [DimensionParameter]? = nil
+
+    /// Live offset links (derived geometry, Phase 7). Optional → back-compat.
+    var offsetLinks: [OffsetLink]? = nil
 }
 
 /// One body's manual move offset (MAS-125), persisted in `.stch`.
@@ -1538,6 +1544,12 @@ class AppState {
     /// tools place geometry on the CONSTRUCTION layer — dashed orange, fully
     /// snappable and constrainable, excluded from every export.
     var sketchAsConstruction: Bool = false
+    /// Live offset links (derived geometry, Phase 7). The derived entities
+    /// regenerate whenever a source-touching edit commits.
+    var offsetLinks: [OffsetLink] = []
+    /// Offset tool option: create the offset as a LIVE link (kerf/seam
+    /// allowance follows the source) instead of a one-time copy.
+    var offsetKeepLink: Bool = true
     // The creation fillet handle shows only right after a rectangle is drawn,
     // never again on mere re-selection (MAS-62).
     var justCreatedRectangleHandle: String? = nil
@@ -2925,7 +2937,8 @@ class AppState {
             bodyOffsets: bodyOffsets,
             layers: layers,
             sketchConstraints: sketchConstraints,
-            userParameters: userParameters
+            userParameters: userParameters,
+            offsetLinks: offsetLinks
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -2960,7 +2973,8 @@ class AppState {
             bodyOffsets: bodyOffsets,
             layers: layers,
             sketchConstraints: sketchConstraints,
-            userParameters: userParameters
+            userParameters: userParameters,
+            offsetLinks: offsetLinks
         )
         redoStack.append(currentState)
 
@@ -2973,6 +2987,7 @@ class AppState {
         self.penPaths = previousState.penPaths
         self.sketchConstraints = previousState.sketchConstraints
         self.userParameters = previousState.userParameters
+        self.offsetLinks = previousState.offsetLinks
         self.rebuildDimensionEngine()
         // Restore the layer list before reloadDXF runs. reloadDXF only *appends*
         // layers it finds in the DXF, so without this an operation-created layer
@@ -3026,7 +3041,8 @@ class AppState {
             bodyOffsets: bodyOffsets,
             layers: layers,
             sketchConstraints: sketchConstraints,
-            userParameters: userParameters
+            userParameters: userParameters,
+            offsetLinks: offsetLinks
         )
         undoStack.append(currentState)
 
@@ -3039,6 +3055,7 @@ class AppState {
         self.penPaths = nextState.penPaths
         self.sketchConstraints = nextState.sketchConstraints
         self.userParameters = nextState.userParameters
+        self.offsetLinks = nextState.offsetLinks
         self.rebuildDimensionEngine()
         self.layers = nextState.layers
         self.selectedMeasurement = nil
@@ -4818,6 +4835,7 @@ class AppState {
                     }
                     if fitToContentAfter { self.fitRequestToken += 1 }
                     self.pruneDanglingConstraints()
+                    self.pruneOffsetLinks()
                     self.isProcessing = false
                 }
             } catch {
@@ -4899,6 +4917,10 @@ class AppState {
                     }
                     if let ents = data["entities"] as? [[String: Any]], !ents.isEmpty {
                         self.applyEntityPatch(ents)
+                        // Solved geometry moved — regenerate any live offsets
+                        // hanging off the changed sources (derived geometry).
+                        let moved = Set(ents.compactMap { $0["handle"] as? String })
+                        self.regenerateOffsetLinks(touching: moved)
                     }
                     if let diag = Self.decodeDiagnostics(data["diagnostics"]) {
                         self.solveDiagnostics = diag
@@ -5052,6 +5074,7 @@ class AppState {
                     self.applyEntityPatchDecoded(ents)
                     if let diag { self.solveDiagnostics = diag }
                     self.isSolverDragActive = false
+                    self.regenerateOffsetLinks(touching: Set(ents.map { $0.handle }))
                 }
             } catch {
                 await sketchSession.abort()
@@ -5157,6 +5180,61 @@ class AppState {
         }
     }
 
+    /// Drops offset-link references to handles that no longer exist. A link
+    /// whose sources or derived geometry are entirely gone is removed (the
+    /// user deleted one side); partial losses just shrink the link.
+    func pruneOffsetLinks() {
+        guard !offsetLinks.isEmpty else { return }
+        let live = Set(entities.map { $0.handle })
+        var kept: [OffsetLink] = []
+        for var link in offsetLinks {
+            link.sources = link.sources.filter { live.contains($0) }
+            link.derived = link.derived.filter { live.contains($0) }
+            if !link.sources.isEmpty && !link.derived.isEmpty { kept.append(link) }
+        }
+        if kept != offsetLinks { offsetLinks = kept }
+    }
+
+    /// Regenerates every live offset link whose sources intersect `changed`:
+    /// the previous derived entities are deleted and re-offset from the
+    /// current source geometry in one worker call, serialized after any
+    /// pending buffer write. Runs at commit points (solve apply, drag end,
+    /// translate/rotate, vertex edit) — never per drag frame.
+    func regenerateOffsetLinks(touching changed: Set<String>) {
+        guard !offsetLinks.isEmpty else { return }
+        let affected = offsetLinks.filter { !Set($0.sources).isDisjoint(with: changed) }
+        guard !affected.isEmpty else { return }
+        let payload = affected.map { $0.asDictionary }
+        let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+        enqueueBufferWrite {
+            let inputPath = (await MainActor.run { self.currentFilePath?.path }) ?? activeDxfURL.path
+            do {
+                let res = try await PythonBridge.shared.run(
+                    module: "dxf_ops",
+                    op: "regen_offsets",
+                    args: ["input": inputPath,
+                           "output": activeDxfURL.path,
+                           "links": payload]
+                )
+                let data = res["data"] as? [String: Any] ?? [:]
+                let results = data["links"] as? [[String: Any]] ?? []
+                await MainActor.run {
+                    self.currentFilePath = activeDxfURL
+                    for r in results {
+                        guard let id = r["id"] as? String,
+                              let idx = self.offsetLinks.firstIndex(where: { $0.id == id }) else { continue }
+                        self.offsetLinks[idx].derived = r["derived"] as? [String] ?? []
+                    }
+                    // Derived handles changed on disk — refresh entities (and
+                    // prune anything that referenced the replaced handles).
+                    self.reloadDXF()
+                }
+            } catch {
+                print("Offset link regeneration failed: \(error)")
+            }
+        }
+    }
+
     /// Explodes the selected polylines into independent LINE/ARC entities and
     /// immediately runs inference over the pieces, so a rectangle becomes four
     /// lines already stitched with coincident + horizontal/vertical — ready
@@ -5219,7 +5297,8 @@ class AppState {
             bodyOffsets: bodyOffsets,
             layers: layers,
             sketchConstraints: sketchConstraints,
-            userParameters: userParameters
+            userParameters: userParameters,
+            offsetLinks: offsetLinks
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -5359,6 +5438,7 @@ class AppState {
         if ent.type == "LINE" {
             inferConstraints(for: [handle])
         }
+        regenerateOffsetLinks(touching: [handle])
     }
 
     /// Updates a re-edited pen path's entity to a new flattened point list and
@@ -5691,6 +5771,7 @@ class AppState {
         self.penPaths = state.penPaths
         self.sketchConstraints = state.sketchConstraints
         self.userParameters = state.userParameters
+        self.offsetLinks = state.offsetLinks
         self.rebuildDimensionEngine()
         self.layers = state.layers
         self.selectedMeasurement = nil
@@ -5893,28 +5974,43 @@ class AppState {
         isProcessing = true
         let construction = offsetConstruction
 
+        let sourceHandles = Array(selectedHandles)
+        let keepLink = offsetKeepLink
+
         Task {
             do {
                 await reconcileBufferIfNeeded()
                 let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
                 let inputPath = url.path
 
-                _ = try await PythonBridge.shared.run(
+                let res = try await PythonBridge.shared.run(
                     module: "dxf_ops",
                     op: "offset_lines",
                     args: [
                         "input": inputPath,
                         "output": activeDxfURL.path,
-                        "handles": Array(selectedHandles),
+                        "handles": sourceHandles,
                         "distance": offsetDistance,
                         "side": offsetSide,
                         "layer": construction ? "CONSTRUCTION" : "OFFSET",
                         "construction": construction
                     ]
                 )
+                let created = ((res["data"] as? [String: Any])?["new_entities"] as? [String]) ?? []
 
                 await MainActor.run {
                     self.currentFilePath = activeDxfURL
+                    // Keep-linked (derived geometry, Phase 7): remember the
+                    // recipe so source edits regenerate this offset live.
+                    if keepLink && !sourceHandles.isEmpty && !created.isEmpty {
+                        self.offsetLinks.append(OffsetLink(
+                            sources: sourceHandles,
+                            derived: created,
+                            distance: self.offsetDistance,
+                            side: self.offsetSide,
+                            layer: construction ? "CONSTRUCTION" : "OFFSET",
+                            construction: construction))
+                    }
                     self.selectedHandles.removeAll()
                     self.previewEntities = []
                     self.reloadDXF()
@@ -8343,7 +8439,8 @@ class AppState {
                         seamTolMismatchPct: seamTolMismatchPct,
                         seamTolGapMm: seamTolGapMm),
                 sketchConstraints: sketchConstraints.isEmpty ? nil : sketchConstraints,
-                userParameters: userParameters.isEmpty ? nil : userParameters
+                userParameters: userParameters.isEmpty ? nil : userParameters,
+                offsetLinks: offsetLinks.isEmpty ? nil : offsetLinks
             )
 
             let encoder = JSONEncoder()
@@ -8512,6 +8609,7 @@ class AppState {
             self.sketchConstraints = validContainer.sketchConstraints ?? []
             self.solveDiagnostics = nil
             self.selectedConstraintId = nil
+            self.offsetLinks = validContainer.offsetLinks ?? []
             if let dist = validContainer.offsetDistance { self.offsetDistance = dist }
             if let side = validContainer.offsetSide { self.offsetSide = side }
             if let hDist = validContainer.holeOffsetDistance { self.holeOffsetDistance = hDist }
@@ -9096,6 +9194,7 @@ class AppState {
         if selectedHandlesSnapshot.contains(where: { isConstraintReferenced($0) }) {
             reimposeConstraints()
         }
+        regenerateOffsetLinks(touching: selectedHandlesSnapshot)
     }
 
     func rotateSelected(angleDegrees: Double, center: [Double]) {
@@ -9200,6 +9299,7 @@ class AppState {
         if selectedHandlesSnapshot.contains(where: { isConstraintReferenced($0) }) {
             reimposeConstraints()
         }
+        regenerateOffsetLinks(touching: selectedHandlesSnapshot)
     }
 
     /// Flips the selected entities in place about their own bounding-box
@@ -9909,7 +10009,12 @@ class AppState {
     func deleteSelectedEntities() {
         guard !selectedHandles.isEmpty else { return }
         saveToHistory()
-        let removed = selectedHandles
+        var removed = selectedHandles
+        // Deleting every source of a live offset takes the derived geometry
+        // with it (a seam allowance can't outlive its pattern piece).
+        for link in offsetLinks where Set(link.sources).isSubset(of: removed) {
+            removed.formUnion(link.derived)
+        }
 
         entities.removeAll { removed.contains($0.handle) }
         previewEntities.removeAll { removed.contains($0.handle) }

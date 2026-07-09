@@ -538,22 +538,11 @@ def op_list_entities(args: Dict[str, Any]) -> Dict[str, Any]:
 
     return {"status": "ok", "data": {"entities": entities}}
 
-def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Generates offset lines and adds them to the DXF."""
-    input_path = args.get("input")
-    output_path = args.get("output")
-    handles = args.get("handles", [])
-    distance = float(args.get("distance", 1.0))
-    side = args.get("side", "left")
-    construction = bool(args.get("construction", False))
-    layer = sanitize_layer_name(args.get("layer", "OFFSET"))
-
-    if not input_path or not os.path.exists(input_path):
-        return {"status": "error", "message": f"Input file not found: {input_path}"}
-    if not output_path:
-        return {"status": "error", "message": "Output path must be specified."}
-
-    doc = ezdxf.readfile(input_path)
+def _generate_offsets(doc, handles, distance: float, side: str,
+                      construction: bool, layer: str) -> List[str]:
+    """Core of the offset pipeline (shared by op_offset_lines and the live
+    offset-link regeneration): offsets `handles` (or every curve when empty)
+    into new entities on `layer` and returns their handles."""
     msp = doc.modelspace()
 
     if layer not in doc.layers:
@@ -661,8 +650,71 @@ def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
                 elif isinstance(offset_geom, (LineString, LinearRing)):
                     _emit(offset_geom)
 
+    return new_handles
+
+
+def op_offset_lines(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Generates offset lines and adds them to the DXF."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    handles = args.get("handles", [])
+    distance = float(args.get("distance", 1.0))
+    side = args.get("side", "left")
+    construction = bool(args.get("construction", False))
+    layer = sanitize_layer_name(args.get("layer", "OFFSET"))
+
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+
+    doc = ezdxf.readfile(input_path)
+    new_handles = _generate_offsets(doc, handles, distance, side, construction, layer)
     doc.saveas(output_path)
     return {"status": "ok", "data": {"new_entities": new_handles}}
+
+
+def op_regen_offsets(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Regenerates LIVE offset links (derived geometry that stays linked):
+    each link's previous derived entities are deleted and re-offset from the
+    current source geometry, so a kerf/seam allowance follows every edit of
+    its source. Links whose sources vanished return empty derived lists."""
+    input_path = args.get("input")
+    output_path = args.get("output")
+    links = args.get("links", []) or []
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+
+    doc = ezdxf.readfile(input_path)
+    msp = doc.modelspace()
+    results = []
+    for link in links:
+        for h in link.get("derived") or []:
+            try:
+                msp.delete_entity(doc.entitydb[h])
+            except Exception:
+                pass
+        sources = []
+        for h in link.get("sources") or []:
+            try:
+                doc.entitydb[h]
+                sources.append(h)
+            except KeyError:
+                pass
+        if not sources:
+            results.append({"id": link.get("id"), "derived": []})
+            continue
+        new = _generate_offsets(
+            doc, sources,
+            float(link.get("distance", 1.0)),
+            link.get("side", "outer"),
+            bool(link.get("construction", False)),
+            sanitize_layer_name(link.get("layer", "OFFSET")))
+        results.append({"id": link.get("id"), "derived": new})
+    doc.saveas(output_path)
+    return {"status": "ok", "data": {"links": results}}
 
 
 # --- Add Thickness ---------------------------------------------------------
@@ -7255,6 +7307,7 @@ def op_golden(args: Dict[str, Any]) -> Dict[str, Any]:
 OPERATIONS = {
     "list_entities": op_list_entities,
     "offset_lines": op_offset_lines,
+    "regen_offsets": op_regen_offsets,
     "add_thickness": op_add_thickness,
     "add_holes": op_add_holes,
     "edit_fold_line": op_edit_fold_line,

@@ -154,3 +154,25 @@ enum SketchSolvable {
     static let types: Set<String> = ["LINE", "CIRCLE", "ARC"]
     static func isSolvable(_ entity: DXFEntity) -> Bool { types.contains(entity.type) }
 }
+
+/// Derived geometry that stays linked (Phase 7): a live offset. The derived
+/// entities are regenerated from the current source geometry whenever a
+/// source-touching edit commits, so a kerf compensation or seam allowance
+/// follows the pattern instead of going stale. Persisted in .stch and
+/// snapshotted in history.
+struct OffsetLink: Codable, Equatable, Hashable, Identifiable {
+    var id: String = UUID().uuidString
+    /// The source handles offset together as one group (they merge/miter).
+    var sources: [String]
+    /// The current derived entity handles (replaced wholesale on each regen).
+    var derived: [String]
+    var distance: Double
+    var side: String            // "outer" | "inner" | "left" | "right" | "both"
+    var layer: String = "OFFSET"
+    var construction: Bool = false
+
+    var asDictionary: [String: Any] {
+        ["id": id, "sources": sources, "derived": derived, "distance": distance,
+         "side": side, "layer": layer, "construction": construction]
+    }
+}
