@@ -57,6 +57,7 @@ enum TwoDTool: String, CaseIterable {
     case pen = "Pen"
     case fillet = "Fillet"
     case chamfer = "Chamfer"
+    case constrain = "Constrain"
     case convertLines = "Convert Lines"
     case mirror = "Mirror"
     case trim = "Trim"
@@ -94,6 +95,7 @@ enum TwoDTool: String, CaseIterable {
         case .pen: return "pencil.tip"
         case .fillet: return "square"
         case .chamfer: return "square"
+        case .constrain: return "link"
         case .convertLines: return "scribble"
         case .mirror: return "flip.horizontal"
         case .trim: return "scissors.badge.ellipsis"
@@ -149,6 +151,7 @@ enum TwoDTool: String, CaseIterable {
         case .pen: return "tool.pen"
         case .fillet: return "tool.fillet"
         case .chamfer: return "tool.chamfer"
+        case .constrain: return "tool.constrain"
         case .convertLines: return "tool.convertLines"
         case .mirror: return "tool.mirror"
         case .trim: return "tool.trim"
@@ -249,6 +252,9 @@ struct HistoryState {
     // empty layers behind after undo (e.g. a SEWING_HOLES layer whose geometry
     // was undone but whose layer row lingered in the panel).
     let layers: [DXFLayer]
+    // Sketch constraints travel with the geometry so undo/redo restore the
+    // exact constraint set that matched the snapshotted DXF.
+    let sketchConstraints: [SketchConstraint]
 }
 
 /// One parametric corner modifier on a shape (MAS-62).
@@ -765,6 +771,10 @@ struct ProjectSaveContainer: Codable {
     /// re-derived deterministically from these on load, so no mesh snapshot is
     /// stored. Optional → older .stch files (and 2D-only projects) decode fine.
     var savedConstructAssembly: ConstructAssembly? = nil
+
+    /// Geometric sketch constraints (constraint solver, Phase 1). Optional →
+    /// pre-constraint .stch files decode fine.
+    var sketchConstraints: [SketchConstraint]? = nil
 }
 
 /// One body's manual move offset (MAS-125), persisted in `.stch`.
@@ -1461,6 +1471,28 @@ class AppState {
     /// Pen-tool paths kept editable as anchors + bezier handles, keyed by entity
     /// handle. Lets a pen line be re-opened for editing on double-click.
     var penPaths: [String: PenPathModel] = [:]
+
+    // MARK: - Sketch constraints (geometric constraint solver, Phase 1)
+
+    /// The document's constraint list. Swift owns it (like `parametricShapes`):
+    /// snapshotted in history, persisted in `.stch`, serialized to the Python
+    /// solver on every solve/diagnose.
+    var sketchConstraints: [SketchConstraint] = []
+    /// Latest solve-state feedback (DOF, fully-constrained handles, conflicts).
+    /// Drives the canvas coloring and the Constrain inspector's status block.
+    var solveDiagnostics: SolveDiagnostics? = nil
+    /// The constraint glyph currently selected on canvas (Delete removes it).
+    var selectedConstraintId: String? = nil
+    /// The constraint kind armed in the Constrain tool's inspector.
+    var pendingConstraintKind: ConstraintKind = .coincident
+    /// Operands picked so far for the pending constraint (points and/or entities).
+    var pendingConstraintPoints: [PointRef] = []
+    var pendingConstraintEntities: [String] = []
+    /// Value for the pending distance/angle constraint (mm / degrees).
+    var pendingConstraintValue: Double = 10.0
+    /// True while a live solver drag session owns the working buffer; no other
+    /// buffer write may run until it commits or aborts.
+    var isSolverDragActive: Bool = false
     // The creation fillet handle shows only right after a rectangle is drawn,
     // never again on mere re-selection (MAS-62).
     var justCreatedRectangleHandle: String? = nil
@@ -2846,7 +2878,8 @@ class AppState {
             cornerSnapPoints: cornerSnapPoints,
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
-            layers: layers
+            layers: layers,
+            sketchConstraints: sketchConstraints
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -2879,7 +2912,8 @@ class AppState {
             cornerSnapPoints: cornerSnapPoints,
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
-            layers: layers
+            layers: layers,
+            sketchConstraints: sketchConstraints
         )
         redoStack.append(currentState)
 
@@ -2890,6 +2924,7 @@ class AppState {
         self.parametricShapes = previousState.parametricShapes
         self.cornerSnapPoints = previousState.cornerSnapPoints
         self.penPaths = previousState.penPaths
+        self.sketchConstraints = previousState.sketchConstraints
         // Restore the layer list before reloadDXF runs. reloadDXF only *appends*
         // layers it finds in the DXF, so without this an operation-created layer
         // (e.g. SEWING_HOLES) would linger after its geometry is undone.
@@ -2940,7 +2975,8 @@ class AppState {
             cornerSnapPoints: cornerSnapPoints,
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
-            layers: layers
+            layers: layers,
+            sketchConstraints: sketchConstraints
         )
         undoStack.append(currentState)
 
@@ -2951,6 +2987,7 @@ class AppState {
         self.parametricShapes = nextState.parametricShapes
         self.cornerSnapPoints = nextState.cornerSnapPoints
         self.penPaths = nextState.penPaths
+        self.sketchConstraints = nextState.sketchConstraints
         self.layers = nextState.layers
         self.selectedMeasurement = nil
         self.applyRestoredBodyOffsets(nextState.bodyOffsets)
@@ -4582,6 +4619,7 @@ class AppState {
                         self.activeLayerId = self.layers.first?.id
                     }
                     if fitToContentAfter { self.fitRequestToken += 1 }
+                    self.pruneDanglingConstraints()
                     self.isProcessing = false
                 }
             } catch {
@@ -4593,6 +4631,298 @@ class AppState {
         }
     }
     
+    // MARK: - Sketch constraint mutations (constraint solver, Phase 1)
+
+    /// Drops constraints whose referenced handles no longer exist (or are no
+    /// longer solvable types) — entities get rebuilt with fresh handles by ops
+    /// like fillet/boolean, and deletes remove them outright. Runs after every
+    /// `reloadDXF`. Notifies via the floating banner when anything was dropped.
+    func pruneDanglingConstraints() {
+        guard !sketchConstraints.isEmpty else {
+            if solveDiagnostics != nil { solveDiagnostics = nil }
+            return
+        }
+        let solvable = Set(entities.filter { SketchSolvable.isSolvable($0) }.map { $0.handle })
+        let kept = sketchConstraints.filter { $0.referencedHandles.isSubset(of: solvable) }
+        let dropped = sketchConstraints.count - kept.count
+        if dropped > 0 {
+            sketchConstraints = kept
+            if let sel = selectedConstraintId, !kept.contains(where: { $0.id == sel }) {
+                selectedConstraintId = nil
+            }
+            errorMessage = "\(dropped) constraint\(dropped == 1 ? "" : "s") removed — the referenced geometry was rebuilt or deleted."
+        }
+        refreshDiagnostics()
+    }
+
+    /// Adds a constraint and re-solves. On conflict the constraint is kept and
+    /// flagged (inspector + glyph turn warn) but geometry stays at the last
+    /// valid configuration — the solver never writes a diverged state.
+    func addConstraint(_ constraint: SketchConstraint) {
+        saveToHistory()
+        runSketchSolve(constraints: sketchConstraints + [constraint])
+    }
+
+    func removeConstraint(id: String) {
+        guard sketchConstraints.contains(where: { $0.id == id }) else { return }
+        saveToHistory()
+        if selectedConstraintId == id { selectedConstraintId = nil }
+        // Re-solve with the reduced set: geometry can't move (the remaining
+        // constraints are already satisfied) but diagnostics/coloring re-derive.
+        runSketchSolve(constraints: sketchConstraints.filter { $0.id != id })
+    }
+
+    /// Runs the stateless `sketch_solve` op and applies the response: enriched
+    /// constraints (branch capture), patched entities, fresh diagnostics.
+    private func runSketchSolve(constraints: [SketchConstraint]) {
+        let payload = constraints.map { $0.asDictionary }
+        Task {
+            await reconcileBufferIfNeeded()
+            guard let input = currentFilePath else {
+                await MainActor.run { self.sketchConstraints = constraints }
+                return
+            }
+            let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+            do {
+                let res = try await PythonBridge.shared.run(
+                    module: "sketch_constraints",
+                    op: "sketch_solve",
+                    args: ["input": input.path,
+                           "output": activeDxfURL.path,
+                           "constraints": payload]
+                )
+                let data = res["data"] as? [String: Any] ?? [:]
+                await MainActor.run {
+                    self.currentFilePath = activeDxfURL
+                    if let enriched = Self.decodeConstraints(data["constraints"]) {
+                        self.sketchConstraints = enriched
+                    } else {
+                        self.sketchConstraints = constraints
+                    }
+                    if let ents = data["entities"] as? [[String: Any]], !ents.isEmpty {
+                        self.applyEntityPatch(ents)
+                    }
+                    if let diag = Self.decodeDiagnostics(data["diagnostics"]) {
+                        self.solveDiagnostics = diag
+                        if !diag.converged {
+                            self.errorMessage = "Constraints conflict — geometry kept at the last valid state."
+                        }
+                    }
+                    self.hasUnsavedChanges = true
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Constraint solve failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Re-evaluates diagnostics at the current geometry (no solve, no write).
+    /// Used after undo/redo/load and pruning to repopulate the solve-state
+    /// coloring and DOF readout.
+    func refreshDiagnostics() {
+        guard !sketchConstraints.isEmpty else {
+            solveDiagnostics = nil
+            return
+        }
+        let payload = sketchConstraints.map { $0.asDictionary }
+        Task {
+            await reconcileBufferIfNeeded()
+            guard let input = await MainActor.run(body: { self.currentFilePath }) else { return }
+            guard let res = try? await PythonBridge.shared.run(
+                module: "sketch_constraints",
+                op: "sketch_diagnose",
+                args: ["input": input.path, "constraints": payload]
+            ) else { return }
+            let data = res["data"] as? [String: Any] ?? [:]
+            if let diag = Self.decodeDiagnostics(data["diagnostics"]) {
+                await MainActor.run { self.solveDiagnostics = diag }
+            }
+        }
+    }
+
+    /// Replaces matching entities in place with solver-returned geometry
+    /// (exact `op_list_entities` shape), preserving each entity's layerId —
+    /// same optimistic pattern as the move tool, no full reloadDXF.
+    func applyEntityPatch(_ jsonEntities: [[String: Any]]) {
+        guard !jsonEntities.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: jsonEntities),
+              let patched = try? JSONDecoder().decode([DXFEntity].self, from: data) else { return }
+        applyEntityPatchDecoded(patched)
+    }
+
+    static func decodeDiagnostics(_ json: Any?) -> SolveDiagnostics? {
+        guard let dict = json as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+        return try? JSONDecoder().decode(SolveDiagnostics.self, from: data)
+    }
+
+    static func decodeConstraints(_ json: Any?) -> [SketchConstraint]? {
+        guard let arr = json as? [[String: Any]],
+              let data = try? JSONSerialization.data(withJSONObject: arr) else { return nil }
+        return try? JSONDecoder().decode([SketchConstraint].self, from: data)
+    }
+
+    // MARK: - Live constraint-aware dragging (stateful sketch session)
+
+    @ObservationIgnored private lazy var sketchSession = SketchSessionClient()
+    /// DXF bytes captured at session open — the undo snapshot for the whole
+    /// drag (the session writes nothing until commit, so reading at commit
+    /// time would race the write; capturing up front is exact).
+    @ObservationIgnored private var constraintDragPreDXF: Data? = nil
+    /// The in-flight session_open, awaited by end/cancel so a fast mouse-up
+    /// can't try to commit a session that hasn't finished opening.
+    @ObservationIgnored private var constraintDragOpenTask: Task<Void, Never>? = nil
+    /// Whether any drag frame actually patched entities (a plain click never
+    /// does, so cancelling it can skip the reload).
+    @ObservationIgnored private var constraintDragPatched = false
+
+    /// True when any constraint references this entity — such geometry must be
+    /// dragged through the solver session, never through the raw translate op.
+    func isConstraintReferenced(_ handle: String) -> Bool {
+        sketchConstraints.contains { $0.referencedHandles.contains(handle) }
+    }
+
+    func isEntityFullyConstrained(_ handle: String) -> Bool {
+        solveDiagnostics?.fullyConstrained.contains(handle) == true
+    }
+
+    /// Opens the solver drag session. Drag frames arriving before the open
+    /// completes are coalesced by the client and sent once it's live.
+    func beginConstraintDrag() {
+        guard !isSolverDragActive else { return }
+        isSolverDragActive = true
+        constraintDragPreDXF = nil
+        constraintDragPatched = false
+        sketchSession.onPatch = { [weak self] ents, diag, _ in
+            guard let self else { return }
+            if !ents.isEmpty { self.constraintDragPatched = true }
+            self.applyEntityPatchDecoded(ents)
+            if let diag { self.solveDiagnostics = diag }
+        }
+        sketchSession.onSessionLost = { [weak self] in
+            guard let self else { return }
+            self.isSolverDragActive = false
+            self.constraintDragPreDXF = nil
+            self.errorMessage = "Solver session lost — drag cancelled."
+            self.reloadDXF()
+        }
+        let constraints = sketchConstraints
+        constraintDragOpenTask = Task {
+            await reconcileBufferIfNeeded()
+            guard let input = self.currentFilePath,
+                  FileManager.default.fileExists(atPath: input.path) else {
+                await MainActor.run { self.isSolverDragActive = false }
+                return
+            }
+            let pre = try? Data(contentsOf: input)
+            do {
+                let diag = try await self.sketchSession.open(input: input, constraints: constraints)
+                await MainActor.run {
+                    self.constraintDragPreDXF = pre
+                    if let diag { self.solveDiagnostics = diag }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isSolverDragActive = false
+                    self.errorMessage = "Constraint drag unavailable: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func updateConstraintDrag(handle: String, role: String, target: CGPoint, anchor: CGPoint) {
+        guard isSolverDragActive else { return }
+        sketchSession.drag(handle: handle, role: role, target: target, anchor: anchor)
+    }
+
+    /// Commits the drag: polish solve + write to active.dxf on the Python side,
+    /// history snapshot built from the pre-drag bytes.
+    func endConstraintDrag() {
+        guard isSolverDragActive else { return }
+        Task {
+            await constraintDragOpenTask?.value  // never commit a half-open session
+            let pre = constraintDragPreDXF
+            constraintDragPreDXF = nil
+            let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+            do {
+                let (ents, diag) = try await sketchSession.commit(output: activeDxfURL)
+                await MainActor.run {
+                    self.pushHistorySnapshot(dxfData: pre)
+                    self.currentFilePath = activeDxfURL
+                    self.applyEntityPatchDecoded(ents)
+                    if let diag { self.solveDiagnostics = diag }
+                    self.isSolverDragActive = false
+                }
+            } catch {
+                await sketchSession.abort()
+                await MainActor.run {
+                    self.isSolverDragActive = false
+                    self.errorMessage = "Constraint drag failed to commit: \(error.localizedDescription)"
+                    self.reloadDXF()
+                }
+            }
+        }
+    }
+
+    /// Cancels the drag (Esc / degenerate click): nothing written; the on-disk
+    /// buffer never changed, so a reload restores the pre-drag entities. A
+    /// plain click that never patched anything skips the reload entirely.
+    func cancelConstraintDrag() {
+        guard isSolverDragActive else { return }
+        constraintDragPreDXF = nil
+        Task {
+            await constraintDragOpenTask?.value
+            await sketchSession.abort()
+            let patched = self.constraintDragPatched
+            await MainActor.run {
+                self.isSolverDragActive = false
+                if patched { self.reloadDXF() }
+            }
+        }
+    }
+
+    /// Re-solves after a legacy geometry edit (multi-select translate/rotate)
+    /// touched constraint-referenced entities, snapping geometry back onto the
+    /// constraint set. No extra history entry — the edit already made one.
+    func reimposeConstraints() {
+        guard !sketchConstraints.isEmpty else { return }
+        runSketchSolve(constraints: sketchConstraints)
+    }
+
+    /// History entry whose DXF snapshot is the supplied bytes (already read),
+    /// used by the drag session where the buffer file is about to be replaced.
+    private func pushHistorySnapshot(dxfData: Data?) {
+        hasUnsavedChanges = true
+        let task = Task.detached(priority: .userInitiated) { () -> Data? in dxfData }
+        let state = HistoryState(
+            dxfDataTask: task,
+            measurements: measurements,
+            selectedHandles: selectedHandles,
+            parametricShapes: parametricShapes,
+            cornerSnapPoints: cornerSnapPoints,
+            penPaths: penPaths,
+            bodyOffsets: bodyOffsets,
+            layers: layers,
+            sketchConstraints: sketchConstraints
+        )
+        undoStack.append(state)
+        redoStack.removeAll()
+    }
+
+    /// In-place entity replacement from already-decoded solver output,
+    /// preserving layerIds (the optimistic-move pattern — no reloadDXF).
+    func applyEntityPatchDecoded(_ patched: [DXFEntity]) {
+        for p in patched {
+            if let idx = entities.firstIndex(where: { $0.handle == p.handle }) {
+                var np = p
+                np.layerId = entities[idx].layerId
+                entities[idx] = np
+            }
+        }
+    }
+
     func triggerChainSelect(seedHandle: String) {
         isProcessing = true
         
@@ -5040,6 +5370,7 @@ class AppState {
         self.parametricShapes = state.parametricShapes
         self.cornerSnapPoints = state.cornerSnapPoints
         self.penPaths = state.penPaths
+        self.sketchConstraints = state.sketchConstraints
         self.layers = state.layers
         self.selectedMeasurement = nil
         self.hasUnsavedChanges = true
@@ -6318,7 +6649,7 @@ class AppState {
             )
             
             let handle = (res["data"] as? [String: Any])?["handle"] as? String
-            
+
             await MainActor.run {
                 self.reloadDXF()
             }
@@ -7640,7 +7971,8 @@ class AppState {
                         renderMode: constructRenderMode,
                         panelMaterials: constructPanelMaterials.isEmpty ? nil : constructPanelMaterials,
                         seamTolMismatchPct: seamTolMismatchPct,
-                        seamTolGapMm: seamTolGapMm)
+                        seamTolGapMm: seamTolGapMm),
+                sketchConstraints: sketchConstraints.isEmpty ? nil : sketchConstraints
             )
 
             let encoder = JSONEncoder()
@@ -7800,6 +8132,12 @@ class AppState {
             if let learn = validContainer.isLearnModeEnabled { self.isLearnModeEnabled = learn }
             if let pShapes = validContainer.parametricShapes { self.parametricShapes = pShapes }
             if let pp = validContainer.penPaths { self.penPaths = pp }
+            // Unconditional (nil → []) so opening a pre-constraint project never
+            // inherits a previous document's constraints; diagnostics repopulate
+            // via pruneDanglingConstraints() after the reload.
+            self.sketchConstraints = validContainer.sketchConstraints ?? []
+            self.solveDiagnostics = nil
+            self.selectedConstraintId = nil
             if let dist = validContainer.offsetDistance { self.offsetDistance = dist }
             if let side = validContainer.offsetSide { self.offsetSide = side }
             if let hDist = validContainer.holeOffsetDistance { self.holeOffsetDistance = hDist }
@@ -8377,6 +8715,13 @@ class AppState {
                 print("Background translation failed: \(error)")
             }
         }
+
+        // A raw translate of constraint-referenced geometry can break its
+        // relations — re-solve to snap everything back onto the constraint set
+        // (runs after the buffer write; no extra history entry).
+        if selectedHandlesSnapshot.contains(where: { isConstraintReferenced($0) }) {
+            reimposeConstraints()
+        }
     }
 
     func rotateSelected(angleDegrees: Double, center: [Double]) {
@@ -8474,6 +8819,12 @@ class AppState {
             } catch {
                 print("Background rotation failed: \(error)")
             }
+        }
+
+        // See translateSelected: re-impose constraints after a raw rotate of
+        // constraint-referenced geometry.
+        if selectedHandlesSnapshot.contains(where: { isConstraintReferenced($0) }) {
+            reimposeConstraints()
         }
     }
 
@@ -9150,6 +9501,11 @@ class AppState {
     /// closure should read `currentFilePath` fresh as its Python input.
     @discardableResult
     private func enqueueBufferWrite(_ work: @escaping () async -> Void) -> Task<Void, Never> {
+        #if DEBUG
+        // A live solver drag session owns the working buffer; any other write
+        // racing it would be clobbered by session_commit (constraint solver).
+        assert(!isSolverDragActive, "Buffer write enqueued during a solver drag session")
+        #endif
         let prevReconcile = reconcileTask
         let prevWrite = bufferWriteTask
         let task = Task<Void, Never> {
@@ -9196,6 +9552,9 @@ class AppState {
         logAction("Delete Entities", details: "Deleted \(removed.count) selected entit\(removed.count == 1 ? "y" : "ies")")
 
         pendingDeletedHandles.formUnion(removed)
+        // Deletes are optimistic (no reloadDXF), so prune dangling constraints
+        // here — the reload hook won't fire.
+        pruneDanglingConstraints()
         Task { await reconcileBufferIfNeeded() }
     }
 
@@ -9208,6 +9567,7 @@ class AppState {
         recomputeLayersFromEntities()
         hasUnsavedChanges = true
         pendingDeletedHandles.insert(handle)
+        pruneDanglingConstraints()
         Task { await reconcileBufferIfNeeded() }
     }
 

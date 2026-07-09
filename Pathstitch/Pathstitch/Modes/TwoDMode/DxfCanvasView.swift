@@ -61,6 +61,11 @@ struct DxfCanvasView: View {
     @State private var gizmoDragOffset = CGSize.zero
     @State private var isDraggingSelection = false
     @State private var dragStartModelPt = CGPoint.zero
+    /// Live solver-drag routing (constraint solver): when set, this gesture's
+    /// motion goes to the sketch session instead of the local gizmo/vertex path.
+    @State private var constraintDragInfo: (handle: String, role: String, anchor: CGPoint)? = nil
+    /// The grabbed geometry is fully constrained — swallow the drag ("Locked").
+    @State private var constraintDragRefused = false
     @State private var isDraggingFillet = false
     // While the corner-tool radius arrow is being dragged, the canvas renders a
     // lag-free local blend preview and the committed (stale) geometry is hidden,
@@ -377,7 +382,26 @@ struct DxfCanvasView: View {
                     // active, so a mis-started line doesn't kick you out of Line.
                     // Esc again (nothing in progress) exits to Select.
                     var cancelledInProgress = false
-                    if state.currentTool == .pen && !penAnchors.isEmpty {
+                    if state.isSolverDragActive {
+                        // Esc mid-drag aborts the solver session; the buffer never
+                        // changed, so the reload restores pre-drag geometry.
+                        state.cancelConstraintDrag()
+                        constraintDragInfo = nil
+                        constraintDragRefused = false
+                        isDraggingSelection = false
+                        editingVertexHandle = nil
+                        gizmoDragOffset = .zero
+                        cancelledInProgress = true
+                    } else if state.currentTool == .constrain &&
+                        (!state.pendingConstraintPoints.isEmpty || !state.pendingConstraintEntities.isEmpty
+                         || state.selectedConstraintId != nil) {
+                        // Esc drops the partial constraint picks / glyph selection
+                        // first; a second Esc exits to Select.
+                        state.pendingConstraintPoints = []
+                        state.pendingConstraintEntities = []
+                        state.selectedConstraintId = nil
+                        cancelledInProgress = true
+                    } else if state.currentTool == .pen && !penAnchors.isEmpty {
                         // Esc abandons the in-progress pen path, or cancels a
                         // re-edit and restores the original (parametric pen lines).
                         resetPenState()
@@ -414,6 +438,12 @@ struct DxfCanvasView: View {
                     curvePoints = []
                     state.activeMeasureStart = nil
                     gizmoDimKind = nil
+                    // Leaving the Constrain tool drops partial picks + glyph selection.
+                    if oldTool == .constrain && newTool != .constrain {
+                        state.pendingConstraintPoints = []
+                        state.pendingConstraintEntities = []
+                        state.selectedConstraintId = nil
+                    }
                     // Leaving the Pen tool finishes an in-progress path (so the
                     // work isn't lost), then clears the staging state (MAS-94).
                     if oldTool == .pen && newTool != .pen {
@@ -492,7 +522,13 @@ struct DxfCanvasView: View {
                             }
                         },
                         onDeleteSelected: {
-                            state.deleteSelectedEntities()
+                            // A selected constraint glyph takes precedence over
+                            // entity deletion (constraint solver).
+                            if let cid = state.selectedConstraintId {
+                                state.removeConstraint(id: cid)
+                            } else {
+                                state.deleteSelectedEntities()
+                            }
                         },
                         onRightClick: { pt in
                             // Select the shape under the cursor, then open the menu (MAS-62).
@@ -1258,6 +1294,33 @@ struct DxfCanvasView: View {
                 .background(Color.bg_panel.opacity(0.9))
                 .cornerRadius(4)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.border_subtle, lineWidth: 1))
+
+                // Live solve state (constraint solver): DOF / locked / conflict.
+                if !state.sketchConstraints.isEmpty || state.currentTool == .constrain,
+                   let diag = state.solveDiagnostics {
+                    let (label, color): (String, Color) = {
+                        if !diag.converged {
+                            return ("CONFLICT (\(diag.conflictingConstraints.count))", .status_warn)
+                        } else if diag.dof == 0 && diag.nParams > 0 {
+                            return ("FULLY CONSTRAINED", .status_ok)
+                        } else {
+                            return ("DOF: \(diag.dof)", .to_accent)
+                        }
+                    }()
+                    HStack(spacing: 5) {
+                        Image(systemName: diag.converged ? (diag.dof == 0 && diag.nParams > 0 ? "lock.fill" : "link") : "exclamationmark.triangle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(label)
+                            .font(PlasticityFont.label)
+                            .tracking(0.5)
+                    }
+                    .foregroundColor(color)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.bg_panel.opacity(0.9))
+                    .cornerRadius(4)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.5), lineWidth: 1))
+                }
                 Spacer()
             }
             Spacer()
@@ -1436,6 +1499,312 @@ struct DxfCanvasView: View {
         }
     }
 
+    // MARK: - Sketch constraints (canvas side)
+
+    /// Resolves a named point ("start"/"end"/"center") on a solvable entity in
+    /// model space. ARC start/end are derived from center + radius + angles.
+    private func namedPoint(_ ent: DXFEntity, role: String) -> CGPoint? {
+        switch (ent.type, role) {
+        case ("LINE", "start"):
+            if let s = ent.start, s.count >= 2 { return CGPoint(x: s[0], y: s[1]) }
+        case ("LINE", "end"):
+            if let e = ent.end, e.count >= 2 { return CGPoint(x: e[0], y: e[1]) }
+        case ("CIRCLE", "center"), ("ARC", "center"):
+            if let c = ent.center, c.count >= 2 { return CGPoint(x: c[0], y: c[1]) }
+        case ("ARC", "start"), ("ARC", "end"):
+            if let c = ent.center, c.count >= 2, let r = ent.radius,
+               let a = (role == "start" ? ent.start_angle : ent.end_angle) {
+                let rad = a * .pi / 180.0
+                return CGPoint(x: c[0] + r * cos(rad), y: c[1] + r * sin(rad))
+            }
+        default:
+            break
+        }
+        return nil
+    }
+
+    /// The named points a constraint pick can grab on one entity.
+    private func namedRoles(_ ent: DXFEntity) -> [String] {
+        switch ent.type {
+        case "LINE": return ["start", "end"]
+        case "CIRCLE": return ["center"]
+        case "ARC": return ["start", "end", "center"]
+        default: return []
+        }
+    }
+
+    /// A representative model-space point for a whole-entity operand.
+    private func entityAnchorModel(_ ent: DXFEntity) -> CGPoint? {
+        switch ent.type {
+        case "LINE":
+            if let s = ent.start, let e = ent.end, s.count >= 2, e.count >= 2 {
+                return CGPoint(x: (s[0] + e[0]) / 2, y: (s[1] + e[1]) / 2)
+            }
+        case "CIRCLE", "ARC":
+            if let c = ent.center, c.count >= 2 { return CGPoint(x: c[0], y: c[1]) }
+        default:
+            break
+        }
+        return nil
+    }
+
+    /// Where a constraint's glyph badge anchors in model space: the mean of its
+    /// operand points / entity anchors.
+    private func constraintAnchorModel(_ c: SketchConstraint) -> CGPoint? {
+        var pts: [CGPoint] = []
+        for p in c.points {
+            if let ent = state.entities.first(where: { $0.handle == p.handle }),
+               let pt = namedPoint(ent, role: p.role) { pts.append(pt) }
+        }
+        for h in c.entities {
+            if let ent = state.entities.first(where: { $0.handle == h }),
+               let pt = entityAnchorModel(ent) { pts.append(pt) }
+        }
+        guard !pts.isEmpty else { return nil }
+        let sx = pts.reduce(0.0) { $0 + $1.x }
+        let sy = pts.reduce(0.0) { $0 + $1.y }
+        return CGPoint(x: sx / CGFloat(pts.count), y: sy / CGFloat(pts.count))
+    }
+
+    private static let constraintGlyphSize: CGFloat = 16.0
+
+    /// Screen-space badge layout for every constraint. Deterministic, shared by
+    /// drawing and hit-testing (no state mutated during render). Badges that
+    /// share an anchor stack horizontally.
+    private func constraintGlyphLayout(size: CGSize, modelBounds: CGRect) -> [(constraint: SketchConstraint, rect: CGRect)] {
+        var byAnchor: [String: [SketchConstraint]] = [:]
+        var anchorPts: [String: CGPoint] = [:]
+        for c in state.sketchConstraints {
+            guard let m = constraintAnchorModel(c) else { continue }
+            let s = toScreen(dx: Double(m.x), dy: Double(m.y), size: size, bounds: modelBounds)
+            let key = "\(Int(s.x / 12))_\(Int(s.y / 12))"
+            byAnchor[key, default: []].append(c)
+            if anchorPts[key] == nil { anchorPts[key] = s }
+        }
+        var out: [(SketchConstraint, CGRect)] = []
+        let g = Self.constraintGlyphSize
+        for (key, group) in byAnchor {
+            guard let base = anchorPts[key] else { continue }
+            let totalW = CGFloat(group.count) * (g + 2) - 2
+            for (i, c) in group.enumerated() {
+                let x = base.x - totalW / 2 + CGFloat(i) * (g + 2)
+                // Sit just above-right of the anchor so the badge doesn't cover
+                // the geometry point itself.
+                let rect = CGRect(x: x, y: base.y - g - 6, width: g, height: g)
+                out.append((c, rect))
+            }
+        }
+        return out
+    }
+
+    /// The constraint whose badge is under the cursor, if any.
+    private func constraintGlyphHit(at screenPt: CGPoint, size: CGSize, modelBounds: CGRect) -> String? {
+        for (c, rect) in constraintGlyphLayout(size: size, modelBounds: modelBounds) {
+            if rect.insetBy(dx: -2, dy: -2).contains(screenPt) { return c.id }
+        }
+        return nil
+    }
+
+    /// Draws constraint badges, pending-pick markers, and (with the Constrain
+    /// tool active) the grounded-origin marker.
+    private func drawConstraintOverlay(context: inout GraphicsContext, size: CGSize, modelBounds: CGRect) {
+        let conflicted = Set(state.solveDiagnostics?.conflictingConstraints ?? [])
+
+        for (c, rect) in constraintGlyphLayout(size: size, modelBounds: modelBounds) {
+            let isSelected = state.selectedConstraintId == c.id
+            let isConflict = conflicted.contains(c.id)
+            let kind = ConstraintKind(rawValue: c.kind)
+            let border: Color = isSelected ? .accent : (isConflict ? .status_warn : Color.border_subtle)
+            let fill: Color = isConflict ? Color.status_warn.opacity(0.25) : Color.bg_panel.opacity(0.92)
+            let rr = SwiftUI.Path(roundedRect: rect, cornerRadius: 4)
+            context.fill(rr, with: .color(fill))
+            context.stroke(rr, with: .color(border), lineWidth: isSelected ? 1.6 : 1.0)
+            context.draw(
+                Text(Image(systemName: kind?.icon ?? "questionmark"))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(isConflict ? .status_warn : (isSelected ? .accent : .text_secondary)),
+                at: CGPoint(x: rect.midX, y: rect.midY)
+            )
+        }
+
+        // Pending pick markers: accent rings on picked points, accent dots on
+        // picked entities' anchors, so partial selections are visible.
+        for p in state.pendingConstraintPoints {
+            if let ent = state.entities.first(where: { $0.handle == p.handle }),
+               let m = namedPoint(ent, role: p.role) {
+                let s = toScreen(dx: Double(m.x), dy: Double(m.y), size: size, bounds: modelBounds)
+                var ring = SwiftUI.Path()
+                ring.addEllipse(in: CGRect(x: s.x - 6, y: s.y - 6, width: 12, height: 12))
+                context.stroke(ring, with: .color(.accent), lineWidth: 2.0)
+            }
+        }
+        for h in state.pendingConstraintEntities {
+            if let ent = state.entities.first(where: { $0.handle == h }),
+               let m = entityAnchorModel(ent) {
+                let s = toScreen(dx: Double(m.x), dy: Double(m.y), size: size, bounds: modelBounds)
+                var dot = SwiftUI.Path()
+                dot.addEllipse(in: CGRect(x: s.x - 4, y: s.y - 4, width: 8, height: 8))
+                context.fill(dot, with: .color(.accent))
+            }
+        }
+
+        // Grounded-origin marker: with the Constrain tool active and nothing
+        // grounded yet, hint at the document origin the solve is measured from.
+        if state.currentTool == .constrain,
+           !state.sketchConstraints.contains(where: { $0.kind == "ground" }) {
+            let o = toScreen(dx: 0, dy: 0, size: size, bounds: modelBounds)
+            context.draw(
+                Text(Image(systemName: "pin"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.text_muted),
+                at: CGPoint(x: o.x + 10, y: o.y - 10)
+            )
+            context.draw(
+                Text("ground geometry to lock it in place")
+                    .font(.system(size: 9))
+                    .foregroundColor(.text_muted),
+                at: CGPoint(x: o.x + 18, y: o.y - 10), anchor: .leading
+            )
+        }
+    }
+
+    /// The nearest named point (endpoint/center) on any solvable entity within
+    /// a 10 px screen tolerance — the Constrain tool's point picker.
+    private func constraintPointPick(at screenPt: CGPoint, size: CGSize, modelBounds: CGRect) -> PointRef? {
+        var best: (ref: PointRef, dist: CGFloat)? = nil
+        for ent in state.entities where SketchSolvable.isSolvable(ent) {
+            guard ent.getLayer(in: state.layers)?.visible ?? true else { continue }
+            for role in namedRoles(ent) {
+                guard let m = namedPoint(ent, role: role) else { continue }
+                let s = toScreen(dx: Double(m.x), dy: Double(m.y), size: size, bounds: modelBounds)
+                let d = hypot(screenPt.x - s.x, screenPt.y - s.y)
+                if d < 10.0 && d < (best?.dist ?? .infinity) {
+                    best = (PointRef(handle: ent.handle, role: role), d)
+                }
+            }
+        }
+        return best?.ref
+    }
+
+    /// The Constrain tool's click state machine: select a glyph, or collect
+    /// operands for the armed kind and commit once the signature is complete.
+    private func handleConstrainClick(at point: CGPoint, size: CGSize, modelBounds: CGRect) {
+        // 1. Clicking a badge selects it (Delete removes; click again deselects).
+        if let gid = constraintGlyphHit(at: point, size: size, modelBounds: modelBounds) {
+            state.selectedConstraintId = (state.selectedConstraintId == gid) ? nil : gid
+            return
+        }
+        state.selectedConstraintId = nil
+
+        let kind = state.pendingConstraintKind
+        let modelPt = toModel(point: point, size: size, bounds: modelBounds)
+        let pointPick = kind.picksPoints ? constraintPointPick(at: point, size: size, modelBounds: modelBounds) : nil
+        var entityPick: DXFEntity? = nil
+        if let nearest = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 16.0, size: size, bounds: modelBounds) {
+            if SketchSolvable.isSolvable(nearest) {
+                entityPick = nearest
+            } else if pointPick == nil {
+                state.errorMessage = "\(nearest.type) can't be constrained yet — explode it to lines and arcs first."
+                return
+            }
+        }
+
+        func requireLine(_ ent: DXFEntity?) -> DXFEntity? {
+            guard let e = ent else { return nil }
+            return e.type == "LINE" ? e : nil
+        }
+
+        switch kind {
+        case .coincident:
+            guard let p = pointPick else { return }
+            if state.pendingConstraintPoints.contains(p) { return }
+            state.pendingConstraintPoints.append(p)
+            if state.pendingConstraintPoints.count == 2 {
+                commitPendingConstraint()
+            }
+
+        case .horizontal, .vertical:
+            guard let e = requireLine(entityPick) else {
+                if entityPick != nil { state.errorMessage = "\(kind.displayName) needs a line." }
+                return
+            }
+            state.pendingConstraintEntities = [e.handle]
+            commitPendingConstraint()
+
+        case .parallel, .perpendicular, .angle:
+            guard let e = requireLine(entityPick) else {
+                if entityPick != nil { state.errorMessage = "\(kind.displayName) needs lines." }
+                return
+            }
+            if state.pendingConstraintEntities.contains(e.handle) { return }
+            state.pendingConstraintEntities.append(e.handle)
+            if state.pendingConstraintEntities.count == 2 {
+                commitPendingConstraint()
+            }
+
+        case .equal, .tangent:
+            guard let e = entityPick else { return }
+            if state.pendingConstraintEntities.contains(e.handle) { return }
+            if let firstH = state.pendingConstraintEntities.first,
+               let first = state.entities.first(where: { $0.handle == firstH }) {
+                let curved: Set<String> = ["CIRCLE", "ARC"]
+                let valid: Bool
+                if kind == .equal {
+                    valid = (first.type == "LINE" && e.type == "LINE")
+                        || (curved.contains(first.type) && curved.contains(e.type))
+                } else {
+                    // tangent: line + curve, or curve + curve
+                    valid = !(first.type == "LINE" && e.type == "LINE")
+                        && (curved.contains(first.type) || curved.contains(e.type))
+                }
+                guard valid else {
+                    state.errorMessage = kind == .equal
+                        ? "Equal needs two lines or two circles/arcs."
+                        : "Tangent needs a line + circle/arc, or two circles/arcs."
+                    return
+                }
+            }
+            state.pendingConstraintEntities.append(e.handle)
+            if state.pendingConstraintEntities.count == 2 {
+                commitPendingConstraint()
+            }
+
+        case .distance:
+            // First pick must be a point; the second is a point (point–point) or
+            // a line (signed point–line distance).
+            if state.pendingConstraintPoints.isEmpty {
+                guard let p = pointPick else { return }
+                state.pendingConstraintPoints = [p]
+            } else if let p = pointPick, !state.pendingConstraintPoints.contains(p) {
+                state.pendingConstraintPoints.append(p)
+                commitPendingConstraint()
+            } else if let e = requireLine(entityPick) {
+                state.pendingConstraintEntities = [e.handle]
+                commitPendingConstraint()
+            }
+
+        case .ground:
+            if let p = pointPick {
+                state.pendingConstraintPoints = [p]
+            } else if let e = entityPick {
+                state.pendingConstraintEntities = [e.handle]
+            } else {
+                return
+            }
+            commitPendingConstraint()
+        }
+    }
+
+    private func commitPendingConstraint() {
+        var c = SketchConstraint(kind: state.pendingConstraintKind.rawValue)
+        c.points = state.pendingConstraintPoints
+        c.entities = state.pendingConstraintEntities
+        if state.pendingConstraintKind.needsValue { c.value = state.pendingConstraintValue }
+        state.pendingConstraintPoints = []
+        state.pendingConstraintEntities = []
+        state.addConstraint(c)
+    }
+
     private func renderCanvas(_ parentContext: inout GraphicsContext, size: CGSize, modelBounds: CGRect) {
         var context = parentContext
         defer { parentContext = context }
@@ -1473,6 +1842,18 @@ struct DxfCanvasView: View {
                 return matched
             }
             return layerLookup[ent.layer]
+        }
+
+        // Solve-state coloring (constraint solver): fully-constrained geometry
+        // renders in a distinct locked color; geometry referenced by a
+        // conflicting constraint renders warn. Selection/hover keep precedence.
+        let fullyConstrainedHandles = Set(state.solveDiagnostics?.fullyConstrained ?? [])
+        var conflictedHandles: Set<String> = []
+        if let conflictIds = state.solveDiagnostics?.conflictingConstraints, !conflictIds.isEmpty {
+            let ids = Set(conflictIds)
+            for c in state.sketchConstraints where ids.contains(c.id) {
+                conflictedHandles.formUnion(c.referencedHandles)
+            }
         }
 
         // Draw Entities
@@ -1520,6 +1901,10 @@ struct DxfCanvasView: View {
                 strokeColor = Color.orange
             } else if isHovered {
                 strokeColor = Color.accent_hover
+            } else if conflictedHandles.contains(ent.handle) {
+                strokeColor = Color.status_warn
+            } else if fullyConstrainedHandles.contains(ent.handle) {
+                strokeColor = Color.status_ok
             } else if isConstruction {
                 strokeColor = Color.orange
             } else {
@@ -1610,6 +1995,11 @@ struct DxfCanvasView: View {
                 }
                 context.stroke(hp, with: .color(Color.status_err), style: StrokeStyle(lineWidth: 4.0, lineCap: .round, lineJoin: .round))
             }
+        }
+
+        // Constraint badges + pending-pick markers + grounded-origin hint.
+        if !state.sketchConstraints.isEmpty || state.currentTool == .constrain {
+            drawConstraintOverlay(context: &context, size: size, modelBounds: modelBounds)
         }
 
         // Patterning v2 live ghost preview (MAS-113): dashed translucent copies of
@@ -3075,6 +3465,19 @@ struct DxfCanvasView: View {
                             editingVertexIndex = i
                             editingVertexIsRect = state.isRectangleHandle(handle)
                             foundVertex = true
+                            // A constrained LINE endpoint drags through the
+                            // solver session (constraint solver) so relations
+                            // hold live; a fully-constrained one is locked.
+                            if ent.type == "LINE", state.isConstraintReferenced(handle) {
+                                if state.isEntityFullyConstrained(handle) {
+                                    constraintDragRefused = true
+                                    state.errorMessage = "Locked — fully constrained. Remove a constraint or its Ground to move it."
+                                } else {
+                                    let anchor = CGPoint(x: v[0], y: v[1])
+                                    constraintDragInfo = (handle, i == 0 ? "start" : "end", anchor)
+                                    state.beginConstraintDrag()
+                                }
+                            }
                             break vertexSearch
                         }
                     }
@@ -3116,6 +3519,22 @@ struct DxfCanvasView: View {
                     clickedOnSelected = true
                     isDraggingSelection = true
                     dragStartModelPt = clickedModelPt
+                    // Constraint-aware drag (constraint solver): a single
+                    // constrained entity moves through the solver session so its
+                    // relations hold live. Multi-selections keep the legacy
+                    // translate (constraints re-imposed on release). A fully-
+                    // constrained entity is locked and refuses the drag.
+                    if state.selectedHandles.count == 1,
+                       SketchSolvable.isSolvable(nearest),
+                       state.isConstraintReferenced(nearest.handle) {
+                        if state.isEntityFullyConstrained(nearest.handle) {
+                            constraintDragRefused = true
+                            state.errorMessage = "Locked — fully constrained. Remove a constraint or its Ground to move it."
+                        } else {
+                            constraintDragInfo = (nearest.handle, "body", clickedModelPt)
+                            state.beginConstraintDrag()
+                        }
+                    }
                 }
             }
             
@@ -3195,8 +3614,18 @@ struct DxfCanvasView: View {
             }
             return
         } else if let vHandle = editingVertexHandle {
-            // Rectangles don't deform — they stay rectangular until Expand (MAS-62).
-            if !editingVertexIsRect {
+            if constraintDragRefused {
+                // Fully constrained: the grab is locked; swallow the motion.
+            } else if let info = constraintDragInfo {
+                // Constrained endpoint: the solver session moves the geometry.
+                var modelPt = toModel(point: val.location, size: size, bounds: modelBounds)
+                if state.snapActive, let snap = getSnappedPoint(for: val.location, size: size, bounds: modelBounds) {
+                    modelPt = snap.snappedModelPt
+                }
+                state.updateConstraintDrag(handle: info.handle, role: info.role,
+                                           target: modelPt, anchor: info.anchor)
+            } else if !editingVertexIsRect {
+                // Rectangles don't deform — they stay rectangular until Expand (MAS-62).
                 var modelPt = toModel(point: val.location, size: size, bounds: modelBounds)
                 if state.snapActive, let snap = getSnappedPoint(for: val.location, size: size, bounds: modelBounds) {
                     modelPt = snap.snappedModelPt
@@ -3204,7 +3633,15 @@ struct DxfCanvasView: View {
                 state.setEntityVertexLocal(handle: vHandle, index: editingVertexIndex, to: modelPt)
             }
         } else if isDraggingSelection {
-            gizmoDragOffset = val.translation
+            if constraintDragRefused {
+                // Fully constrained: locked in place.
+            } else if let info = constraintDragInfo {
+                let modelPt = toModel(point: val.location, size: size, bounds: modelBounds)
+                state.updateConstraintDrag(handle: info.handle, role: info.role,
+                                           target: modelPt, anchor: info.anchor)
+            } else {
+                gizmoDragOffset = val.translation
+            }
         } else if let editId = editingMeasureId {
             let modelPt = toModel(point: val.location, size: size, bounds: modelBounds)
             if let idx = state.measurements.firstIndex(where: { $0.id == editId }) {
@@ -3620,11 +4057,25 @@ struct DxfCanvasView: View {
         }
 
         if let vHandle = editingVertexHandle {
+            editingVertexHandle = nil
+            if constraintDragRefused {
+                constraintDragRefused = false
+                return
+            }
+            if constraintDragInfo != nil {
+                // Constrained endpoint drag: commit (real drag) or abort (click).
+                constraintDragInfo = nil
+                if hypot(val.translation.width, val.translation.height) >= 4.0 {
+                    state.endConstraintDrag()
+                } else {
+                    state.cancelConstraintDrag()
+                }
+                return
+            }
             // Persist the moved vertex once on release (rectangles never changed).
             if !editingVertexIsRect {
                 state.commitEntityVertices(handle: vHandle)
             }
-            editingVertexHandle = nil
             return
         }
         if editingMeasureId != nil {
@@ -3634,11 +4085,25 @@ struct DxfCanvasView: View {
         if isDraggingSelection {
             isDraggingSelection = false
             gizmoDragOffset = .zero
-            // Only an actual drag moves the selection. A click (no real movement)
-            // falls through to the click-select path below, so clicking a selected
-            // shape just re-selects it instead of pushing a zero-length move onto
-            // the undo stack (MAS-116).
-            if hypot(val.translation.width, val.translation.height) >= 4.0 {
+            let dragged = hypot(val.translation.width, val.translation.height) >= 4.0
+            if constraintDragRefused {
+                constraintDragRefused = false
+                if dragged { return } // locked: swallow the motion, keep the click path
+            } else if constraintDragInfo != nil {
+                // Solver-session drag: commit on a real drag; a mere click aborts
+                // the session and falls through to the click-select path.
+                constraintDragInfo = nil
+                if dragged {
+                    state.endConstraintDrag()
+                    return
+                } else {
+                    state.cancelConstraintDrag()
+                }
+            } else if dragged {
+                // Only an actual drag moves the selection. A click (no real movement)
+                // falls through to the click-select path below, so clicking a selected
+                // shape just re-selects it instead of pushing a zero-length move onto
+                // the undo stack (MAS-116).
                 let startModel = toModel(point: val.startLocation, size: size, bounds: modelBounds)
                 let currentModel = toModel(point: val.location, size: size, bounds: modelBounds)
                 state.translateSelected(dx: currentModel.x - startModel.x, dy: currentModel.y - startModel.y)
@@ -3915,6 +4380,8 @@ struct DxfCanvasView: View {
                         }
                     }
                 }
+            } else if state.currentTool == .constrain {
+                handleConstrainClick(at: point, size: size, modelBounds: modelBounds)
             } else if state.isCalibrationActive {
                 let modelPt = snappedModelPoint(forScreen: point, ref: nil, size: size, bounds: modelBounds)
                 state.calibrationPoints.append(modelPt)
@@ -6651,7 +7118,7 @@ extension View {
                 if isHovered { NSCursor.openHand.set() }
                 else { NSCursor.arrow.set() }
             }
-        case .select, .move, .offset, .addThickness, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .sketchArc, .sketchConic, .pen, .fillet, .chamfer, .convertLines, .mirror, .trim, .paperFolding, .patterning, .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
+        case .select, .move, .offset, .addThickness, .addHoles, .cleanup, .measure, .dimension, .scale, .sketchLine, .sketchCircle, .sketchRectangle, .sketchText, .sketchPolygon, .sketchArc, .sketchConic, .pen, .fillet, .chamfer, .constrain, .convertLines, .mirror, .trim, .paperFolding, .patterning, .templateInsert, .boxStitch, .mandala, .boxJoint, .goldenGuide, .jigExport:
             return self.onHover { isHovered in
                 if isHovered { NSCursor.crosshair.set() }
                 else { NSCursor.arrow.set() }

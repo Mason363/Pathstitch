@@ -490,7 +490,8 @@ struct ContentView: View {
             Button("") { state.escapePressedToken += 1 }
                 .keyboardShortcut(.escape, modifiers: [])
             Button("") {
-                if state.selectedMeasurement != nil { state.deleteSelectedMeasurement() }
+                if let cid = state.selectedConstraintId { state.removeConstraint(id: cid) }
+                else if state.selectedMeasurement != nil { state.deleteSelectedMeasurement() }
                 else { state.deleteSelectedEntities() }
             }.keyboardShortcut(.deleteForward, modifiers: [])
         }
@@ -2380,7 +2381,7 @@ extension ContentView {
              .sketchLine, .sketchCircle, .fillet, .chamfer, .paperFolding,
              .patterning, .move, .convertLines, .mirror, .select, .dimension, .scale,
              .sketchPolygon, .sketchArc, .sketchConic, .templateInsert, .boxStitch, .mandala, .boxJoint,
-             .goldenGuide, .jigExport:
+             .goldenGuide, .jigExport, .constrain:
             return true
         default:
             return false
@@ -2867,6 +2868,8 @@ extension ContentView {
                 conicToolSection
             } else if state.currentTool == .mirror {
                 mirrorSection
+            } else if state.currentTool == .constrain {
+                constrainSection
             } else if state.currentTool == .templateInsert {
                 templateInsertSection
             } else if state.currentTool == .boxStitch {
@@ -3542,6 +3545,148 @@ extension ContentView {
                 }
                 TOSecondaryButton(title: "Cancel", tint: .to_textMut) { state.resetMirrorTool() }
                     .frame(width: 96)
+            }
+        }
+    }
+
+    // MARK: - Constrain tool (geometric constraint solver, Phase 1)
+
+    /// Solve-state line for the Constrain inspector: green = fully constrained,
+    /// accent = N degrees of freedom, warn = conflict.
+    @ViewBuilder
+    private var constraintSolveStatus: some View {
+        if let diag = state.solveDiagnostics {
+            if !diag.converged {
+                TOStatus(color: .to_warn,
+                         text: "Conflict — \(diag.conflictingConstraints.count) constraint\(diag.conflictingConstraints.count == 1 ? "" : "s")",
+                         hint: "geometry kept at last valid")
+            } else if diag.dof == 0 && diag.nParams > 0 {
+                TOStatus(color: .to_ok, text: "Fully constrained", hint: "geometry is locked")
+            } else {
+                let extra = diag.redundantCount > 0 ? " · \(diag.redundantCount) redundant" : ""
+                TOStatus(color: .to_accent,
+                         text: "\(diag.dof) degree\(diag.dof == 1 ? "" : "s") of freedom" + extra)
+            }
+        } else if state.sketchConstraints.isEmpty {
+            TOStatus(color: .to_textFaint, text: "No constraints yet",
+                     hint: "pick a kind, then click geometry")
+        }
+    }
+
+    /// One-line operand summary for a constraint row ("1AF·end ↔ 1B0·start").
+    private func constraintOperandSummary(_ c: SketchConstraint) -> String {
+        var parts: [String] = []
+        parts.append(contentsOf: c.points.map { "\($0.handle)·\($0.role)" })
+        parts.append(contentsOf: c.entities)
+        var s = parts.joined(separator: " ↔ ")
+        if let v = c.value {
+            let unit = c.kind == "angle" ? "°" : " mm"
+            s += "  =  \(toNum(v, maxFrac: 2))\(unit)"
+        }
+        return s
+    }
+
+    private var constrainSection: some View {
+        let conflicted = Set(state.solveDiagnostics?.conflictingConstraints ?? [])
+        let pendingCount = state.pendingConstraintPoints.count + state.pendingConstraintEntities.count
+        return VStack(alignment: .leading, spacing: 14) {
+            TOToolTitle(icon: "link", title: "Constrain",
+                        help: "Pick a constraint kind, then click geometry on the canvas: endpoints/centers for point constraints, whole lines/circles for the rest. Under-constrained geometry stays draggable (the solver maintains relations); fully-constrained geometry locks and turns green. Ground pins a point or shape in place. Rectangles/polylines can't be constrained yet — explode them to lines first. Click a badge on canvas and press Delete to remove a constraint.",
+                        helpOpen: $toolHelpOpen)
+
+            constraintSolveStatus
+
+            // Kind picker grid.
+            VStack(alignment: .leading, spacing: 8) {
+                TOLabel("Constraint")
+                let kinds = ConstraintKind.allCases
+                let columns = [GridItem(.flexible(), spacing: 6),
+                               GridItem(.flexible(), spacing: 6),
+                               GridItem(.flexible(), spacing: 6)]
+                LazyVGrid(columns: columns, spacing: 6) {
+                    ForEach(kinds) { kind in
+                        TOChipCard(name: kind.displayName,
+                                   active: state.pendingConstraintKind == kind,
+                                   action: {
+                                       state.pendingConstraintKind = kind
+                                       state.pendingConstraintPoints = []
+                                       state.pendingConstraintEntities = []
+                                       if kind.needsValue { state.pendingConstraintValue = kind.defaultValue }
+                                   }) {
+                            Image(systemName: kind.icon)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(state.pendingConstraintKind == kind ? Color.to_accent : Color.to_textTer)
+                        }
+                    }
+                }
+            }
+
+            // Value for distance/angle.
+            if state.pendingConstraintKind.needsValue {
+                HStack(spacing: 10) {
+                    TOLabel(state.pendingConstraintKind == .angle ? "Angle" : "Distance")
+                    Spacer()
+                    TOStepper(value: $state.pendingConstraintValue,
+                              unit: state.pendingConstraintKind.valueUnit,
+                              step: state.pendingConstraintKind == .angle ? 5.0 : 1.0,
+                              range: state.pendingConstraintKind == .angle ? -360...360 : 0...100000)
+                }
+            }
+
+            // Picking progress.
+            TOHint(pendingCount == 0
+                   ? state.pendingConstraintKind.pickHint
+                   : "\(pendingCount) of \(state.pendingConstraintKind.pickCount) picked — \(state.pendingConstraintKind.pickHint)")
+
+            // Constraint list.
+            if !state.sketchConstraints.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    TOLabel("Constraints (\(state.sketchConstraints.count))")
+                    ForEach(state.sketchConstraints) { c in
+                        let isConflict = conflicted.contains(c.id)
+                        let isSelected = state.selectedConstraintId == c.id
+                        HStack(spacing: 8) {
+                            Image(systemName: ConstraintKind(rawValue: c.kind)?.icon ?? "questionmark")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(isConflict ? .to_warn : .to_accent)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(ConstraintKind(rawValue: c.kind)?.displayName ?? c.kind)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(isConflict ? Color.to_warn : Color.to_textPri)
+                                Text(constraintOperandSummary(c))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .monospacedDigit()
+                                    .foregroundColor(Color.to_textMut)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if isConflict {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.to_warn)
+                                    .help("This constraint conflicts with others")
+                            }
+                            Button { state.removeConstraint(id: c.id) } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Color.to_textMut)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove constraint")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8)
+                            .fill(isSelected ? Color.to_accentTint : Color.to_field))
+                        .overlay(RoundedRectangle(cornerRadius: 8)
+                            .stroke(isSelected ? Color.to_accent : (isConflict ? Color.to_warn.opacity(0.6) : Color.to_fieldBorder), lineWidth: 1))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            state.selectedConstraintId = (state.selectedConstraintId == c.id) ? nil : c.id
+                        }
+                    }
+                }
             }
         }
     }

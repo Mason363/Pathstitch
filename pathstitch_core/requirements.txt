@@ -2,3 +2,4 @@ ezdxf
 shapely
 svgwrite
 numpy
+scipy

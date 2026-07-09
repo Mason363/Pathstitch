@@ -48,6 +48,10 @@ def _get_operations(module):
         from pathstitch_core import manufacture_ops
         _MODULES[module] = manufacture_ops.OPERATIONS
         return _MODULES[module]
+    if module == "sketch_constraints":
+        from pathstitch_core import sketch_constraints
+        _MODULES[module] = sketch_constraints.OPERATIONS
+        return _MODULES[module]
     if module == "plugins":
         # User plugins (Phase 4): NOT cached, so a freshly dropped *.py is picked up
         # without restarting the worker. Built-in `list` + discovered user ops.

@@ -152,6 +152,8 @@ enum AppCommands {
               defaultCombo: KeyCombo(key: "f")) { $0.currentTool = .fillet },
         .init(id: "tool.chamfer", title: "Chamfer Tool", icon: "square", category: "Tools",
               defaultCombo: KeyCombo(key: "b")) { $0.currentTool = .chamfer },
+        .init(id: "tool.constrain", title: "Constrain Tool", icon: "link", category: "Tools",
+              defaultCombo: KeyCombo(key: "k")) { $0.currentTool = .constrain },
         .init(id: "tool.convertLines", title: "Convert Lines Tool", icon: "scribble", category: "Tools",
               defaultCombo: KeyCombo(key: "e")) { $0.currentTool = .convertLines },
         .init(id: "tool.mirror", title: "Mirror Tool", icon: "flip.horizontal", category: "Tools",

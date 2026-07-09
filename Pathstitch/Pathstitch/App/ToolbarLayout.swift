@@ -58,6 +58,7 @@ enum ToolbarRegistry {
         .init(id: "trim",         title: "Trim",          icon: "scissors.badge.ellipsis",                        shapesOrigin: false, kind: .tool(.trim),         zone: .modify),
         .init(id: "measure",      title: "Measure",       icon: "ruler",                                          shapesOrigin: false, kind: .tool(.measure),      zone: .precision),
         .init(id: "dimension",    title: "Dimension",     icon: "ruler.fill",                                     shapesOrigin: false, kind: .tool(.dimension),    zone: .precision),
+        .init(id: "constrain",    title: "Constrain",     icon: "link",                                           shapesOrigin: false, kind: .tool(.constrain),    zone: .precision),
         .init(id: "fillet",       title: "Fillet",        icon: "square",                                         shapesOrigin: false, kind: .tool(.fillet),       zone: .precision),
         .init(id: "chamfer",      title: "Chamfer",       icon: "square",                                         shapesOrigin: false, kind: .tool(.chamfer),      zone: .precision),
         .init(id: "patterning",   title: "Patterning",    icon: "square.grid.3x3",                                shapesOrigin: false, kind: .tool(.patterning),   zone: .creation),
@@ -89,7 +90,7 @@ enum ToolbarRegistry {
 
     static func def(_ id: String) -> ToolbarItemDef? { byId[id] }
 
-    static let defaultMain   = ["select", "move", "pan", "scale", "offset", "addThickness", "addHoles", "cleanup", "trim", "measure", "dimension", "fillet", "chamfer", "patterning", "paperFolding"]
+    static let defaultMain   = ["select", "move", "pan", "scale", "offset", "addThickness", "addHoles", "cleanup", "trim", "measure", "dimension", "constrain", "fillet", "chamfer", "patterning", "paperFolding"]
     static let defaultShapes = ["sketchLine", "sketchCircle", "sketchRectangle", "sketchPolygon", "sketchArc", "sketchConic", "sketchText", "pen", "templateInsert"]
     static let defaultExtra  = ["mirror", "convert", "boxStitch", "mandala", "boxJoint", "goldenGuide", "jigExport", "flipH", "flipV", "duplicate"]
 }
