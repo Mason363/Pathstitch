@@ -74,7 +74,7 @@ struct SolveDiagnostics: Codable, Equatable {
 /// drives the canvas picking state machine and the inspector.
 enum ConstraintKind: String, CaseIterable, Identifiable {
     case coincident, horizontal, vertical, parallel, perpendicular
-    case tangent, equal, distance, angle, ground
+    case tangent, equal, distance, angle, radius, ground
 
     var id: String { rawValue }
 
@@ -89,6 +89,7 @@ enum ConstraintKind: String, CaseIterable, Identifiable {
         case .equal: return "Equal"
         case .distance: return "Distance"
         case .angle: return "Angle"
+        case .radius: return "Radius"
         case .ground: return "Ground"
         }
     }
@@ -104,6 +105,7 @@ enum ConstraintKind: String, CaseIterable, Identifiable {
         case .equal: return "equal.circle"
         case .distance: return "arrow.left.and.right"
         case .angle: return "angle"
+        case .radius: return "circle.and.line.horizontal.fill"
         case .ground: return "pin.fill"
         }
     }
@@ -111,7 +113,7 @@ enum ConstraintKind: String, CaseIterable, Identifiable {
     /// How many picks (points or entities) complete this constraint.
     var pickCount: Int {
         switch self {
-        case .horizontal, .vertical, .ground: return 1
+        case .horizontal, .vertical, .ground, .radius: return 1
         default: return 2
         }
     }
@@ -125,7 +127,7 @@ enum ConstraintKind: String, CaseIterable, Identifiable {
         }
     }
 
-    var needsValue: Bool { self == .distance || self == .angle }
+    var needsValue: Bool { self == .distance || self == .angle || self == .radius }
 
     var valueUnit: String { self == .angle ? "°" : "mm" }
 
@@ -143,6 +145,7 @@ enum ConstraintKind: String, CaseIterable, Identifiable {
         case .equal: return "Click two lines or two circles/arcs"
         case .distance: return "Click two points, or a point and a line"
         case .angle: return "Click two lines"
+        case .radius: return "Click a circle or arc"
         case .ground: return "Click a point or an entity to pin it"
         }
     }

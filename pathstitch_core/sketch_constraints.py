@@ -41,14 +41,14 @@ from scipy.optimize import least_squares
 SOLVABLE_TYPES = ("LINE", "CIRCLE", "ARC")
 CONVERGE_TOL = 1e-6          # mm; residual infinity-norm for "constraints hold"
 REG_WEIGHT = 1e-2            # sqrt(lambda), lambda = 1e-4
-DRAG_WEIGHT = 0.3            # below constraint weight (1.0) so constraints win
+DRAG_WEIGHT = 3.0            # cursor adherence; stage-B polish re-imposes constraints exactly
 MAX_NFEV = 200               # per solve stage
 NULLSPACE_TOL = 1e-6         # nullspace component below this = param determined
 MIN_RADIUS = 1e-9
 
 CONSTRAINT_KINDS = (
     "coincident", "horizontal", "vertical", "parallel", "perpendicular",
-    "tangent", "equal", "distance", "angle", "ground",
+    "tangent", "equal", "distance", "angle", "radius", "ground",
 )
 
 
@@ -341,6 +341,26 @@ def _compile(table: ParamTable, constraints: List[Dict[str, Any]]):
                     return np.array([cross / L - s * d])
             else:
                 fail(c, "needs 2 points, or 1 point + 1 line")
+            add(c, f, 1)
+
+        elif kind == "radius":
+            if c.get("value") is None:
+                fail(c, "needs a value (mm)")
+            r_target = float(c["value"])
+            if r_target <= 0:
+                fail(c, "radius must be positive")
+            hs = c.get("entities") or []
+            if len(hs) != 1:
+                fail(c, "needs 1 circle or arc")
+            ri = None
+            m = table.by_handle.get(hs[0])
+            if m is None:
+                fail(c, f"unknown entity {hs[0]}")
+            ri = table.radius_index(hs[0])
+            if ri is None:
+                fail(c, f"entity {hs[0]} must be a circle or arc")
+            def f(x, ri=ri, r_target=r_target):
+                return np.array([x[ri] - r_target])
             add(c, f, 1)
 
         elif kind == "angle":
@@ -808,19 +828,19 @@ class SketchSession:
         self.session_id = uuid.uuid4().hex
 
 
-_SESSION: Optional[SketchSession] = None
+# Sessions keyed by id so windows sharing the one worker never clobber each
+# other (each window's AppState runs its own drag session). Bounded: stale
+# sessions (abandoned by a crashed window) are evicted oldest-first.
+_SESSIONS: Dict[str, SketchSession] = {}
+_MAX_SESSIONS = 4
 
 
 def _get_session(args: Dict[str, Any]) -> Optional[SketchSession]:
-    sid = args.get("session_id")
-    if _SESSION is not None and sid == _SESSION.session_id:
-        return _SESSION
-    return None
+    return _SESSIONS.get(args.get("session_id"))
 
 
 def op_session_open(args: Dict[str, Any]) -> Dict[str, Any]:
     """Opens a sketch session: in-memory doc + constraint system, no writes."""
-    global _SESSION
     input_path = args.get("input")
     constraints = args.get("constraints", [])
     if not input_path:
@@ -835,7 +855,9 @@ def op_session_open(args: Dict[str, Any]) -> Dict[str, Any]:
         res = _solve_system(sess.table, constraints, do_solve=False)
     except ConstraintError as e:
         return {"status": "error", "message": str(e)}
-    _SESSION = sess
+    while len(_SESSIONS) >= _MAX_SESSIONS:
+        _SESSIONS.pop(next(iter(_SESSIONS)))
+    _SESSIONS[sess.session_id] = sess
     return {"status": "ok", "data": {
         "session_id": sess.session_id,
         "diagnostics": res["diagnostics"],
@@ -909,7 +931,6 @@ def _diag_at(sess: SketchSession, x: np.ndarray) -> Dict[str, Any]:
 
 def op_session_commit(args: Dict[str, Any]) -> Dict[str, Any]:
     """Final polish solve, NaN guard, write the file, close the session."""
-    global _SESSION
     sess = _get_session(args)
     if sess is None:
         return {"status": "error", "message": "No matching sketch session (worker restarted?)."}
@@ -921,7 +942,7 @@ def op_session_commit(args: Dict[str, Any]) -> Dict[str, Any]:
         res = _solve_system(sess.table, sess.constraints, time_cap_ms=250.0,
                             x_start=sess.x_last_valid)
     except ConstraintError as e:
-        _SESSION = None
+        _SESSIONS.pop(sess.session_id, None)
         return {"status": "error", "message": str(e)}
 
     x = res["x"] if not res["reverted"] else sess.x_last_valid
@@ -931,12 +952,12 @@ def op_session_commit(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sess.doc.saveas(output_path)
     except Exception as e:
-        _SESSION = None
+        _SESSIONS.pop(sess.session_id, None)
         return {"status": "error", "message": f"Failed to write DXF: {e}"}
 
     diag = res["diagnostics"]
     entities = [sess.table.entity_json(x, m["handle"]) for m in sess.table.meta]
-    _SESSION = None
+    _SESSIONS.pop(sess.session_id, None)
     return {"status": "ok", "data": {
         "entities": entities,
         "diagnostics": diag,
@@ -946,10 +967,7 @@ def op_session_commit(args: Dict[str, Any]) -> Dict[str, Any]:
 
 def op_session_abort(args: Dict[str, Any]) -> Dict[str, Any]:
     """Closes the session without writing anything. Idempotent."""
-    global _SESSION
-    sess = _get_session(args)
-    if sess is not None:
-        _SESSION = None
+    _SESSIONS.pop(args.get("session_id") or "", None)
     return {"status": "ok", "data": {}}
 
 

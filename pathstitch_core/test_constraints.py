@@ -850,6 +850,30 @@ def test_insert_component():
     print("  insert_component ok (remapped, offset, consistent)")
 
 
+def test_radius_constraint():
+    """Fusion-parity radius dimension: drives a circle/arc radius directly."""
+    doc, msp = _new_doc()
+    ci = msp.add_circle((5, 5), 4.0).dxf.handle
+    ln = msp.add_line((0, 0), (20, 0)).dxf.handle
+    src = _save(doc, "radius_in.dxf")
+    out = os.path.join(TMP, "radius_out.dxf")
+    cons = [
+        _c("ground", entities=[ln], cid="g"),
+        _c("tangent", entities=[ln, ci], cid="t"),
+        _c("radius", entities=[ci], value=7.5, cid="r"),
+    ]
+    res = _solve_inproc(src, out, cons)
+    d = res["data"]["diagnostics"]
+    assert d["converged"], d
+    c = _entity_map(out)[ci]
+    assert abs(c["radius"] - 7.5) < 1e-6
+    assert abs(c["center"][1] - 7.5) < 1e-5  # tangency held while radius drove
+    # invalid: radius on a line → structured error
+    res = _solve_inproc(src, out, [_c("radius", entities=[ln], value=5.0, cid="bad")])
+    assert res["status"] == "error"
+    print("  radius constraint (drives radius, keeps tangency, validates) ok")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -876,6 +900,7 @@ def run_all():
         test_component_restricted_drag,
         test_solve_sketch_api,
         test_insert_component,
+        test_radius_constraint,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")

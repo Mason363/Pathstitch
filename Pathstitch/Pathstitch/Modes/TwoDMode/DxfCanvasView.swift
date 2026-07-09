@@ -225,6 +225,13 @@ struct DxfCanvasView: View {
                         hoveredFilletCorner = corner
                     }
                     if let coords = newCoords {
+                        // Hovering a constraint badge highlights its operands.
+                        if !state.sketchConstraints.isEmpty {
+                            let gid = constraintGlyphHit(at: mouseLocation, size: geo.size, modelBounds: modelBounds)
+                            if state.hoveredConstraintId != gid { state.hoveredConstraintId = gid }
+                        } else if state.hoveredConstraintId != nil {
+                            state.hoveredConstraintId = nil
+                        }
                         if let nearest = findNearestEntity(modelPt: coords, maxDistanceScreen: 12.0, size: geo.size, bounds: modelBounds) {
                             state.hoveredHandle = nearest.handle
                             // Add Holes (per-edge): remember the edge under the cursor so
@@ -1607,6 +1614,7 @@ struct DxfCanvasView: View {
 
     /// The constraint whose badge is under the cursor, if any.
     private func constraintGlyphHit(at screenPt: CGPoint, size: CGSize, modelBounds: CGRect) -> String? {
+        guard state.showConstraintGlyphs else { return nil }
         for (c, rect) in constraintGlyphLayout(size: size, modelBounds: modelBounds) {
             if rect.insetBy(dx: -2, dy: -2).contains(screenPt) { return c.id }
         }
@@ -1618,6 +1626,32 @@ struct DxfCanvasView: View {
     private func drawConstraintOverlay(context: inout GraphicsContext, size: CGSize, modelBounds: CGRect) {
         let conflicted = Set(state.solveDiagnostics?.conflictingConstraints ?? [])
 
+        // Hover/selection highlight: light up the operand geometry of the
+        // focused constraint (Fusion behavior) so every badge is explainable.
+        let focusId = state.hoveredConstraintId ?? state.selectedConstraintId
+        if let focus = state.sketchConstraints.first(where: { $0.id == focusId }) {
+            for p in focus.points {
+                if let ent = state.entities.first(where: { $0.handle == p.handle }),
+                   let m = namedPoint(ent, role: p.role) {
+                    let s = toScreen(dx: Double(m.x), dy: Double(m.y), size: size, bounds: modelBounds)
+                    var ring = SwiftUI.Path()
+                    ring.addEllipse(in: CGRect(x: s.x - 7, y: s.y - 7, width: 14, height: 14))
+                    context.stroke(ring, with: .color(.accent), lineWidth: 2.0)
+                }
+            }
+            for h in focus.entities {
+                if let ent = state.entities.first(where: { $0.handle == h }) {
+                    drawEntity(ent, baseColor: .accent, strokeColor: .accent,
+                               strokeWidth: 2.4, size: size, modelBounds: modelBounds,
+                               context: &context)
+                }
+            }
+        }
+
+        guard state.showConstraintGlyphs else {
+            drawConstraintOverlayExtras(context: &context, size: size, modelBounds: modelBounds)
+            return
+        }
         for (c, rect) in constraintGlyphLayout(size: size, modelBounds: modelBounds) {
             let isSelected = state.selectedConstraintId == c.id
             let isConflict = conflicted.contains(c.id)
@@ -1635,6 +1669,12 @@ struct DxfCanvasView: View {
             )
         }
 
+        drawConstraintOverlayExtras(context: &context, size: size, modelBounds: modelBounds)
+    }
+
+    /// Pending-pick markers + grounded-origin hint (drawn even when badges
+    /// are hidden via Show Constraints).
+    private func drawConstraintOverlayExtras(context: inout GraphicsContext, size: CGSize, modelBounds: CGRect) {
         // Pending pick markers: accent rings on picked points, accent dots on
         // picked entities' anchors, so partial selections are visible.
         for p in state.pendingConstraintPoints {
@@ -1797,6 +1837,14 @@ struct DxfCanvasView: View {
                 state.pendingConstraintEntities = [e.handle]
                 commitPendingConstraint()
             }
+
+        case .radius:
+            guard let e = entityPick, ["CIRCLE", "ARC"].contains(e.type) else {
+                if entityPick != nil { state.errorMessage = "Radius needs a circle or an arc." }
+                return
+            }
+            state.pendingConstraintEntities = [e.handle]
+            commitPendingConstraint()
 
         case .ground:
             if let p = pointPick {
@@ -5919,6 +5967,9 @@ struct DxfCanvasView: View {
                                 expression: String(format: "%g", value),
                                 driven: false, isParametric: true, offsetDistance: offModel)
         state.measurements.append(m)
+        // Fusion parity: the dimension IS a driving constraint on solvable
+        // geometry (line length / circle-arc radius).
+        state.attachDimensionConstraint(measureId: m.id)
         state.selectedMeasurement = m
         editingDimension = m
         editingDimensionText = String(format: "%.2f", value)

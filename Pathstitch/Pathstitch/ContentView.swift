@@ -3675,6 +3675,9 @@ extension ContentView {
                                        state.pendingConstraintPoints = []
                                        state.pendingConstraintEntities = []
                                        if kind.needsValue { state.pendingConstraintValue = kind.defaultValue }
+                                       // Selection-first (Fusion): a selection
+                                       // matching the signature applies now.
+                                       state.applyArmedKindToSelection()
                                    }) {
                             Image(systemName: kind.icon)
                                 .font(.system(size: 15, weight: .semibold))
@@ -3726,6 +3729,9 @@ extension ContentView {
             // coincident/horizontal/vertical/tangent constraints on commit.
             TOCheck(label: "Infer constraints while sketching",
                     isOn: $state.constraintInferenceEnabled)
+            // Fusion's "Show Constraints": declutter the canvas badges.
+            TOCheck(label: "Show constraint badges",
+                    isOn: $state.showConstraintGlyphs)
 
             // Infer-on-import (Phase 6): one pass over the whole sketch (or
             // the selection) turns inert imported geometry into an editable,
@@ -3796,14 +3802,33 @@ extension ContentView {
                         .onTapGesture {
                             state.selectedConstraintId = (state.selectedConstraintId == c.id) ? nil : c.id
                         }
+                        .onHover { inside in
+                            // Fusion: hovering a constraint highlights its
+                            // operand geometry on canvas.
+                            if inside { state.hoveredConstraintId = c.id }
+                            else if state.hoveredConstraintId == c.id { state.hoveredConstraintId = nil }
+                        }
                     }
 
                     // Edit the selected distance/angle in place: a number or a
                     // formula ("strap_width/2 + 5") — commit re-solves.
                     if let sel = state.sketchConstraints.first(where: { $0.id == state.selectedConstraintId }),
-                       ConstraintKind(rawValue: sel.kind)?.needsValue == true {
-                        VStack(alignment: .leading, spacing: 4) {
-                            TOLabel("Edit \(ConstraintKind(rawValue: sel.kind)?.displayName.lowercased() ?? "value")")
+                       let selKind = ConstraintKind(rawValue: sel.kind), selKind.needsValue {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 10) {
+                                TOLabel("Edit \(selKind.displayName.lowercased())")
+                                Spacer()
+                                TOStepper(value: Binding(
+                                    get: { sel.value ?? 0 },
+                                    set: { newValue in
+                                        constraintEditError = state.setConstraintExpression(
+                                            id: sel.id, rawExpression: toNum(newValue, maxFrac: 2))
+                                        constraintEditText = toNum(newValue, maxFrac: 2)
+                                    }),
+                                          unit: selKind.valueUnit,
+                                          step: selKind == .angle ? 5.0 : 1.0,
+                                          range: selKind == .angle ? -360...360 : 0...100000)
+                            }
                             toTextField("value or formula", text: $constraintEditText) {
                                 constraintEditError = state.setConstraintExpression(
                                     id: sel.id, rawExpression: constraintEditText)

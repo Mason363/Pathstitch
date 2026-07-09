@@ -197,6 +197,9 @@ struct MeasurementLine: Identifiable, Codable, Hashable {
     /// Perpendicular offset (mm) of the dimension line from the geometry, so a
     /// placed dimension sits clear of the part with extension lines (MAS-110 §2).
     var offsetDistance: Double = 0.0
+    /// The driving solver constraint behind this dimension (Fusion parity:
+    /// a sketch dimension IS a constraint). nil = reference/legacy dimension.
+    var constraintId: String? = nil
 
     init(
         id: UUID = UUID(),
@@ -1522,6 +1525,13 @@ class AppState {
     var solveDiagnostics: SolveDiagnostics? = nil
     /// The constraint glyph currently selected on canvas (Delete removes it).
     var selectedConstraintId: String? = nil
+    /// Hovered constraint (list row or glyph): its operand geometry highlights.
+    var hoveredConstraintId: String? = nil
+    /// Fusion's "Show Constraints": hide the on-canvas badges without losing
+    /// the constraints. Persisted app-wide.
+    var showConstraintGlyphs: Bool = UserDefaults.standard.object(forKey: "showConstraintGlyphs") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showConstraintGlyphs, forKey: "showConstraintGlyphs") }
+    }
     /// The constraint kind armed in the Constrain tool's inspector.
     var pendingConstraintKind: ConstraintKind = .coincident
     /// Operands picked so far for the pending constraint (points and/or entities).
@@ -1701,6 +1711,8 @@ class AppState {
                     }
                     self.currentFilePath = activeDxfURL
                     self.reloadDXF()
+                    // In-place mutation: constraints/live offsets must follow.
+                    self.reconcileDerivedGeometry(after: self.selectedHandles)
                     self.selectedHandles = Set(workingHandles)
                     // Scale the attached editable models about the same pivot so
                     // the shape stays editable at its new size and its dimension
@@ -3290,9 +3302,17 @@ class AppState {
         measurements[idx].expression = raw
         measurements[idx].isParametric = true
 
-        // Drive the geometry to the evaluated value through the existing resize path.
-        selectedMeasurement = measurements[idx]
-        updateSelectedDimensionValue(newValue: value)
+        if let cid = measurements[idx].constraintId,
+           sketchConstraints.contains(where: { $0.id == cid }) {
+            // Fusion parity: the dimension IS a constraint — drive geometry
+            // through the solver so every relation holds, not a raw resize.
+            measurements[idx].distanceMm = value
+            _ = setConstraintExpression(id: cid, rawExpression: raw)
+        } else {
+            // Drive the geometry to the evaluated value through the existing resize path.
+            selectedMeasurement = measurements[idx]
+            updateSelectedDimensionValue(newValue: value)
+        }
 
         // Re-evaluate dependents and refresh their labels (associativity, MAS-110 §3).
         repropagateDimensions()
@@ -3431,8 +3451,8 @@ class AppState {
         catch let e as DimensionError { return e.errorDescription }
         catch { return "\(error)" }
         if !value.isFinite { return "Not a finite value." }
-        if sketchConstraints[idx].kind == "distance" && value <= 0 {
-            return "Distance must be positive."
+        if ["distance", "radius"].contains(sketchConstraints[idx].kind) && value <= 0 {
+            return "Value must be positive."
         }
         saveToHistory()
         var updated = sketchConstraints
@@ -3440,6 +3460,98 @@ class AppState {
         updated[idx].value = value
         runSketchSolve(constraints: updated)
         return nil
+    }
+
+    /// One reconciliation for ANY geometry mutation: re-impose constraints if
+    /// the edit touched constrained entities, then regenerate live offsets.
+    /// Every mutator (translate/rotate/scale/reflect/fillet/vertex) funnels
+    /// through here so no edit path silently desyncs derived geometry.
+    func reconcileDerivedGeometry(after handles: Set<String>) {
+        if handles.contains(where: { isConstraintReferenced($0) }) {
+            reimposeConstraints()
+        }
+        regenerateOffsetLinks(touching: handles)
+    }
+
+    /// Fusion parity: a placed sketch dimension IS a driving constraint.
+    /// Attaches the solver constraint behind a just-placed dimension (line
+    /// length → distance, circle/arc → radius). Returns false when the
+    /// dimension's geometry isn't solvable (it stays a display-only label).
+    @discardableResult
+    func attachDimensionConstraint(measureId: UUID) -> Bool {
+        guard let idx = measurements.firstIndex(where: { $0.id == measureId }) else { return false }
+        let m = measurements[idx]
+        guard let h = m.entityHandle,
+              let ent = entities.first(where: { $0.handle == h }),
+              SketchSolvable.isSolvable(ent) else { return false }
+        var c: SketchConstraint
+        if m.dimensionType == "length" && ent.type == "LINE" {
+            c = SketchConstraint(kind: "distance",
+                                 points: [PointRef(handle: h, role: "start"),
+                                          PointRef(handle: h, role: "end")],
+                                 value: m.distanceMm)
+        } else if m.dimensionType == "radius" && (ent.type == "CIRCLE" || ent.type == "ARC") {
+            c = SketchConstraint(kind: "radius", entities: [h], value: m.distanceMm)
+        } else {
+            return false
+        }
+        if let expr = m.expression, Double(expr) == nil { c.expression = expr }
+        measurements[idx].constraintId = c.id
+        // No extra history entry: the dimension placement already made one.
+        runSketchSolve(constraints: sketchConstraints + [c], rejectIfConflicting: c)
+        return true
+    }
+
+    /// Selection-first constraining (Fusion): if the current selection already
+    /// satisfies the armed kind's signature, apply immediately — no re-picking.
+    func applyArmedKindToSelection() {
+        let kind = pendingConstraintKind
+        let sel = entities.filter { selectedHandles.contains($0.handle) && SketchSolvable.isSolvable($0) }
+        guard !sel.isEmpty else { return }
+        let curved: Set<String> = ["CIRCLE", "ARC"]
+
+        func batch(_ make: (DXFEntity) -> SketchConstraint?, from pool: [DXFEntity]) {
+            let new = pool.compactMap(make)
+            guard !new.isEmpty else { return }
+            saveToHistory()
+            runSketchSolve(constraints: sketchConstraints + new)
+        }
+
+        switch kind {
+        case .horizontal, .vertical:
+            batch({ ent in
+                guard ent.type == "LINE" else { return nil }
+                var c = SketchConstraint(kind: kind.rawValue); c.entities = [ent.handle]; return c
+            }, from: sel)
+        case .radius:
+            let value = pendingConstraintValue
+            batch({ ent in
+                guard curved.contains(ent.type) else { return nil }
+                var c = SketchConstraint(kind: kind.rawValue)
+                c.entities = [ent.handle]; c.value = value
+                c.expression = self.pendingConstraintExpression
+                return c
+            }, from: sel)
+        case .parallel, .perpendicular, .angle:
+            let lines = sel.filter { $0.type == "LINE" }
+            guard lines.count == 2, sel.count == 2 else { return }
+            var c = SketchConstraint(kind: kind.rawValue)
+            c.entities = lines.map { $0.handle }
+            if kind.needsValue { c.value = pendingConstraintValue; c.expression = pendingConstraintExpression }
+            addConstraint(c)
+        case .equal, .tangent:
+            guard sel.count == 2 else { return }
+            let types = sel.map { $0.type }
+            let valid = kind == .equal
+                ? (types == ["LINE", "LINE"] || types.allSatisfy { curved.contains($0) })
+                : !(types == ["LINE", "LINE"]) && types.contains(where: { curved.contains($0) || $0 == "LINE" })
+            guard valid else { return }
+            var c = SketchConstraint(kind: kind.rawValue)
+            c.entities = sel.map { $0.handle }
+            addConstraint(c)
+        case .coincident, .distance, .ground:
+            return // point-level picks stay click-driven
+        }
     }
 
     /// Re-evaluates every constraint formula against the parameter table and
@@ -3470,6 +3582,16 @@ class AppState {
               let v = measurements[idx].varName else { return }
         measurements[idx].driven = driven
         try? dimensionEngine.setExpression(v, measurements[idx].expression ?? String(format: "%g", measurements[idx].distanceMm), driven: driven)
+        // Fusion parity: a driven (reference) dimension stops constraining;
+        // toggling back to driving re-attaches its solver constraint.
+        if driven {
+            if let cid = measurements[idx].constraintId {
+                measurements[idx].constraintId = nil
+                removeConstraint(id: cid)
+            }
+        } else if measurements[idx].constraintId == nil {
+            attachDimensionConstraint(measureId: measureId)
+        }
     }
 
     init() {
@@ -4860,6 +4982,11 @@ class AppState {
     /// like fillet/boolean, and deletes remove them outright. Runs after every
     /// `reloadDXF`. Notifies via the floating banner when anything was dropped.
     func pruneDanglingConstraints() {
+        // Editing a batch item loads a DIFFERENT document into the shared
+        // buffer; pruning against its handles would wipe the project's
+        // constraint model. Leave the model untouched until the project's
+        // own geometry is back.
+        guard activeEditingBatchItem == nil else { return }
         guard !sketchConstraints.isEmpty else {
             if solveDiagnostics != nil { solveDiagnostics = nil }
             return
@@ -4882,7 +5009,8 @@ class AppState {
     /// valid configuration — the solver never writes a diverged state.
     func addConstraint(_ constraint: SketchConstraint) {
         saveToHistory()
-        runSketchSolve(constraints: sketchConstraints + [constraint])
+        runSketchSolve(constraints: sketchConstraints + [constraint],
+                       rejectIfConflicting: constraint)
     }
 
     func removeConstraint(id: String) {
@@ -4896,7 +5024,8 @@ class AppState {
 
     /// Runs the stateless `sketch_solve` op and applies the response: enriched
     /// constraints (branch capture), patched entities, fresh diagnostics.
-    private func runSketchSolve(constraints: [SketchConstraint]) {
+    private func runSketchSolve(constraints: [SketchConstraint],
+                                rejectIfConflicting: SketchConstraint? = nil) {
         let payload = constraints.map { $0.asDictionary }
         Task {
             await reconcileBufferIfNeeded()
@@ -4916,6 +5045,20 @@ class AppState {
                 let data = res["data"] as? [String: Any] ?? [:]
                 await MainActor.run {
                     self.currentFilePath = activeDxfURL
+                    let diag = Self.decodeDiagnostics(data["diagnostics"])
+                    // Fusion behavior: a NEW constraint that makes the sketch
+                    // unsolvable is refused outright, never left in conflict.
+                    if let newC = rejectIfConflicting, let d = diag, !d.converged {
+                        let kindName = ConstraintKind(rawValue: newC.kind)?.displayName ?? newC.kind
+                        self.errorMessage = "Can't apply \(kindName) — it conflicts with the existing constraints."
+                        for i in self.measurements.indices
+                        where self.measurements[i].constraintId == newC.id {
+                            self.measurements[i].constraintId = nil
+                            self.measurements[i].driven = true
+                        }
+                        self.refreshDiagnostics()
+                        return
+                    }
                     if let enriched = Self.decodeConstraints(data["constraints"]) {
                         self.sketchConstraints = enriched
                     } else {
@@ -4928,9 +5071,9 @@ class AppState {
                         let moved = Set(ents.compactMap { $0["handle"] as? String })
                         self.regenerateOffsetLinks(touching: moved)
                     }
-                    if let diag = Self.decodeDiagnostics(data["diagnostics"]) {
-                        self.solveDiagnostics = diag
-                        if !diag.converged {
+                    if let d = diag {
+                        self.solveDiagnostics = d
+                        if !d.converged {
                             self.errorMessage = "Constraints conflict — geometry kept at the last valid state."
                         }
                     }
@@ -5069,13 +5212,20 @@ class AppState {
         guard isSolverDragActive else { return }
         Task {
             await constraintDragOpenTask?.value  // never commit a half-open session
-            let pre = constraintDragPreDXF
+            var pre = constraintDragPreDXF
             constraintDragPreDXF = nil
+            if pre == nil, let url = self.currentFilePath {
+                // The open-time read failed (transient I/O): the session still
+                // hasn't written, so a commit-time read is equally pre-drag.
+                pre = try? Data(contentsOf: url)
+            }
             let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
             do {
                 let (ents, diag) = try await sketchSession.commit(output: activeDxfURL)
                 await MainActor.run {
-                    self.pushHistorySnapshot(dxfData: pre)
+                    // A nil snapshot would make undo BLANK the document —
+                    // skip the entry entirely rather than desync.
+                    if pre != nil { self.pushHistorySnapshot(dxfData: pre) }
                     self.currentFilePath = activeDxfURL
                     self.applyEntityPatchDecoded(ents)
                     if let diag { self.solveDiagnostics = diag }
@@ -5283,8 +5433,9 @@ class AppState {
         let compMinX = compEnts.flatMap { xs($0) }.min() ?? 0
         var sketchMaxX = 0.0
         for e in entities {
-            for v in [e.start, e.end, e.center] where v != nil {
-                sketchMaxX = max(sketchMaxX, v![0] + (e.radius ?? 0))
+            for v in [e.start, e.end, e.center] {
+                guard let v, v.count >= 2 else { continue }
+                sketchMaxX = max(sketchMaxX, v[0] + (e.radius ?? 0))
             }
             for v in e.vertices ?? [] where v.count >= 2 { sketchMaxX = max(sketchMaxX, v[0]) }
         }
@@ -5340,6 +5491,7 @@ class AppState {
     /// whose sources or derived geometry are entirely gone is removed (the
     /// user deleted one side); partial losses just shrink the link.
     func pruneOffsetLinks() {
+        guard activeEditingBatchItem == nil else { return }
         guard !offsetLinks.isEmpty else { return }
         let live = Set(entities.map { $0.handle })
         var kept: [OffsetLink] = []
@@ -5469,6 +5621,21 @@ class AppState {
                 np.layerId = entities[idx].layerId
                 entities[idx] = np
             }
+            // Fusion parity: dimension graphics ride along with solver-moved
+            // geometry instead of going stale until the next reload.
+            for i in measurements.indices where measurements[i].entityHandle == p.handle {
+                if let s = p.start, let e = p.end, s.count >= 2, e.count >= 2,
+                   measurements[i].dimensionType == "length" {
+                    measurements[i].start = CGPoint(x: s[0], y: s[1])
+                    measurements[i].end = CGPoint(x: e[0], y: e[1])
+                    measurements[i].distanceMm = Double(hypot(s[0] - e[0], s[1] - e[1]))
+                } else if let c = p.center, c.count >= 2, let r = p.radius,
+                          measurements[i].dimensionType == "radius" {
+                    measurements[i].start = CGPoint(x: c[0], y: c[1])
+                    measurements[i].end = CGPoint(x: c[0] + r, y: c[1])
+                    measurements[i].distanceMm = r
+                }
+            }
         }
     }
 
@@ -5594,7 +5761,7 @@ class AppState {
         if ent.type == "LINE" {
             inferConstraints(for: [handle])
         }
-        regenerateOffsetLinks(touching: [handle])
+        reconcileDerivedGeometry(after: [handle])
     }
 
     /// Updates a re-edited pen path's entity to a new flattened point list and
@@ -6093,6 +6260,9 @@ class AppState {
                     }
                     self.currentFilePath = activeDxfURL
                     self.reloadDXF(fitToContentAfter: fitAfter)
+                    // Fillet/chamfer edits the same handle in place:
+                    // constraints and live offsets must follow.
+                    self.reconcileDerivedGeometry(after: [handle])
                 }
             } catch {
                 await MainActor.run {
@@ -6465,9 +6635,13 @@ class AppState {
     /// near-closed loops, and cross-entity gaps are caught BEFORE they reach
     /// the DXF/SVG writer. Clean geometry exports straight through.
     func exportFile(to url: URL, options: ExportOptions) {
+        isProcessing = true
         Task {
             await reconcileBufferIfNeeded()
-            guard let input = await MainActor.run(body: { self.currentFilePath }) else { return }
+            guard let input = await MainActor.run(body: { self.currentFilePath }) else {
+                await MainActor.run { self.isProcessing = false }
+                return
+            }
             let exclude = await MainActor.run { self.constructionLayerNames }
             if let res = try? await PythonBridge.shared.run(
                 module: "dxf_ops",
@@ -6477,6 +6651,7 @@ class AppState {
                let data = res["data"] as? [String: Any],
                let issues = data["issues"] as? [[String: Any]], !issues.isEmpty {
                 await MainActor.run {
+                    self.isProcessing = false
                     self.exportValidationPrompt = ExportValidationPrompt(
                         url: url,
                         options: options,
@@ -9346,12 +9521,8 @@ class AppState {
         }
 
         // A raw translate of constraint-referenced geometry can break its
-        // relations — re-solve to snap everything back onto the constraint set
-        // (runs after the buffer write; no extra history entry).
-        if selectedHandlesSnapshot.contains(where: { isConstraintReferenced($0) }) {
-            reimposeConstraints()
-        }
-        regenerateOffsetLinks(touching: selectedHandlesSnapshot)
+        // relations; live offsets must follow (runs after the buffer write).
+        reconcileDerivedGeometry(after: selectedHandlesSnapshot)
     }
 
     func rotateSelected(angleDegrees: Double, center: [Double]) {
@@ -9451,12 +9622,8 @@ class AppState {
             }
         }
 
-        // See translateSelected: re-impose constraints after a raw rotate of
-        // constraint-referenced geometry.
-        if selectedHandlesSnapshot.contains(where: { isConstraintReferenced($0) }) {
-            reimposeConstraints()
-        }
-        regenerateOffsetLinks(touching: selectedHandlesSnapshot)
+        // See translateSelected.
+        reconcileDerivedGeometry(after: selectedHandlesSnapshot)
     }
 
     /// Flips the selected entities in place about their own bounding-box
@@ -9494,6 +9661,8 @@ class AppState {
                     }
                     self.currentFilePath = activeDxfURL
                     self.reloadDXF()
+                    // In-place mutation: constraints/live offsets must follow.
+                    self.reconcileDerivedGeometry(after: self.selectedHandles)
                     if let c = reflectCenter {
                         self.transformAttachedModels(handles: Set(handlesSnapshot)) { p in
                             axis == "horizontal"
@@ -10189,21 +10358,28 @@ class AppState {
 
         pendingDeletedHandles.formUnion(removed)
         // Deletes are optimistic (no reloadDXF), so prune dangling constraints
-        // here — the reload hook won't fire.
+        // AND offset links here — the reload hook won't fire, and a surviving
+        // link would resurrect a deleted offset on the next regen.
         pruneDanglingConstraints()
+        pruneOffsetLinks()
         Task { await reconcileBufferIfNeeded() }
     }
 
     func deleteEntity(handle: String) {
         saveToHistory()
-        entities.removeAll { $0.handle == handle }
-        previewEntities.removeAll { $0.handle == handle }
-        measurements.removeAll { $0.entityHandle == handle }
-        selectedHandles.remove(handle)
+        var removed: Set<String> = [handle]
+        for link in offsetLinks where Set(link.sources).isSubset(of: removed) {
+            removed.formUnion(link.derived)
+        }
+        entities.removeAll { removed.contains($0.handle) }
+        previewEntities.removeAll { removed.contains($0.handle) }
+        measurements.removeAll { m in m.entityHandle.map { removed.contains($0) } ?? false }
+        selectedHandles.subtract(removed)
         recomputeLayersFromEntities()
         hasUnsavedChanges = true
-        pendingDeletedHandles.insert(handle)
+        pendingDeletedHandles.formUnion(removed)
         pruneDanglingConstraints()
+        pruneOffsetLinks()
         Task { await reconcileBufferIfNeeded() }
     }
 
@@ -10413,6 +10589,10 @@ class AppState {
         hasUnsavedChanges = true
         logAction("DELETE LAYER", details: "Deleted layer \(layerName) and \(removedHandles.count) associated entities")
 
+        // Optimistic removal (no reloadDXF): the constraint/offset models must
+        // prune here or dangling references persist into history and .stch.
+        pruneDanglingConstraints()
+        pruneOffsetLinks()
         Task { await reconcileBufferIfNeeded() }
     }
 
@@ -10600,7 +10780,13 @@ class AppState {
     var layerColorExportMap: [String: String] {
         var map: [String: String] = [:]
         for layer in layers where !layer.isReferenceImageLayer {
-            map[layer.name] = "#" + layer.colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            let current = layer.colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#")).lowercased()
+            // Only user-recolored layers override the export; untouched layers
+            // keep the source DXF's own (possibly per-entity) colors.
+            let defaultHex = NSColor(colorForLayerName(layer.name)).toHexString().lowercased()
+            if current != defaultHex {
+                map[layer.name] = "#" + current
+            }
         }
         return map
     }

@@ -6654,8 +6654,10 @@ def op_validate_geometry(args: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 open_ends.append((s.x, s.y, h))
                 open_ends.append((e.x, e.y, h))
-                key = "L:" + ",".join(f"{v:.6f}" for v in
-                                      sorted([s.x, s.y, e.x, e.y]) + [s.x + e.x, s.y + e.y])
+                # Endpoints as SORTED PAIRS: direction-insensitive without
+                # colliding distinct crossing lines that share a bbox+centroid.
+                p1, p2 = sorted([(s.x, s.y), (e.x, e.y)])
+                key = f"L:{p1[0]:.6f},{p1[1]:.6f},{p2[0]:.6f},{p2[1]:.6f}"
                 dup_check(h, key)
             elif t == "CIRCLE":
                 if ent.dxf.radius < tiny:
@@ -6712,7 +6714,11 @@ def op_validate_geometry(args: Dict[str, Any]) -> Dict[str, Any]:
         counts[k] = counts.get(k, 0) + 1
     dangling = [(x, y, h) for (x, y, h) in open_ends
                 if counts[(round(x * 1e6), round(y * 1e6))] == 1]
-    if len(dangling) <= 400:
+    if len(dangling) > 400:
+        issue("open_loop", [],
+              f"Gap check skipped: {len(dangling)} open segment ends is too many "
+              "to cross-check — join segments or verify closure manually.")
+    else:
         reported = set()
         for i in range(len(dangling)):
             for j in range(i + 1, len(dangling)):
