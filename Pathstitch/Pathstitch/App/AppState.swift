@@ -5117,6 +5117,46 @@ class AppState {
         }
     }
 
+    /// Runs constraint inference over the WHOLE sketch (or the selection, if
+    /// any) — the "infer constraints on import" pass. Imported DXF/STEP
+    /// geometry arrives inert; where relationships are unambiguous (shared
+    /// endpoints, axis-aligned lines, tangencies) this turns a traced picture
+    /// into an editable model. Explicit user action → its own history entry.
+    func autoConstrainSketch() {
+        let pool = selectedHandles.isEmpty
+            ? entities.filter { SketchSolvable.isSolvable($0) }
+            : entities.filter { selectedHandles.contains($0.handle) && SketchSolvable.isSolvable($0) }
+        let handles = pool.map { $0.handle }
+        guard !handles.isEmpty else {
+            errorMessage = "Nothing to constrain — no lines, circles, or arcs."
+            return
+        }
+        let payload = sketchConstraints.map { $0.asDictionary }
+        Task {
+            await reconcileBufferIfNeeded()
+            guard let input = await MainActor.run(body: { self.currentFilePath }) else { return }
+            guard let res = try? await PythonBridge.shared.run(
+                module: "sketch_constraints",
+                op: "infer_constraints",
+                args: ["input": input.path, "handles": handles, "constraints": payload]
+            ) else { return }
+            let data = res["data"] as? [String: Any] ?? [:]
+            let proposed = Self.decodeConstraints(data["proposed"]) ?? []
+            await MainActor.run {
+                guard !proposed.isEmpty else {
+                    self.errorMessage = "No new relationships found to constrain."
+                    return
+                }
+                self.saveToHistory()
+                self.logEntries.append(LogEntry(
+                    action: "Auto-constrain",
+                    details: "Inferred \(proposed.count) constraint\(proposed.count == 1 ? "" : "s") across \(handles.count) entities"))
+                self.runSketchSolve(constraints: self.sketchConstraints + proposed)
+                self.errorMessage = "Added \(proposed.count) inferred constraint\(proposed.count == 1 ? "" : "s")."
+            }
+        }
+    }
+
     /// Explodes the selected polylines into independent LINE/ARC entities and
     /// immediately runs inference over the pieces, so a rectangle becomes four
     /// lines already stitched with coincident + horizontal/vertical — ready

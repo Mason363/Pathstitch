@@ -3723,6 +3723,15 @@ extension ContentView {
             TOCheck(label: "Infer constraints while sketching",
                     isOn: $state.constraintInferenceEnabled)
 
+            // Infer-on-import (Phase 6): one pass over the whole sketch (or
+            // the selection) turns inert imported geometry into an editable,
+            // constrained model.
+            TOSecondaryButton(title: state.selectedHandles.isEmpty
+                                ? "Auto-constrain sketch" : "Auto-constrain selection",
+                              icon: "wand.and.stars") {
+                state.autoConstrainSketch()
+            }
+
             // Constraint list.
             if !state.sketchConstraints.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
