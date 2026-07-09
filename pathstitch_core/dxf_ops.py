@@ -6546,6 +6546,136 @@ def op_boolean(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "message": f"Boolean operation failed: {str(e)}"}
 
 
+def op_validate_geometry(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Pre-export validation pass (sketch-engine roadmap: 'validate before
+    export'). Catches the geometry classes that silently corrupt a cut file:
+
+    - degenerate: zero-length lines, zero-radius circles/arcs, dot polylines
+    - self_intersection: a closed profile that crosses itself
+    - open_loop: a polyline whose ends nearly meet but isn't closed
+    - near_gap: two dangling endpoints within `gap_tolerance` of each other —
+      an outline chain that LOOKS closed on screen but isn't (region awareness)
+    - duplicate: identical overlapping entities (double-cut lines)
+
+    Analysis only, no writes. Construction/excluded layers are skipped because
+    they never reach the export anyway.
+    """
+    input_path = args.get("input")
+    exclude = set(args.get("exclude_layers") or [])
+    gap_tol = float(args.get("gap_tolerance", 0.5))
+    tiny = 1e-6
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    try:
+        doc = ezdxf.readfile(input_path)
+    except Exception as e:
+        return {"status": "error", "message": f"Cannot read DXF: {e}"}
+
+    issues: List[Dict[str, Any]] = []
+
+    def issue(kind, handles, message, location=None):
+        rec = {"kind": kind, "handles": handles, "message": message}
+        if location is not None:
+            rec["location"] = [float(location[0]), float(location[1])]
+        issues.append(rec)
+
+    open_ends: List[Tuple[float, float, str]] = []  # dangling curve endpoints
+    geom_keys: Dict[str, str] = {}                  # geometry hash → first handle
+
+    def dup_check(handle, key):
+        if key in geom_keys:
+            issue("duplicate", [geom_keys[key], handle],
+                  "Two identical overlapping entities (would double-cut).")
+        else:
+            geom_keys[key] = handle
+
+    for ent in doc.modelspace():
+        t = ent.dxftype()
+        if getattr(ent.dxf, "layer", "0") in exclude:
+            continue
+        h = ent.dxf.handle
+        try:
+            if t == "LINE":
+                s, e = ent.dxf.start, ent.dxf.end
+                if math.hypot(e.x - s.x, e.y - s.y) < tiny:
+                    issue("degenerate", [h], "Zero-length line.", (s.x, s.y))
+                    continue
+                open_ends.append((s.x, s.y, h))
+                open_ends.append((e.x, e.y, h))
+                key = "L:" + ",".join(f"{v:.6f}" for v in
+                                      sorted([s.x, s.y, e.x, e.y]) + [s.x + e.x, s.y + e.y])
+                dup_check(h, key)
+            elif t == "CIRCLE":
+                if ent.dxf.radius < tiny:
+                    issue("degenerate", [h], "Zero-radius circle.",
+                          (ent.dxf.center.x, ent.dxf.center.y))
+                    continue
+                c = ent.dxf.center
+                dup_check(h, f"C:{c.x:.6f},{c.y:.6f},{ent.dxf.radius:.6f}")
+            elif t == "ARC":
+                if ent.dxf.radius < tiny:
+                    issue("degenerate", [h], "Zero-radius arc.",
+                          (ent.dxf.center.x, ent.dxf.center.y))
+                    continue
+                c, r = ent.dxf.center, ent.dxf.radius
+                for a in (ent.dxf.start_angle, ent.dxf.end_angle):
+                    rad = math.radians(a)
+                    open_ends.append((c.x + r * math.cos(rad),
+                                      c.y + r * math.sin(rad), h))
+                dup_check(h, f"A:{c.x:.6f},{c.y:.6f},{r:.6f},"
+                             f"{ent.dxf.start_angle % 360:.4f},{ent.dxf.end_angle % 360:.4f}")
+            elif t in ("LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE"):
+                path = make_path(ent)
+                pts = [(p.x, p.y) for p in path.flattening(distance=0.05)]
+                if len(set((round(x, 6), round(y, 6)) for x, y in pts)) < 2:
+                    issue("degenerate", [h], f"Degenerate {t.lower()} (a single point).",
+                          pts[0] if pts else None)
+                    continue
+                closed = bool(getattr(ent, "closed", False) or getattr(ent, "is_closed", False))
+                if closed and len(pts) >= 4:
+                    ring = pts + ([pts[0]] if pts[0] != pts[-1] else [])
+                    if not LineString(ring).is_simple:
+                        issue("self_intersection", [h],
+                              f"Closed {t.lower()} crosses itself — the cut region is ambiguous.",
+                              pts[0])
+                elif not closed and len(pts) >= 3:
+                    gap = math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1])
+                    if tiny < gap < gap_tol:
+                        issue("open_loop", [h],
+                              f"Outline is open by {gap:.3f} mm — it looks closed but won't cut as a region.",
+                              pts[-1])
+                    elif gap <= tiny or gap >= gap_tol:
+                        open_ends.append((pts[0][0], pts[0][1], h))
+                        open_ends.append((pts[-1][0], pts[-1][1], h))
+        except Exception:
+            continue
+
+    # Region awareness across entities: endpoints that meet another endpoint
+    # exactly are chain joints; a dangling endpoint within gap_tol of another
+    # dangling endpoint is an almost-closed chain — the classic invisible-gap
+    # export bug. O(n²) over dangles only, capped for pathological inputs.
+    counts: Dict[Tuple[int, int], int] = {}
+    for x, y, _h in open_ends:
+        k = (round(x * 1e6), round(y * 1e6))
+        counts[k] = counts.get(k, 0) + 1
+    dangling = [(x, y, h) for (x, y, h) in open_ends
+                if counts[(round(x * 1e6), round(y * 1e6))] == 1]
+    if len(dangling) <= 400:
+        reported = set()
+        for i in range(len(dangling)):
+            for j in range(i + 1, len(dangling)):
+                x1, y1, h1 = dangling[i]
+                x2, y2, h2 = dangling[j]
+                d = math.hypot(x2 - x1, y2 - y1)
+                if tiny < d < gap_tol and (h1, h2) not in reported:
+                    reported.add((h1, h2))
+                    issue("near_gap", sorted({h1, h2}),
+                          f"{d:.3f} mm gap between segment ends — the outline won't form a closed region.",
+                          ((x1 + x2) / 2, (y1 + y2) / 2))
+
+    return {"status": "ok", "data": {"issues": issues, "issue_count": len(issues)}}
+
+
 def op_explode_compound(args: Dict[str, Any]) -> Dict[str, Any]:
     """Explode compound paths into individual closed loops (MAS-145) — the
     inverse of Union. A single closed path whose region resolves to multiple
@@ -7176,6 +7306,7 @@ OPERATIONS = {
     "trim_segment": op_trim_segment,
     "boolean": op_boolean,
     "explode_compound": op_explode_compound,
+    "validate_geometry": op_validate_geometry,
     "convert_to_fill": op_convert_to_fill,
     "convert_to_stroke": op_convert_to_stroke,
     "box_stitch": op_box_stitch,

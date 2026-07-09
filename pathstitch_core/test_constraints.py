@@ -698,6 +698,42 @@ def test_expression_passthrough():
     print("  constraint expression passes through the solver untouched ok")
 
 
+def test_validate_geometry():
+    """Phase 5: the pre-export validation pass catches every corruption class
+    and lets clean geometry straight through."""
+    from pathstitch_core.dxf_ops import op_validate_geometry
+    doc, msp = _new_doc()
+    doc.layers.new("CONSTRUCTION")
+    z = msp.add_line((0, 0), (0, 0)).dxf.handle                        # degenerate
+    d1 = msp.add_line((0, 5), (10, 5)).dxf.handle                      # duplicate pair
+    d2 = msp.add_line((0, 5), (10, 5)).dxf.handle
+    g1 = msp.add_line((20, 0), (30, 0)).dxf.handle                     # 0.2mm chain gap
+    g2 = msp.add_line((30.2, 0.0), (30.2, 10)).dxf.handle
+    msp.add_lwpolyline([(50, 0), (60, 0), (50, 10), (60, 10)], close=True)    # bowtie
+    msp.add_lwpolyline([(70, 0), (80, 0), (80, 10), (70, 10), (70.1, 0.05)])  # open loop
+    msp.add_lwpolyline([(90, 0), (100, 0), (100, 10)], close=True)     # clean triangle
+    msp.add_line((0, 0), (0, 0), dxfattribs={"layer": "CONSTRUCTION"})  # excluded
+    src = _save(doc, "validate_in.dxf")
+
+    res = op_validate_geometry({"input": src, "exclude_layers": ["CONSTRUCTION"]})
+    assert res["status"] == "ok", res
+    kinds = sorted(i["kind"] for i in res["data"]["issues"])
+    assert kinds == ["degenerate", "duplicate", "near_gap",
+                     "open_loop", "self_intersection"], kinds
+    by = {i["kind"]: i for i in res["data"]["issues"]}
+    assert by["degenerate"]["handles"] == [z]
+    assert set(by["duplicate"]["handles"]) == {d1, d2}
+    assert set(by["near_gap"]["handles"]) == {g1, g2}
+
+    doc2, msp2 = _new_doc()
+    msp2.add_lwpolyline([(0, 0), (10, 0), (10, 10), (0, 10)], close=True)
+    msp2.add_circle((5, 5), 2)
+    clean = _save(doc2, "validate_clean.dxf")
+    res = op_validate_geometry({"input": clean})
+    assert res["data"]["issues"] == [], res["data"]
+    print("  validate_geometry: 5 issue kinds + construction excluded + clean pass ok")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -720,6 +756,7 @@ def run_all():
         test_inference_tangent,
         test_explode_to_lines_and_constrain,
         test_expression_passthrough,
+        test_validate_geometry,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")

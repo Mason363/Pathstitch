@@ -369,6 +369,25 @@ struct ContentView: View {
         )) {
             ExportOptionsPanel(state: state)
         }
+        // Pre-export validation gate (sketch engine: validate before export).
+        .alert("Export check found problems",
+               isPresented: Binding(get: { state.exportValidationPrompt != nil },
+                                    set: { if !$0 { state.exportValidationPrompt = nil } }),
+               presenting: state.exportValidationPrompt) { prompt in
+            Button("Export Anyway") {
+                state.performExport(to: prompt.url, options: prompt.options)
+                state.exportValidationPrompt = nil
+            }
+            Button("Select Issues") {
+                state.selectedHandles = Set(prompt.handles)
+                state.exportValidationPrompt = nil
+            }
+            Button("Cancel", role: .cancel) { state.exportValidationPrompt = nil }
+        } message: { prompt in
+            let shown = prompt.messages.prefix(6).map { "• \($0)" }
+            let more = prompt.messages.count > 6 ? "\n…and \(prompt.messages.count - 6) more." : ""
+            Text(shown.joined(separator: "\n") + more)
+        }
         // Bind hotkeys
         .background(hotkeyBindings)
         // Command search palette (MAS-53)

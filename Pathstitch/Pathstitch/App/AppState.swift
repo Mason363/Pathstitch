@@ -6157,7 +6157,48 @@ class AppState {
         }
     }
     
+    /// A pending export blocked by the pre-flight validation pass (sketch
+    /// engine: 'validate before export'). The user chooses Export Anyway /
+    /// Select Issues / Cancel from the alert.
+    struct ExportValidationPrompt: Identifiable {
+        let id = UUID()
+        let url: URL
+        let options: ExportOptions
+        let messages: [String]
+        let handles: [String]
+    }
+    var exportValidationPrompt: ExportValidationPrompt? = nil
+
+    /// Validation-gated export: self-intersections, degenerate segments,
+    /// near-closed loops, and cross-entity gaps are caught BEFORE they reach
+    /// the DXF/SVG writer. Clean geometry exports straight through.
     func exportFile(to url: URL, options: ExportOptions) {
+        Task {
+            await reconcileBufferIfNeeded()
+            guard let input = await MainActor.run(body: { self.currentFilePath }) else { return }
+            let exclude = await MainActor.run { self.constructionLayerNames }
+            if let res = try? await PythonBridge.shared.run(
+                module: "dxf_ops",
+                op: "validate_geometry",
+                args: ["input": input.path, "exclude_layers": exclude]
+            ),
+               let data = res["data"] as? [String: Any],
+               let issues = data["issues"] as? [[String: Any]], !issues.isEmpty {
+                await MainActor.run {
+                    self.exportValidationPrompt = ExportValidationPrompt(
+                        url: url,
+                        options: options,
+                        messages: issues.compactMap { $0["message"] as? String },
+                        handles: Array(Set(issues.flatMap { ($0["handles"] as? [String]) ?? [] }))
+                    )
+                }
+                return
+            }
+            await MainActor.run { self.performExport(to: url, options: options) }
+        }
+    }
+
+    func performExport(to url: URL, options: ExportOptions) {
         guard let currentUrl = currentFilePath else { return }
         let format = options.format
         let selectedOnly = options.selectedOnly
