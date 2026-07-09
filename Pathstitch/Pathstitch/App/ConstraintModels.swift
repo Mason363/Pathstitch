@@ -18,19 +18,33 @@ struct SketchConstraint: Codable, Equatable, Hashable, Identifiable {
     var entities: [String] = []
     var value: Double? = nil
     var branch: Int? = nil
+    /// Optional formula for `value` (parameter model, Phase 3): evaluated
+    /// against the DimensionEngine table (e.g. "strap_width/2 + 5"), so a
+    /// parameter edit re-drives every constraint that references it. `value`
+    /// always holds the last evaluated number — the solver only sees numbers.
+    var expression: String? = nil
 
     /// Every handle this constraint references (for pruning + highlighting).
     var referencedHandles: Set<String> {
         Set(points.map { $0.handle }).union(entities)
     }
 
-    /// Wire/JSON dictionary for the Python solver.
+    /// True when the expression is a real formula (not just a number literal).
+    var hasFormula: Bool {
+        guard let e = expression else { return false }
+        return Double(e.trimmingCharacters(in: .whitespaces)) == nil
+    }
+
+    /// Wire/JSON dictionary for the Python solver. `expression` rides along
+    /// (the solver ignores it) so the enriched records the solve returns keep
+    /// it — the response replaces `sketchConstraints` wholesale.
     var asDictionary: [String: Any] {
         var d: [String: Any] = ["id": id, "kind": kind]
         if !points.isEmpty { d["points"] = points.map { ["handle": $0.handle, "role": $0.role] } }
         if !entities.isEmpty { d["entities"] = entities }
         if let v = value { d["value"] = v }
         if let b = branch { d["branch"] = b }
+        if let e = expression { d["expression"] = e }
         return d
     }
 }

@@ -292,6 +292,15 @@ struct ContentView: View {
     // collapsed by default and reset whenever the tool changes — a tool is used
     // hundreds of times and shouldn't cost that height every time.
     @State private var toolHelpOpen = false
+    // Parameter model (Phase 3): add/edit fields for named parameters, the
+    // formula field for the next distance/angle constraint, and the editor for
+    // a selected constraint's value.
+    @State private var paramNameText: String = ""
+    @State private var paramExprText: String = ""
+    @State private var paramFieldError: String? = nil
+    @State private var pendingValueFormula: String = ""
+    @State private var constraintEditText: String = ""
+    @State private var constraintEditError: String? = nil
     @State private var customLayerName: String = ""
     @State private var selectedExistingLayer: String = ""
     @State private var rotationAngle: Double = 90.0
@@ -3574,6 +3583,7 @@ extension ContentView {
     }
 
     /// One-line operand summary for a constraint row ("1AF·end ↔ 1B0·start").
+    /// Formula-driven values render as `fx expr = value` (parameter model).
     private func constraintOperandSummary(_ c: SketchConstraint) -> String {
         var parts: [String] = []
         parts.append(contentsOf: c.points.map { "\($0.handle)·\($0.role)" })
@@ -3581,9 +3591,28 @@ extension ContentView {
         var s = parts.joined(separator: " ↔ ")
         if let v = c.value {
             let unit = c.kind == "angle" ? "°" : " mm"
-            s += "  =  \(toNum(v, maxFrac: 2))\(unit)"
+            if c.hasFormula, let e = c.expression {
+                s += "  fx \(e) = \(toNum(v, maxFrac: 2))\(unit)"
+            } else {
+                s += "  =  \(toNum(v, maxFrac: 2))\(unit)"
+            }
         }
         return s
+    }
+
+    /// Small bordered text field matching the tool-options kit styling.
+    private func toTextField(_ placeholder: String, text: Binding<String>,
+                             onSubmit: @escaping () -> Void) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .monospacedDigit()
+            .foregroundColor(Color.to_textPri)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.to_field))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.to_fieldBorder, lineWidth: 1))
+            .onSubmit(onSubmit)
     }
 
     private var constrainSection: some View {
@@ -3621,15 +3650,36 @@ extension ContentView {
                 }
             }
 
-            // Value for distance/angle.
+            // Value for distance/angle: a plain number via the stepper, or a
+            // formula referencing named parameters (parameter model).
             if state.pendingConstraintKind.needsValue {
-                HStack(spacing: 10) {
-                    TOLabel(state.pendingConstraintKind == .angle ? "Angle" : "Distance")
-                    Spacer()
-                    TOStepper(value: $state.pendingConstraintValue,
-                              unit: state.pendingConstraintKind.valueUnit,
-                              step: state.pendingConstraintKind == .angle ? 5.0 : 1.0,
-                              range: state.pendingConstraintKind == .angle ? -360...360 : 0...100000)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        TOLabel(state.pendingConstraintKind == .angle ? "Angle" : "Distance")
+                        Spacer()
+                        TOStepper(value: $state.pendingConstraintValue,
+                                  unit: state.pendingConstraintKind.valueUnit,
+                                  step: state.pendingConstraintKind == .angle ? 5.0 : 1.0,
+                                  range: state.pendingConstraintKind == .angle ? -360...360 : 0...100000,
+                                  onChange: {
+                                      // A manual number overrides an armed formula.
+                                      pendingValueFormula = ""
+                                      state.pendingConstraintExpression = nil
+                                  })
+                    }
+                    toTextField("or formula, e.g. strap_width/2", text: $pendingValueFormula) {
+                        let raw = pendingValueFormula.trimmingCharacters(in: .whitespaces)
+                        guard !raw.isEmpty else { state.pendingConstraintExpression = nil; return }
+                        if let v = try? state.dimensionEngine.preview(raw), v.isFinite {
+                            state.pendingConstraintValue = v
+                            state.pendingConstraintExpression = raw
+                        } else {
+                            state.errorMessage = "Invalid formula: \(raw)"
+                        }
+                    }
+                    if state.pendingConstraintExpression != nil {
+                        TOHint("fx armed — the next \(state.pendingConstraintKind.displayName.lowercased()) follows this formula")
+                    }
                 }
             }
 
@@ -3691,8 +3741,112 @@ extension ContentView {
                             state.selectedConstraintId = (state.selectedConstraintId == c.id) ? nil : c.id
                         }
                     }
+
+                    // Edit the selected distance/angle in place: a number or a
+                    // formula ("strap_width/2 + 5") — commit re-solves.
+                    if let sel = state.sketchConstraints.first(where: { $0.id == state.selectedConstraintId }),
+                       ConstraintKind(rawValue: sel.kind)?.needsValue == true {
+                        VStack(alignment: .leading, spacing: 4) {
+                            TOLabel("Edit \(ConstraintKind(rawValue: sel.kind)?.displayName.lowercased() ?? "value")")
+                            toTextField("value or formula", text: $constraintEditText) {
+                                constraintEditError = state.setConstraintExpression(
+                                    id: sel.id, rawExpression: constraintEditText)
+                            }
+                            if let err = constraintEditError {
+                                TOHint(err)
+                            }
+                        }
+                    }
                 }
             }
+
+            constrainParametersSection
+        }
+        .onChange(of: state.selectedConstraintId) { _, newId in
+            constraintEditError = nil
+            if let c = state.sketchConstraints.first(where: { $0.id == newId }) {
+                constraintEditText = c.expression ?? c.value.map { toNum($0, maxFrac: 2) } ?? ""
+            } else {
+                constraintEditText = ""
+            }
+        }
+    }
+
+    /// Named document-wide parameters (parameter model, Phase 3): the values a
+    /// whole pattern hangs off. Dimensions and constraint formulas reference
+    /// them by name; editing one re-drives everything that depends on it.
+    private var constrainParametersSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TOLabel("Parameters (\(state.userParameters.count))")
+
+            ForEach(state.userParameters, id: \.id) { p in
+                HStack(spacing: 8) {
+                    Text(p.id)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color.to_textPri)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(p.isFormula ? "fx \(p.expression) = \(toNum(p.value, maxFrac: 2))"
+                                     : "\(toNum(p.value, maxFrac: 2)) mm")
+                        .font(.system(size: 11, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundColor(Color.to_textMut)
+                        .lineLimit(1)
+                    Button {
+                        // Load into the edit fields below.
+                        paramNameText = p.id
+                        paramExprText = p.expression
+                        paramFieldError = nil
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color.to_textMut)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit parameter")
+                    Button { state.removeUserParameter(name: p.id) } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color.to_textMut)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete parameter (refused while referenced)")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.to_field))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.to_fieldBorder, lineWidth: 1))
+            }
+
+            // Add / update row: same name = update (formulas may reference
+            // other parameters and dimension variables like d1).
+            HStack(spacing: 6) {
+                toTextField("name", text: $paramNameText) { commitParameterFields() }
+                    .frame(width: 110)
+                toTextField("value or formula", text: $paramExprText) { commitParameterFields() }
+                Button { commitParameterFields() } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(Color.to_accent)
+                }
+                .buttonStyle(.plain)
+                .help("Add or update the parameter")
+            }
+            if let err = paramFieldError {
+                TOHint(err)
+            } else if state.userParameters.isEmpty {
+                TOHint("e.g. strap_width = 80 — then use it in distance formulas")
+            }
+        }
+    }
+
+    private func commitParameterFields() {
+        let name = paramNameText.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { paramFieldError = "Enter a name."; return }
+        paramFieldError = state.setUserParameter(name: name, expression: paramExprText)
+        if paramFieldError == nil {
+            paramNameText = ""
+            paramExprText = ""
         }
     }
 }

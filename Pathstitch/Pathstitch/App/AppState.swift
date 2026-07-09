@@ -255,6 +255,10 @@ struct HistoryState {
     // Sketch constraints travel with the geometry so undo/redo restore the
     // exact constraint set that matched the snapshotted DXF.
     let sketchConstraints: [SketchConstraint]
+    // User-defined named parameters (parameter model): a parameter edit can
+    // re-drive constrained geometry, so undo must restore the values that
+    // matched the snapshotted DXF.
+    let userParameters: [DimensionParameter]
 }
 
 /// One parametric corner modifier on a shape (MAS-62).
@@ -775,6 +779,10 @@ struct ProjectSaveContainer: Codable {
     /// Geometric sketch constraints (constraint solver, Phase 1). Optional →
     /// pre-constraint .stch files decode fine.
     var sketchConstraints: [SketchConstraint]? = nil
+
+    /// User-defined named parameters (parameter model, Phase 3). Optional →
+    /// older .stch files decode fine.
+    var userParameters: [DimensionParameter]? = nil
 }
 
 /// One body's manual move offset (MAS-125), persisted in `.stch`.
@@ -1498,6 +1506,15 @@ class AppState {
     var constraintInferenceEnabled: Bool = UserDefaults.standard.object(forKey: "constraintInferenceEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(constraintInferenceEnabled, forKey: "constraintInferenceEnabled") }
     }
+    /// User-defined, document-wide named parameters (parameter model, Phase 3):
+    /// `strap_width = 80`, `hole_spacing = strap_width/10`… They live in the
+    /// same DimensionEngine namespace as dimension variables (d1…), so
+    /// dimensions and constraint values reference them by formula. Persisted
+    /// in .stch and snapshotted in history.
+    var userParameters: [DimensionParameter] = []
+    /// Formula armed for the NEXT distance/angle constraint (Constrain panel);
+    /// consumed by commitPendingConstraint.
+    var pendingConstraintExpression: String? = nil
     // The creation fillet handle shows only right after a rectangle is drawn,
     // never again on mere re-selection (MAS-62).
     var justCreatedRectangleHandle: String? = nil
@@ -2884,7 +2901,8 @@ class AppState {
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
             layers: layers,
-            sketchConstraints: sketchConstraints
+            sketchConstraints: sketchConstraints,
+            userParameters: userParameters
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -2918,7 +2936,8 @@ class AppState {
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
             layers: layers,
-            sketchConstraints: sketchConstraints
+            sketchConstraints: sketchConstraints,
+            userParameters: userParameters
         )
         redoStack.append(currentState)
 
@@ -2930,6 +2949,8 @@ class AppState {
         self.cornerSnapPoints = previousState.cornerSnapPoints
         self.penPaths = previousState.penPaths
         self.sketchConstraints = previousState.sketchConstraints
+        self.userParameters = previousState.userParameters
+        self.rebuildDimensionEngine()
         // Restore the layer list before reloadDXF runs. reloadDXF only *appends*
         // layers it finds in the DXF, so without this an operation-created layer
         // (e.g. SEWING_HOLES) would linger after its geometry is undone.
@@ -2981,7 +3002,8 @@ class AppState {
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
             layers: layers,
-            sketchConstraints: sketchConstraints
+            sketchConstraints: sketchConstraints,
+            userParameters: userParameters
         )
         undoStack.append(currentState)
 
@@ -2993,6 +3015,8 @@ class AppState {
         self.cornerSnapPoints = nextState.cornerSnapPoints
         self.penPaths = nextState.penPaths
         self.sketchConstraints = nextState.sketchConstraints
+        self.userParameters = nextState.userParameters
+        self.rebuildDimensionEngine()
         self.layers = nextState.layers
         self.selectedMeasurement = nil
         self.applyRestoredBodyOffsets(nextState.bodyOffsets)
@@ -3240,17 +3264,157 @@ class AppState {
         }
     }
 
-    /// Rebuild the parameter table from saved measurements after opening a project,
-    /// so formula references resolve and dimensions stay editable (MAS-110).
+    /// Rebuild the parameter table from user parameters + saved measurements
+    /// after opening a project (or restoring history), so formula references
+    /// resolve and dimensions stay editable (MAS-110 / parameter model).
+    /// Two passes across BOTH sets: numeric seeds first so cross-references
+    /// (dimension → user param and vice versa) resolve regardless of order.
     func rebuildDimensionEngine() {
         dimensionEngine = DimensionEngine()
+        for p in userParameters {
+            dimensionEngine.addNumeric(value: p.value, id: p.id, driven: p.driven)
+        }
         for m in measurements {
             guard let v = m.varName else { continue }
             dimensionEngine.addNumeric(value: m.distanceMm, id: v, driven: m.driven)
         }
+        for p in userParameters {
+            try? dimensionEngine.setExpression(p.id, p.expression, driven: p.driven)
+        }
         for m in measurements {
             guard let v = m.varName, let expr = m.expression else { continue }
             try? dimensionEngine.setExpression(v, expr, driven: m.driven)
+        }
+    }
+
+    // MARK: - User parameters (parameter model, Phase 3)
+
+    /// Names the expression lexer treats specially — not usable as parameters.
+    private static let reservedParamNames: Set<String> =
+        ["sqrt", "mm", "cm", "m", "in", "inch", "inches"]
+
+    /// Validates a would-be parameter name: identifier shape, not reserved,
+    /// not colliding with a dimension variable. Returns nil when valid.
+    func validateParameterName(_ name: String, allowExisting: Bool = false) -> String? {
+        guard let first = name.first, first.isLetter else {
+            return "Name must start with a letter (e.g. strap_width)."
+        }
+        guard name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
+            return "Only letters, digits, and _ are allowed."
+        }
+        if Self.reservedParamNames.contains(name.lowercased()) {
+            return "“\(name)” is reserved."
+        }
+        if measurements.contains(where: { $0.varName == name }) {
+            return "“\(name)” is already a dimension variable."
+        }
+        if !allowExisting && userParameters.contains(where: { $0.id == name }) {
+            return "“\(name)” already exists."
+        }
+        return nil
+    }
+
+    /// Creates or updates a named parameter. On success every dependent —
+    /// other parameters, parametric dimensions, and constraint formulas — is
+    /// re-evaluated, and geometry re-solves if any constraint value changed
+    /// ("change one number, the whole pattern updates"). Returns nil on
+    /// success or an error message for the field to show.
+    @discardableResult
+    func setUserParameter(name: String, expression: String) -> String? {
+        let raw = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return "Enter a value or formula." }
+        if let nameError = validateParameterName(name, allowExisting: true) {
+            return nameError
+        }
+        // Trial-evaluate + commit into the engine (cycle detection included).
+        do { try dimensionEngine.setExpression(name, raw) }
+        catch let e as DimensionError { return e.errorDescription }
+        catch { return "\(error)" }
+
+        saveToHistory()
+        // Sync the stored list (and dependents' cached values) from the engine.
+        if let idx = userParameters.firstIndex(where: { $0.id == name }) {
+            userParameters[idx].expression = raw
+        } else {
+            userParameters.append(DimensionParameter(id: name, expression: raw, value: 0))
+        }
+        for i in userParameters.indices {
+            if let p = dimensionEngine.parameter(userParameters[i].id) {
+                userParameters[i].value = p.value
+            }
+        }
+        repropagateDimensions()
+        reevaluateConstraintExpressions()
+        hasUnsavedChanges = true
+        return nil
+    }
+
+    /// Removes a parameter unless something still references it (constraint
+    /// formulas, dimension formulas, or other parameters).
+    func removeUserParameter(name: String) {
+        var referencedBy: [String] = []
+        for c in sketchConstraints where c.expression.map({ DimensionEngine.referencedVars(in: $0).contains(name) }) == true {
+            referencedBy.append("constraint \(ConstraintKind(rawValue: c.kind)?.displayName ?? c.kind)")
+        }
+        for m in measurements where m.expression.map({ DimensionEngine.referencedVars(in: $0).contains(name) }) == true {
+            referencedBy.append("dimension \(m.varName ?? "?")")
+        }
+        for p in userParameters where p.id != name && DimensionEngine.referencedVars(in: p.expression).contains(name) {
+            referencedBy.append("parameter \(p.id)")
+        }
+        guard referencedBy.isEmpty else {
+            errorMessage = "Can't delete “\(name)” — referenced by \(referencedBy.joined(separator: ", "))."
+            return
+        }
+        saveToHistory()
+        userParameters.removeAll { $0.id == name }
+        dimensionEngine.remove(name)
+        hasUnsavedChanges = true
+    }
+
+    /// Sets a distance/angle constraint's value from a raw number-or-formula.
+    /// Returns nil on success or an error message.
+    @discardableResult
+    func setConstraintExpression(id: String, rawExpression: String) -> String? {
+        guard let idx = sketchConstraints.firstIndex(where: { $0.id == id }),
+              ConstraintKind(rawValue: sketchConstraints[idx].kind)?.needsValue == true else { return nil }
+        let raw = rawExpression.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return "Enter a value or formula." }
+        let value: Double
+        do { value = try dimensionEngine.preview(raw) }
+        catch let e as DimensionError { return e.errorDescription }
+        catch { return "\(error)" }
+        if !value.isFinite { return "Not a finite value." }
+        if sketchConstraints[idx].kind == "distance" && value <= 0 {
+            return "Distance must be positive."
+        }
+        saveToHistory()
+        var updated = sketchConstraints
+        updated[idx].expression = raw
+        updated[idx].value = value
+        runSketchSolve(constraints: updated)
+        return nil
+    }
+
+    /// Re-evaluates every constraint formula against the parameter table and
+    /// re-solves once if any value moved. No history entry of its own — the
+    /// parameter edit that triggered it already made one.
+    func reevaluateConstraintExpressions() {
+        guard !sketchConstraints.isEmpty else { return }
+        var updated = sketchConstraints
+        var changed = false
+        for i in updated.indices {
+            guard let expr = updated[i].expression,
+                  let v = try? dimensionEngine.preview(expr), v.isFinite else { continue }
+            if updated[i].value == nil || abs(updated[i].value! - v) > 1e-9 {
+                updated[i].value = v
+                changed = true
+            }
+        }
+        if changed {
+            runSketchSolve(constraints: updated)
+        } else {
+            sketchConstraints = updated
         }
     }
 
@@ -4985,7 +5149,8 @@ class AppState {
             penPaths: penPaths,
             bodyOffsets: bodyOffsets,
             layers: layers,
-            sketchConstraints: sketchConstraints
+            sketchConstraints: sketchConstraints,
+            userParameters: userParameters
         )
         undoStack.append(state)
         redoStack.removeAll()
@@ -5456,6 +5621,8 @@ class AppState {
         self.cornerSnapPoints = state.cornerSnapPoints
         self.penPaths = state.penPaths
         self.sketchConstraints = state.sketchConstraints
+        self.userParameters = state.userParameters
+        self.rebuildDimensionEngine()
         self.layers = state.layers
         self.selectedMeasurement = nil
         self.hasUnsavedChanges = true
@@ -8062,7 +8229,8 @@ class AppState {
                         panelMaterials: constructPanelMaterials.isEmpty ? nil : constructPanelMaterials,
                         seamTolMismatchPct: seamTolMismatchPct,
                         seamTolGapMm: seamTolGapMm),
-                sketchConstraints: sketchConstraints.isEmpty ? nil : sketchConstraints
+                sketchConstraints: sketchConstraints.isEmpty ? nil : sketchConstraints,
+                userParameters: userParameters.isEmpty ? nil : userParameters
             )
 
             let encoder = JSONEncoder()
@@ -8146,6 +8314,9 @@ class AppState {
 
             self.currentProjectPath = url
             self.measurements = validContainer.measurements
+            // User parameters must land before the engine rebuild so dimension
+            // formulas referencing them resolve (parameter model, Phase 3).
+            self.userParameters = validContainer.userParameters ?? []
             self.rebuildDimensionEngine()   // restore parameter table (MAS-110)
             self.layers = validContainer.savedLayers ?? []
             self.layerFolders = validContainer.savedLayerFolders ?? []

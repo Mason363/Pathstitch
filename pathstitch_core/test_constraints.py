@@ -673,6 +673,31 @@ def test_explode_to_lines_and_constrain():
     print("  explode-to-lines (bulge arcs) + infer -> fully constrained rect ok")
 
 
+def test_expression_passthrough():
+    """Phase 3 wire contract: the Swift side stores constraint formulas in an
+    `expression` field the solver must echo back untouched — the solve response
+    replaces the constraint list wholesale, so dropping it would erase the
+    parameter link."""
+    doc, msp = _new_doc()
+    l1 = msp.add_line((0, 0), (10, 0)).dxf.handle
+    src = _save(doc, "expr_in.dxf")
+    out = os.path.join(TMP, "expr_out.dxf")
+    cons = [
+        _c("ground", points=[_pt(l1, "start")], cid="g"),
+        _c("horizontal", entities=[l1], cid="h"),
+        dict(_c("distance", points=[_pt(l1, "start"), _pt(l1, "end")],
+                value=40.0, cid="d"), expression="strap_width/2"),
+    ]
+    res = _solve_inproc(src, out, cons)
+    assert res["status"] == "ok", res
+    assert res["data"]["diagnostics"]["converged"]
+    back = {c["id"]: c for c in res["data"]["constraints"]}
+    assert back["d"].get("expression") == "strap_width/2", back["d"]
+    ents = _entity_map(out)
+    assert abs(_dist(ents[l1]["start"], ents[l1]["end"]) - 40.0) < 1e-5
+    print("  constraint expression passes through the solver untouched ok")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -694,6 +719,7 @@ def run_all():
         test_inference_unionfind,
         test_inference_tangent,
         test_explode_to_lines_and_constrain,
+        test_expression_passthrough,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")

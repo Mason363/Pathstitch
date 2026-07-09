@@ -1806,7 +1806,12 @@ struct DxfCanvasView: View {
         var c = SketchConstraint(kind: state.pendingConstraintKind.rawValue)
         c.points = state.pendingConstraintPoints
         c.entities = state.pendingConstraintEntities
-        if state.pendingConstraintKind.needsValue { c.value = state.pendingConstraintValue }
+        if state.pendingConstraintKind.needsValue {
+            c.value = state.pendingConstraintValue
+            // Formula armed in the panel travels with the constraint, so a
+            // later parameter edit re-drives this dimension (parameter model).
+            c.expression = state.pendingConstraintExpression
+        }
         state.pendingConstraintPoints = []
         state.pendingConstraintEntities = []
         state.addConstraint(c)
