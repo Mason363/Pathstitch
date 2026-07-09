@@ -1407,6 +1407,25 @@ class AppState {
         layers.filter { $0.isConstruction == true }.map { $0.name }
     }
 
+    /// Toggle the selected geometry between normal and construction/reference
+    /// (Phase 4): construction geometry renders dashed orange, still snaps and
+    /// constrains, but never reaches an export. Entities move to the canonical
+    /// CONSTRUCTION layer; toggling back returns them to the active layer.
+    func toggleConstructionSelected() {
+        guard !selectedHandles.isEmpty else { return }
+        let constructionNames = Set(constructionLayerNames).union(["CONSTRUCTION"])
+        let selectedEnts = entities.filter { selectedHandles.contains($0.handle) }
+        let allConstruction = !selectedEnts.isEmpty
+            && selectedEnts.allSatisfy { constructionNames.contains($0.layer) }
+        if allConstruction {
+            let target = (activeLayer?.isConstruction != true && activeLayer?.isReferenceImageLayer != true
+                          ? activeLayer?.name : nil) ?? "DRAWN_SHAPES"
+            assignSelectedToLayer(target)
+        } else {
+            assignSelectedToLayer("CONSTRUCTION")
+        }
+    }
+
     /// Display colour for a leather swatch id (preview only).
     static func leatherSwatchColor(_ id: String) -> Color? {
         switch id {
@@ -1515,6 +1534,10 @@ class AppState {
     /// Formula armed for the NEXT distance/angle constraint (Constrain panel);
     /// consumed by commitPendingConstraint.
     var pendingConstraintExpression: String? = nil
+    /// Draw-as-construction (reference geometry, Phase 4): while on, sketch
+    /// tools place geometry on the CONSTRUCTION layer — dashed orange, fully
+    /// snappable and constrainable, excluded from every export.
+    var sketchAsConstruction: Bool = false
     // The creation fillet handle shows only right after a rectangle is drawn,
     // never again on mere re-selection (MAS-62).
     var justCreatedRectangleHandle: String? = nil
@@ -4764,13 +4787,19 @@ class AppState {
                     // Append new layers found in DXF if they do not exist, preserving user modifications & ordering
                     for layerName in uniqueLayers {
                         if !self.layers.contains(where: { $0.name == layerName }) {
-                            let newLayer = DXFLayer(
+                            var newLayer = DXFLayer(
                                 id: UUID().uuidString,
                                 name: layerName,
                                 color: self.colorForLayerName(layerName),
                                 visible: true,
                                 parentFolderId: nil
                             )
+                            // The canonical reference-geometry layer arrives
+                            // pre-marked so its entities render dashed orange
+                            // and drop from exports without any manual setup.
+                            if layerName == "CONSTRUCTION" {
+                                newLayer.isConstruction = true
+                            }
                             self.layers.append(newLayer)
                         }
                     }
@@ -6875,6 +6904,9 @@ class AppState {
         saveToHistory()
         let activeDxfURL = ensureActiveDXFFileExists()
         let activeLayerName = await MainActor.run {
+            // Draw-as-construction wins: reference geometry lands on the
+            // auto-marked CONSTRUCTION layer regardless of the active layer.
+            if self.sketchAsConstruction { return "CONSTRUCTION" }
             if self.activeLayer?.isReferenceImageLayer == true {
                 return "0"
             }
@@ -9835,6 +9867,7 @@ class AppState {
     private func colorForLayerName(_ name: String) -> Color {
         switch name.uppercased() {
         case "ORIGINAL": return Color(red: 228/255, green: 228/255, blue: 234/255)
+        case "CONSTRUCTION": return Color(red: 1.0, green: 0.55, blue: 0.0)  // construction orange
         case "OFFSET": return Color.status_warn
         case "SEWING_HOLES": return Color.status_ok
         case "CUTLINE": return Color.accent

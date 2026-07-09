@@ -197,6 +197,9 @@ enum AppCommands {
         .init(id: "edit.dashLines", title: "Convert Lines to Dashed", icon: "line.diagonal", category: "Edit",
               defaultCombo: KeyCombo(key: "x"),
               isEnabled: { $0.selectionHasConvertibleLines }) { $0.quickConvertSelectedLines(to: "dashed") },
+        .init(id: "edit.toggleConstruction", title: "Toggle Construction", icon: "pencil.and.outline", category: "Edit",
+              defaultCombo: KeyCombo(key: "x", shift: true),
+              isEnabled: { !$0.selectedHandles.isEmpty }) { $0.toggleConstructionSelected() },
 
         // — View / Toggles —
         .init(id: "view.grid", title: "Toggle Grid", icon: "grid", category: "View",

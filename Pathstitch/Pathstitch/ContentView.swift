@@ -1088,10 +1088,12 @@ extension ContentView {
             } else if state.currentTool == .sketchLine {
                 TOToolTitle(icon: "line.diagonal", title: "Line",
                             help: "Drag on the canvas to draw a line.", helpOpen: $toolHelpOpen)
+                sketchConstructionCheck
                 if state.isLearnModeEnabled { TOHint("Drag to draw.") }
             } else if state.currentTool == .sketchCircle {
                 TOToolTitle(icon: "circle", title: "Circle",
                             help: "Drag from the center outward to draw a circle.", helpOpen: $toolHelpOpen)
+                sketchConstructionCheck
                 if state.isLearnModeEnabled { TOHint("Drag from the center outward.") }
             } else if state.currentTool == .sketchRectangle {
                 TOToolTitle(icon: "rectangle", title: "Rectangle",
@@ -1101,6 +1103,7 @@ extension ContentView {
                     TextField("Fillet", value: $state.sketchFilletRadius, format: .number)
                         .toFieldStyle(width: 90)
                 }
+                sketchConstructionCheck
                 if state.isLearnModeEnabled { TOHint("Drag corner-to-corner.") }
             } else if state.currentTool == .sketchText {
                 TOToolTitle(icon: "textformat", title: "Text",
@@ -1108,6 +1111,13 @@ extension ContentView {
                 if state.isLearnModeEnabled { TOHint("Drag a box, then type.") }
             }
         }
+    }
+
+    /// Draw-as-construction toggle shared by the sketch tools (reference
+    /// geometry, Phase 4): fold lines, centerlines, and seam guides you draft
+    /// against but never cut.
+    private var sketchConstructionCheck: some View {
+        TOCheck(label: "Construction (reference only)", isOn: $state.sketchAsConstruction)
     }
 
     /// A small preview of one iron's slit shape, drawn in the chip / picker.
@@ -3275,6 +3285,7 @@ extension ContentView {
             TOToolTitle(icon: "compass.drawing", title: "Arc",
                         help: "Three clicks make an arc: the start point, the end point, then a point the arc passes through. Press Enter to finish at the cursor, or Esc to cancel.",
                         helpOpen: $toolHelpOpen)
+            sketchConstructionCheck
             TOHint("1. Click the start point\n2. Click the end point\n3. Click a point on the arc")
         }
     }

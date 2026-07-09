@@ -1951,10 +1951,10 @@ struct DxfCanvasView: View {
                         context.translateBy(x: -ps.x, y: -ps.y)
                     }
 
-                    drawEntity(ent, baseColor: baseColor, strokeColor: strokeColor, strokeWidth: strokeWidth, size: size, modelBounds: modelBounds, context: &context)
+                    drawEntity(ent, baseColor: baseColor, strokeColor: strokeColor, strokeWidth: strokeWidth, size: size, modelBounds: modelBounds, context: &context, dashed: isConstruction)
                 }
             } else {
-                drawEntity(ent, baseColor: baseColor, strokeColor: strokeColor, strokeWidth: strokeWidth, size: size, modelBounds: modelBounds, context: &context)
+                drawEntity(ent, baseColor: baseColor, strokeColor: strokeColor, strokeWidth: strokeWidth, size: size, modelBounds: modelBounds, context: &context, dashed: isConstruction)
             }
         }
         
@@ -2984,6 +2984,12 @@ struct DxfCanvasView: View {
                     }
                     contextMenuButton("Flip Vertical", systemImage: "arrow.up.and.down.righttriangle.up.righttriangle.down") {
                         state.reflectSelectedEntities(axis: "vertical"); contextMenuScreenPos = nil
+                    }
+                    // Reference geometry (Phase 4): dashed orange, snappable and
+                    // constrainable, never exported. Toggle back returns the
+                    // geometry to the active layer.
+                    contextMenuButton("Toggle Construction", systemImage: "pencil.and.outline") {
+                        state.toggleConstructionSelected(); contextMenuScreenPos = nil
                     }
                     if state.selectedHandles.contains(where: { state.isRectangleHandle($0) }) {
                         contextMenuButton("Expand", systemImage: "arrow.up.left.and.arrow.down.right") {
@@ -6067,14 +6073,18 @@ struct DxfCanvasView: View {
         return ent.fontName
     }
 
-    private func drawEntity(_ ent: DXFEntity, baseColor: Color, strokeColor: Color, strokeWidth: Double, size: CGSize, modelBounds: CGRect, context: inout GraphicsContext) {
+    private func drawEntity(_ ent: DXFEntity, baseColor: Color, strokeColor: Color, strokeWidth: Double, size: CGSize, modelBounds: CGRect, context: inout GraphicsContext, dashed: Bool = false) {
+        // Construction/reference geometry strokes dashed (universal CAD cue
+        // for "guides the sketch, never gets cut").
+        let strokeStyle = StrokeStyle(lineWidth: strokeWidth,
+                                      dash: dashed ? [5, 4] : [])
         var path = SwiftUI.Path()
         if ent.type == "LINE", let s = ent.start, let e = ent.end {
             let p1 = toScreen(dx: s[0], dy: s[1], size: size, bounds: modelBounds)
             let p2 = toScreen(dx: e[0], dy: e[1], size: size, bounds: modelBounds)
             path.move(to: p1)
             path.addLine(to: p2)
-            context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
+            context.stroke(path, with: .color(strokeColor), style: strokeStyle)
         } else if ent.type == "CIRCLE", let center = ent.center, let radius = ent.radius {
             let sc = toScreen(dx: center[0], dy: center[1], size: size, bounds: modelBounds)
             let r = CGFloat(radius) * state.canvasScale
@@ -6085,7 +6095,7 @@ struct DxfCanvasView: View {
                let col = AppState.leatherSwatchColor(leatherId) {
                 context.fill(path, with: .color(col.opacity(0.85)))
             }
-            context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
+            context.stroke(path, with: .color(strokeColor), style: strokeStyle)
         } else if ent.type == "ARC", let center = ent.center, let radius = ent.radius,
                   let sa = ent.start_angle, let ea = ent.end_angle {
             let sc = toScreen(dx: center[0], dy: center[1], size: size, bounds: modelBounds)
@@ -6097,7 +6107,7 @@ struct DxfCanvasView: View {
                 endAngle: Angle(degrees: -ea),
                 clockwise: true
             )
-            context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
+            context.stroke(path, with: .color(strokeColor), style: strokeStyle)
         } else if let vertices = ent.vertices {
             if vertices.count >= 2 {
                 let pStart = toScreen(dx: vertices[0][0], dy: vertices[0][1], size: size, bounds: modelBounds)
@@ -6129,7 +6139,7 @@ struct DxfCanvasView: View {
                         ?? baseColor.opacity(0.28)
                     context.fill(fillPath, with: .color(fillColor), style: FillStyle(eoFill: true))
                 }
-                context.stroke(path, with: .color(strokeColor), lineWidth: strokeWidth)
+                context.stroke(path, with: .color(strokeColor), style: strokeStyle)
             }
         } else if ent.type == "TEXT", let textStr = ent.text, let start = ent.start {
             if state.isEditingText && state.editingTextHandle == ent.handle {
