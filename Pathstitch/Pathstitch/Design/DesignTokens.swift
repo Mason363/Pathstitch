@@ -102,6 +102,17 @@ extension NSColor {
                   blue: CGFloat(b) / 255, alpha: CGFloat(a) / 255)
     }
 
+    /// "rrggbb" for the receiver, converting to sRGB first. Robust against
+    /// non-RGB source spaces (grayscale/catalog) so it never silently drops to a
+    /// default — those fall back to reading the raw components directly.
+    func toHexString() -> String {
+        let c = usingColorSpace(.sRGB) ?? usingColorSpace(.deviceRGB) ?? self
+        let r = max(0, min(255, Int((c.redComponent * 255).rounded())))
+        let g = max(0, min(255, Int((c.greenComponent * 255).rounded())))
+        let b = max(0, min(255, Int((c.blueComponent * 255).rounded())))
+        return String(format: "%02x%02x%02x", r, g, b)
+    }
+
     /// Appearance-adaptive base window background (matches `Color.bg_base`), so
     /// NSWindow chrome behind the SwiftUI content follows the app theme (MAS-72).
     static var pathstitchWindowBackground: NSColor {

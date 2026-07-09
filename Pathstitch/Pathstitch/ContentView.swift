@@ -219,6 +219,56 @@ struct ToolbarHoverButton: View {
     }
 }
 
+/// A small circular colour swatch backed by an AppKit `NSColorWell`.
+///
+/// SwiftUI's `ColorPicker` inside a `ForEach` row — hidden under a low-opacity
+/// overlay — silently dropped the colour change on macOS: the panel opened but
+/// the binding's `set` never fired, so recolouring a layer did nothing. An
+/// `NSColorWell` fires its target/action on every colour change, and we read the
+/// RGB straight off the resulting `NSColor` (no lossy SwiftUI `Color` round-trip),
+/// so the recolour reliably reaches the model.
+struct LayerColorWell: NSViewRepresentable {
+    var colorHex: String
+    var onChange: (String) -> Void
+
+    func makeNSView(context: Context) -> NSColorWell {
+        let well = NSColorWell()
+        if #available(macOS 13.0, *) { well.colorWellStyle = .minimal }
+        well.target = context.coordinator
+        well.action = #selector(Coordinator.colorChanged(_:))
+        well.color = NSColor(hexString: colorHex)
+        // Pin the well to a compact square so the `.minimal` style doesn't stretch
+        // across the row. It sits invisibly under the SwiftUI circle swatch and
+        // only serves as the reliable click/colour-change target.
+        well.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            well.widthAnchor.constraint(equalToConstant: 16),
+            well.heightAnchor.constraint(equalToConstant: 16),
+        ])
+        return well
+    }
+
+    func updateNSView(_ well: NSColorWell, context: Context) {
+        context.coordinator.onChange = onChange
+        let target = NSColor(hexString: colorHex)
+        // Compare in a common space so we don't clobber the user's in-flight pick.
+        let current = well.color.usingColorSpace(.sRGB)
+        if current == nil || current!.toHexString() != target.usingColorSpace(.sRGB)?.toHexString() {
+            well.color = target
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    final class Coordinator: NSObject {
+        var onChange: (String) -> Void
+        init(onChange: @escaping (String) -> Void) { self.onChange = onChange }
+        @objc func colorChanged(_ sender: NSColorWell) {
+            onChange((sender.color.usingColorSpace(.sRGB) ?? sender.color).toHexString())
+        }
+    }
+}
+
 struct ContentView: View {
     @State var state: AppState
     /// Live keybind registry — drives the hidden hotkey buttons (MAS-72).
@@ -2094,28 +2144,27 @@ extension ContentView {
                                                 .foregroundColor(Color.accent)
                                                 .frame(width: 12, height: 12)
                                         } else {
-                                            // Premium color dot overlaying a borderless color
-                                            // picker. The picker fills a larger, fully
-                                            // hit-testable area so a click anywhere on the
-                                            // swatch reliably opens the picker (MAS-157).
+                                            // Circular colour swatch. The visible dot is pure
+                                            // SwiftUI; an invisible NSColorWell sits on top as the
+                                            // click/colour-change target — SwiftUI's ColorPicker
+                                            // silently dropped the pick here, but the well's
+                                            // target/action fires reliably (MAS-157 hit target,
+                                            // swatch-does-nothing fix).
+                                            let currentHex = state.layers.first(where: { $0.id == item.id })?.colorHex ?? "ffffff"
                                             ZStack {
                                                 Circle()
                                                     .fill(item.color ?? Color.clear)
-                                                    .overlay(
-                                                        Circle().stroke(Color.border_strong, lineWidth: 1)
-                                                    )
+                                                    .overlay(Circle().stroke(Color.border_strong, lineWidth: 1))
                                                     .frame(width: 12, height: 12)
                                                     .allowsHitTesting(false)
-                                                ColorPicker("", selection: Binding(
-                                                    get: { item.color ?? Color.clear },
-                                                    set: { state.colorLayer(id: item.id, newColorHex: $0.toHex()) }
-                                                ))
-                                                .labelsHidden()
+                                                LayerColorWell(colorHex: currentHex) { newHex in
+                                                    state.colorLayer(id: item.id, newColorHex: newHex)
+                                                }
+                                                .frame(width: 16, height: 16)
                                                 .opacity(0.02)
-                                                .frame(width: 20, height: 20)
-                                                .contentShape(Rectangle())
                                             }
-                                            .frame(width: 20, height: 20)
+                                            .frame(width: 16, height: 16)
+                                            .contentShape(Rectangle())
                                             .help("Click to change this layer's color")
                                         }
                                     }

@@ -119,6 +119,79 @@ def aci_to_hex(aci: int) -> str:
     except Exception:
         return "#ffffff"
 
+def _normalize_hex(value: Any) -> Optional[str]:
+    """Coerce an app-supplied colour ('rrggbb', '#rrggbb', 'aarrggbb', ...) into a
+    '#rrggbb' string suitable for SVG/PDF stroke. Returns None if unusable."""
+    if not isinstance(value, str):
+        return None
+    h = value.strip().lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    elif len(h) == 8:  # aarrggbb -> drop alpha
+        h = h[2:]
+    if len(h) != 6:
+        return None
+    try:
+        int(h, 16)
+    except ValueError:
+        return None
+    return f"#{h.lower()}"
+
+def _normalize_layer_colors(raw: Any) -> Dict[str, str]:
+    """Normalize a {layer_name: hex} override map from the Layers panel."""
+    out: Dict[str, str] = {}
+    if isinstance(raw, dict):
+        for name, val in raw.items():
+            hx = _normalize_hex(val)
+            if hx is not None:
+                out[str(name)] = hx
+    return out
+
+def _apply_layer_color_overrides(doc, layer_colors: Dict[str, str]) -> None:
+    """Stamp Layers-panel colours onto a document so exporters that resolve colour
+    from the DXF (export_dxf, the matplotlib PDF frontend) honour the recolour.
+
+    Sets the layer table's true-colour so BYLAYER entities inherit it, and also
+    writes the colour directly onto every entity on an overridden layer so
+    entities carrying an explicit ACI index follow too."""
+    if not layer_colors:
+        return
+    for name, hx in layer_colors.items():
+        rgb = hex_to_rgb(hx)
+        if rgb is None:
+            continue
+        try:
+            if name in doc.layers:
+                doc.layers.get(name).rgb = rgb
+        except Exception:
+            pass
+    try:
+        entities = list(doc.modelspace())
+    except Exception:
+        entities = []
+    for ent in entities:
+        try:
+            hx = layer_colors.get(ent.dxf.layer)
+        except Exception:
+            hx = None
+        if not hx:
+            continue
+        rgb = hex_to_rgb(hx)
+        if rgb is None:
+            continue
+        try:
+            ent.rgb = rgb
+        except Exception:
+            pass
+
+def hex_to_rgb(value: Any) -> Optional[Tuple[int, int, int]]:
+    """Parse a colour string into an (r, g, b) tuple, or None if unusable."""
+    hx = _normalize_hex(value)
+    if hx is None:
+        return None
+    hx = hx.lstrip("#")
+    return (int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16))
+
 def snap_endpoints(geoms: List[LineString], tolerance: float = 0.05) -> List[LineString]:
     """
     Clusters and snaps endpoints of LineStrings that are within a given tolerance.
@@ -2519,6 +2592,7 @@ def op_export_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         doc = ezdxf.readfile(input_path)
         _strip_excluded_layers(doc, exclude_layers)
+        _apply_layer_color_overrides(doc, _normalize_layer_colors(args.get("layer_colors")))
         if handles is not None:
             msp = doc.modelspace()
             for ent in list(msp):
@@ -2538,6 +2612,8 @@ def op_export_dxf(args: Dict[str, Any]) -> Dict[str, Any]:
             # Retry at the document's original version if the requested one
             # couldn't be written.
             doc2 = ezdxf.readfile(input_path)
+            _strip_excluded_layers(doc2, exclude_layers)
+            _apply_layer_color_overrides(doc2, _normalize_layer_colors(args.get("layer_colors")))
             if handles is not None:
                 m2 = doc2.modelspace()
                 for ent in list(m2):
@@ -3653,6 +3729,11 @@ def op_export_svg(args: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         precision = None
     stroke_width = float(args.get("stroke_width", 0.5) or 0.5)
+    # Per-layer colour overrides from the Layers panel (name -> hex). The panel
+    # colour is app-side metadata that never lived in the DXF, so without this
+    # the exported SVG fell back to the layer's ACI index and ignored the user's
+    # recolour entirely.
+    layer_colors = _normalize_layer_colors(args.get("layer_colors"))
 
     def _r(v):
         return round(v, precision) if precision is not None else v
@@ -3735,11 +3816,15 @@ def op_export_svg(args: Dict[str, Any]) -> Dict[str, Any]:
 
     used_ids = set()
     for layer_name, entities in layers_data.items():
-        try:
-            dxf_layer = doc.layers.get(layer_name)
-            color_hex = aci_to_hex(dxf_layer.color)
-        except Exception:
-            color_hex = "#ffffff"
+        override = layer_colors.get(layer_name)
+        if override:
+            color_hex = override
+        else:
+            try:
+                dxf_layer = doc.layers.get(layer_name)
+                color_hex = aci_to_hex(dxf_layer.color)
+            except Exception:
+                color_hex = "#ffffff"
 
         # Create SVG Group representing the DXF Layer
         # XML ID validation in svgwrite throws ValueError on invalid NCNames (like containing spaces, colons, etc.).
@@ -3857,13 +3942,14 @@ def op_export_pdf(args: Dict[str, Any]) -> Dict[str, Any]:
         
         doc = ezdxf.readfile(input_path)
         _strip_excluded_layers(doc, args.get("exclude_layers"))
+        _apply_layer_color_overrides(doc, _normalize_layer_colors(args.get("layer_colors")))
         msp = doc.modelspace()
 
         if handles is not None:
             for ent in list(msp):
                 if ent.dxf.handle not in handles:
                     msp.delete_entity(ent)
-        
+
         fig = plt.figure()
         ax = fig.add_axes([0, 0, 1, 1])
         ax.set_axis_off()

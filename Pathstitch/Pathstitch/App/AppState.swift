@@ -5585,6 +5585,10 @@ class AppState {
                 let handlesArg: [String]? = selectedOnly ? Array(selectedHandles) : nil
                 // Construction layers never reach the final cut export.
                 let excludeLayers = await MainActor.run { self.constructionLayerNames }
+                // Carry the Layers-panel colours through so a recoloured layer
+                // actually changes the exported file (it's app-side metadata the
+                // DXF itself never stored).
+                let layerColors = await MainActor.run { self.layerColorExportMap }
 
                 if format == "dxf" {
                     _ = try await PythonBridge.shared.run(
@@ -5595,14 +5599,16 @@ class AppState {
                             "output": tempExportURL.path,
                             "handles": handlesArg as Any,
                             "version": options.dxfVersion,
-                            "exclude_layers": excludeLayers
+                            "exclude_layers": excludeLayers,
+                            "layer_colors": layerColors
                         ]
                     )
                 } else if format == "svg" {
                     var args: [String: Any] = [
                         "input": exportInputPath, "output": tempExportURL.path,
                         "precision": options.svgPrecision, "stroke_width": options.svgStrokeWidth,
-                        "exclude_layers": excludeLayers
+                        "exclude_layers": excludeLayers,
+                        "layer_colors": layerColors
                     ]
                     if let handles = handlesArg {
                         args["handles"] = handles
@@ -5614,7 +5620,8 @@ class AppState {
                     )
                 } else if format == "pdf" {
                     var args: [String: Any] = ["input": exportInputPath, "output": tempExportURL.path,
-                                               "exclude_layers": excludeLayers]
+                                               "exclude_layers": excludeLayers,
+                                               "layer_colors": layerColors]
                     if let handles = handlesArg {
                         args["handles"] = handles
                     }
@@ -5630,7 +5637,8 @@ class AppState {
                     var args: [String: Any] = [
                         "input": exportInputPath, "output": tempSVG.path,
                         "precision": options.svgPrecision, "stroke_width": options.svgStrokeWidth,
-                        "exclude_layers": excludeLayers
+                        "exclude_layers": excludeLayers,
+                        "layer_colors": layerColors
                     ]
                     if let handles = handlesArg {
                         args["handles"] = handles
@@ -9585,6 +9593,19 @@ class AppState {
         guard let idx = layers.firstIndex(where: { $0.id == id }) else { return }
         layers[idx].colorHex = newColorHex
         hasUnsavedChanges = true
+    }
+
+    /// The Layers-panel colours as a `{layerName: "#rrggbb"}` map for the export
+    /// ops. The panel colour is app-side metadata that never lived in the DXF, so
+    /// exporters resolve colour from the layer's ACI index unless we hand them
+    /// this override — without it, recolouring a layer had no effect on the
+    /// exported SVG/DXF/PDF/PNG. Reference-image layers carry no geometry.
+    var layerColorExportMap: [String: String] {
+        var map: [String: String] = [:]
+        for layer in layers where !layer.isReferenceImageLayer {
+            map[layer.name] = "#" + layer.colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        }
+        return map
     }
     
     func moveLayer(id: String, toFolderId: String?) {
