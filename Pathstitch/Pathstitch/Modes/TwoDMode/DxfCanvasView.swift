@@ -177,6 +177,14 @@ struct DxfCanvasView: View {
                                 finishPenPath()
                                 return
                             }
+                            // Double-click a constraint badge → jump straight to
+                            // its editor (direct on-canvas manipulation).
+                            if !state.sketchConstraints.isEmpty,
+                               let gid = constraintGlyphHit(at: point, size: geo.size, modelBounds: modelBounds) {
+                                state.selectedConstraintId = gid
+                                state.currentTool = .constrain
+                                return
+                            }
                             if let nearestMeasure = findNearestMeasurement(screenPt: point, size: geo.size, bounds: modelBounds) {
                                 editingDimension = nearestMeasure
                                 editingDimensionText = String(format: "%.2f", nearestMeasure.distanceMm)

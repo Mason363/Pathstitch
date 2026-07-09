@@ -521,7 +521,8 @@ def _solve_system(table: ParamTable, constraints: List[Dict[str, Any]],
                   time_cap_ms: float = 250.0,
                   x_start: Optional[np.ndarray] = None,
                   x_body_base: Optional[np.ndarray] = None,
-                  do_solve: bool = True) -> Dict[str, Any]:
+                  do_solve: bool = True,
+                  restrict_pins: Optional[set] = None) -> Dict[str, Any]:
     """Runs the two-stage solve (or a diagnose-only pass when do_solve=False).
 
     Returns {"x": final vector (reverted to x_start on failure),
@@ -532,7 +533,8 @@ def _solve_system(table: ParamTable, constraints: List[Dict[str, Any]],
     funcs, rowmap, pinned = _compile(table, constraints)
     x0 = (x_start if x_start is not None else table.x0).astype(float).copy()
     base = x_body_base if x_body_base is not None else x0
-    free = [i for i in range(table.n) if i not in pinned]
+    frozen = pinned | (restrict_pins or set())
+    free = [i for i in range(table.n) if i not in frozen]
     free_arr = np.array(free, dtype=int)
     n_free = len(free)
 
@@ -744,6 +746,54 @@ def op_sketch_diagnose(args: Dict[str, Any]) -> Dict[str, Any]:
     }}
 
 
+def _component_of(table: ParamTable, constraints: List[Dict[str, Any]],
+                  handle: str) -> set:
+    """Handles in the constraint-graph connected component containing
+    `handle` (incremental re-solve: a drag only needs to solve the sub-graph
+    it can actually influence, so cost stays flat as the sketch grows)."""
+    parent = {m["handle"]: m["handle"] for m in table.meta}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for c in constraints:
+        hs = [h for h in
+              ({p.get("handle") for p in c.get("points") or []}
+               | set(c.get("entities") or []))
+              if h in parent]
+        for other in hs[1:]:
+            parent[find(hs[0])] = find(other)
+    if handle not in parent:
+        return {handle}
+    root = find(handle)
+    return {h for h in parent if find(h) == root}
+
+
+def solve_sketch(entities: List[Dict[str, Any]],
+                 constraints: List[Dict[str, Any]]):
+    """Public scripting/plugin API (sketch-engine roadmap: 'expose the solver
+    to scripting'). Solves a constraint system over plain entity dicts (the
+    op_list_entities shape) with NO file I/O, so generative pattern tools can
+    emit constrained, parametric sketches instead of raw paths:
+
+        from pathstitch_core.sketch_constraints import solve_sketch
+        solved, cons, diag = solve_sketch(entities, constraints)
+
+    Returns (solved_entities, enriched_constraints, diagnostics). On an
+    unsatisfiable system the input geometry is returned unchanged and the
+    diagnostics carry the conflicting constraint ids. Raises ConstraintError
+    for malformed constraint records.
+    """
+    table = ParamTable(entities)
+    res = _solve_system(table, constraints, time_cap_ms=1000.0)
+    x = res["x"]
+    solved = [table.entity_json(x, m["handle"]) for m in table.meta]
+    return solved, constraints, res["diagnostics"]
+
+
 # ---------------------------------------------------------------------------
 # Stateful sketch session (live constraint-aware dragging)
 # ---------------------------------------------------------------------------
@@ -804,10 +854,21 @@ def op_session_drag(args: Dict[str, Any]) -> Dict[str, Any]:
     drag = args.get("drag") or {}
 
     x_before = sess.x_last_valid
+    # Incremental re-solve: only the constraint-connected component of the
+    # dragged entity can move this frame; every other entity's params are
+    # frozen (but not marked "determined" — coloring stays truthful).
+    restrict = None
+    drag_handle = drag.get("handle")
+    if drag_handle in sess.table.by_handle:
+        component = _component_of(sess.table, sess.constraints, drag_handle)
+        restrict = set()
+        for m in sess.table.meta:
+            if m["handle"] not in component:
+                restrict.update(range(m["offset"], m["offset"] + m["count"]))
     try:
         res = _solve_system(sess.table, sess.constraints, drag=drag,
                             time_cap_ms=50.0, x_start=x_before,
-                            x_body_base=sess.x_open)
+                            x_body_base=sess.x_open, restrict_pins=restrict)
     except ConstraintError as e:
         # Bad drag payload (NaN target, unknown handle): keep last valid.
         return {"status": "ok", "data": {

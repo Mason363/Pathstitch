@@ -701,6 +701,12 @@ struct BatchItemSave: Codable {
 }
 
 struct ProjectSaveContainer: Codable {
+    /// .stch format version. nil = pre-versioning files (constraint-era
+    /// documents write 2). Bump when a field's MEANING changes — additive
+    /// optional fields don't need a bump.
+    static let currentSchemaVersion = 2
+    var schemaVersion: Int? = nil
+
     let dxfDataBase64: String?
     let measurements: [MeasurementLine]
     let logEntries: [LogEntry]
@@ -8345,6 +8351,7 @@ class AppState {
             }
 
             let container = ProjectSaveContainer(
+                schemaVersion: ProjectSaveContainer.currentSchemaVersion,
                 dxfDataBase64: base64Dxf,
                 measurements: measurements,
                 logEntries: logEntries,

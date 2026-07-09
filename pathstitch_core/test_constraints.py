@@ -734,6 +734,67 @@ def test_validate_geometry():
     print("  validate_geometry: 5 issue kinds + construction excluded + clean pass ok")
 
 
+def test_component_restricted_drag():
+    """Phase 8: a session drag only solves the dragged entity's constraint
+    component — a big unrelated cluster neither moves nor costs time."""
+    doc, msp = _new_doc()
+    # Component A: two perpendicular lines.
+    a1 = msp.add_line((0, 0), (10, 0)).dxf.handle
+    a2 = msp.add_line((10, 0), (10, 8)).dxf.handle
+    # Component B: a heavily-constrained far-away cluster.
+    b = [msp.add_line((100 + i * 10.0, 0), (110 + i * 10.0, 0)).dxf.handle
+         for i in range(20)]
+    src_path = _save(doc, "comp_in.dxf")
+    cons = [
+        _c("coincident", points=[_pt(a1, "end"), _pt(a2, "start")], cid="co"),
+        _c("perpendicular", entities=[a1, a2], cid="pe"),
+    ]
+    for i in range(19):
+        cons.append(_c("coincident",
+                       points=[_pt(b[i], "end"), _pt(b[i + 1], "start")], cid=f"b{i}"))
+    res = sc.op_session_open({"input": src_path, "constraints": cons})
+    sid = res["data"]["session_id"]
+    res = sc.op_session_drag({"session_id": sid, "drag": {
+        "handle": a2, "role": "end", "target": [14.0, 9.0]}})
+    assert res["status"] == "ok" and not res["data"]["reverted"], res
+    d = res["data"]["diagnostics"]
+    # Only component A's 8 params were free; B's 80 were frozen out.
+    assert d["n_params"] == 8, d
+    changed = {e["handle"] for e in res["data"]["entities"]}
+    assert changed <= {a1, a2}, f"unrelated component moved: {changed}"
+    # Frozen-out entities must NOT read as fully constrained.
+    assert d["fully_constrained"] == [], d
+    out = os.path.join(TMP, "comp_out.dxf")
+    res = sc.op_session_commit({"session_id": sid, "output": out})
+    assert res["status"] == "ok"
+    print("  component-restricted drag ok (8 free params, cluster untouched)")
+
+
+def test_solve_sketch_api():
+    """Phase 8: the pure scripting API solves entity dicts with no file I/O."""
+    entities = [
+        {"handle": "S1", "type": "LINE", "layer": "0", "color": 7,
+         "start": [0.0, 0.0], "end": [9.7, 0.4]},
+        {"handle": "S2", "type": "CIRCLE", "layer": "0", "color": 7,
+         "center": [5.0, 6.0], "radius": 2.0},
+    ]
+    cons = [
+        {"id": "g", "kind": "ground", "points": [{"handle": "S1", "role": "start"}]},
+        {"id": "h", "kind": "horizontal", "entities": ["S1"]},
+        {"id": "d", "kind": "distance", "value": 10.0,
+         "points": [{"handle": "S1", "role": "start"}, {"handle": "S1", "role": "end"}]},
+        {"id": "t", "kind": "tangent", "entities": ["S1", "S2"]},
+    ]
+    solved, out_cons, diag = sc.solve_sketch(entities, cons)
+    assert diag["converged"], diag
+    by = {e["handle"]: e for e in solved}
+    assert abs(by["S1"]["end"][1]) < 1e-6
+    assert abs(_dist(by["S1"]["start"], by["S1"]["end"]) - 10.0) < 1e-5
+    assert abs(by["S2"]["center"][1] - by["S2"]["radius"]) < 1e-5  # tangent to y=0
+    assert any(c.get("branch") in (1, -1) for c in out_cons if c["id"] == "t")
+    print("  solve_sketch scripting API ok (no file I/O, branch enriched)")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -757,6 +818,8 @@ def run_all():
         test_explode_to_lines_and_constrain,
         test_expression_passthrough,
         test_validate_geometry,
+        test_component_restricted_drag,
+        test_solve_sketch_api,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")
