@@ -3736,6 +3736,19 @@ extension ContentView {
                 state.autoConstrainSketch()
             }
 
+            // Reusable constrained components (Phase 9): save a fully
+            // constrained sub-pattern, drop it into any document as a unit.
+            HStack(spacing: 8) {
+                TOSecondaryButton(title: "Save Component…",
+                                  icon: "square.and.arrow.down",
+                                  enabled: !state.selectedHandles.isEmpty) {
+                    state.saveConstrainedComponent()
+                }
+                TOSecondaryButton(title: "Insert…", icon: "square.and.arrow.up") {
+                    state.insertConstrainedComponent()
+                }
+            }
+
             // Constraint list.
             if !state.sketchConstraints.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {

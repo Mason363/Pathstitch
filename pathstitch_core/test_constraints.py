@@ -795,6 +795,61 @@ def test_solve_sketch_api():
     print("  solve_sketch scripting API ok (no file I/O, branch enriched)")
 
 
+def test_insert_component():
+    """Phase 9: a saved constrained component drops in as a live unit —
+    fresh handles, remapped constraints, still solvable and editable."""
+    component = {
+        "schemaVersion": 1,
+        "entities": [
+            {"handle": "A", "type": "LINE", "layer": "DRAWN_SHAPES", "color": 7,
+             "start": [0.0, 0.0], "end": [30.0, 0.0]},
+            {"handle": "B", "type": "LINE", "layer": "DRAWN_SHAPES", "color": 7,
+             "start": [30.0, 0.0], "end": [30.0, 8.0]},
+            {"handle": "C", "type": "CIRCLE", "layer": "DRAWN_SHAPES", "color": 7,
+             "center": [15.0, 3.0], "radius": 3.0},
+        ],
+        "constraints": [
+            {"id": "c1", "kind": "coincident",
+             "points": [{"handle": "A", "role": "end"}, {"handle": "B", "role": "start"}]},
+            {"id": "c2", "kind": "perpendicular", "entities": ["A", "B"]},
+            {"id": "c3", "kind": "tangent", "entities": ["A", "C"], "branch": 1},
+            {"id": "c4", "kind": "distance", "value": 30.0, "expression": "slot_w",
+             "points": [{"handle": "A", "role": "start"}, {"handle": "A", "role": "end"}]},
+        ],
+    }
+    doc, msp = _new_doc()
+    keep = msp.add_line((-50, 0), (-40, 0)).dxf.handle
+    src_path = _save(doc, "insert_in.dxf")
+    out = os.path.join(TMP, "insert_out.dxf")
+    res = sc.op_insert_component({"input": src_path, "output": out,
+                                  "component": component, "offset": [100.0, 5.0]})
+    assert res["status"] == "ok", res
+    mapping = res["data"]["mapping"]
+    remapped = res["data"]["constraints"]
+    assert set(mapping.keys()) == {"A", "B", "C"}
+    assert len(remapped) == 4
+    old_ids = {c["id"] for c in component["constraints"]}
+    for c in remapped:
+        assert c["id"] not in old_ids                       # fresh ids
+        for p in c.get("points") or []:
+            assert p["handle"] in mapping.values()
+        for h in c.get("entities") or []:
+            assert h in mapping.values()
+    # Expression + branch survive the remap.
+    dist = [c for c in remapped if c["kind"] == "distance"][0]
+    assert dist.get("expression") == "slot_w" and abs(dist["value"] - 30.0) < 1e-9
+    assert [c for c in remapped if c["kind"] == "tangent"][0].get("branch") == 1
+    # Placed geometry landed at the offset, existing geometry untouched, and
+    # the remapped system diagnoses as already-consistent.
+    ents = _entity_map(out)
+    assert keep in ents and len(ents) == 4
+    a_new = ents[mapping["A"]]
+    assert abs(a_new["start"][0] - 100.0) < 1e-9 and abs(a_new["start"][1] - 5.0) < 1e-9
+    res = sc.op_sketch_diagnose({"input": out, "constraints": remapped})
+    assert res["data"]["diagnostics"]["converged"], res["data"]
+    print("  insert_component ok (remapped, offset, consistent)")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -820,6 +875,7 @@ def run_all():
         test_validate_geometry,
         test_component_restricted_drag,
         test_solve_sketch_api,
+        test_insert_component,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")

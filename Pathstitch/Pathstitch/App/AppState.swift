@@ -5186,6 +5186,156 @@ class AppState {
         }
     }
 
+    // MARK: - Reusable constrained components (Phase 9)
+
+    /// Serializes one solvable entity into the component/wire dict shape.
+    private func componentEntityDict(_ e: DXFEntity) -> [String: Any] {
+        var d: [String: Any] = ["handle": e.handle, "type": e.type,
+                                "layer": e.layer, "color": e.color]
+        if let v = e.start { d["start"] = v }
+        if let v = e.end { d["end"] = v }
+        if let v = e.center { d["center"] = v }
+        if let v = e.radius { d["radius"] = v }
+        if let v = e.start_angle { d["start_angle"] = v }
+        if let v = e.end_angle { d["end_angle"] = v }
+        return d
+    }
+
+    /// Saves the selected constrained sub-pattern — its solvable entities, the
+    /// constraints fully contained in the selection, and every parameter those
+    /// constraints' formulas reach (transitively) — as a .stchpart file. The
+    /// unit a strap slot or buckle pattern gets reused as.
+    func saveConstrainedComponent() {
+        let sel = entities.filter { selectedHandles.contains($0.handle) && SketchSolvable.isSolvable($0) }
+        guard !sel.isEmpty else {
+            errorMessage = "Select the lines/circles/arcs to save as a component."
+            return
+        }
+        let handleSet = Set(sel.map { $0.handle })
+        let cons = sketchConstraints.filter { $0.referencedHandles.isSubset(of: handleSet) }
+        // Parameters the component formulas depend on, transitively.
+        var needed = Set<String>()
+        for c in cons {
+            if let e = c.expression { needed.formUnion(DimensionEngine.referencedVars(in: e)) }
+        }
+        var frontier = needed
+        while !frontier.isEmpty {
+            var next = Set<String>()
+            for name in frontier {
+                if let p = userParameters.first(where: { $0.id == name }) {
+                    next.formUnion(DimensionEngine.referencedVars(in: p.expression))
+                }
+            }
+            next.subtract(needed)
+            needed.formUnion(next)
+            frontier = next
+        }
+        let params = userParameters.filter { needed.contains($0.id) }
+
+        let payload: [String: Any] = [
+            "schemaVersion": 1,
+            "entities": sel.map { componentEntityDict($0) },
+            "constraints": cons.map { $0.asDictionary },
+            "parameters": params.map { ["id": $0.id, "expression": $0.expression, "value": $0.value] },
+        ]
+        let savePanel = NSSavePanel()
+        savePanel.title = "Save Constrained Component"
+        savePanel.nameFieldStringValue = "component.stchpart"
+        savePanel.allowedContentTypes = [UTType(filenameExtension: "stchpart")].compactMap { $0 }
+        guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: payload, options: .prettyPrinted)
+            try data.write(to: url)
+            errorMessage = "Saved component: \(sel.count) entities, \(cons.count) constraints, \(params.count) parameters."
+        } catch {
+            errorMessage = "Couldn't save component: \(error.localizedDescription)"
+        }
+    }
+
+    /// Inserts a saved .stchpart as a live constrained unit: fresh entities,
+    /// remapped constraints, missing parameters merged. Placed just right of
+    /// the current sketch so it never lands on top of existing geometry.
+    func insertConstrainedComponent() {
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Insert Constrained Component"
+        openPanel.allowedContentTypes = [UTType(filenameExtension: "stchpart")].compactMap { $0 }
+        openPanel.allowsMultipleSelection = false
+        guard openPanel.runModal() == .OK, let url = openPanel.url,
+              let data = try? Data(contentsOf: url),
+              let component = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let compEnts = component["entities"] as? [[String: Any]], !compEnts.isEmpty else {
+            errorMessage = "Couldn't read the component file."
+            return
+        }
+
+        // Placement: just right of the current sketch bounds.
+        func xs(_ d: [String: Any]) -> [Double] {
+            var out: [Double] = []
+            for key in ["start", "end", "center"] {
+                if let p = d[key] as? [Double], p.count >= 2 {
+                    let r = (d["radius"] as? Double) ?? 0
+                    out.append(p[0] - (key == "center" ? r : 0))
+                    out.append(p[0] + (key == "center" ? r : 0))
+                }
+            }
+            return out
+        }
+        let compMinX = compEnts.flatMap { xs($0) }.min() ?? 0
+        var sketchMaxX = 0.0
+        for e in entities {
+            for v in [e.start, e.end, e.center] where v != nil {
+                sketchMaxX = max(sketchMaxX, v![0] + (e.radius ?? 0))
+            }
+            for v in e.vertices ?? [] where v.count >= 2 { sketchMaxX = max(sketchMaxX, v[0]) }
+        }
+        let dx = entities.isEmpty ? 0.0 : (sketchMaxX + 15.0 - compMinX)
+
+        saveToHistory()
+        Task {
+            await reconcileBufferIfNeeded()
+            let input = await MainActor.run { self.currentFilePath ?? self.ensureActiveDXFFileExists() }
+            let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
+            do {
+                let res = try await PythonBridge.shared.run(
+                    module: "sketch_constraints",
+                    op: "insert_component",
+                    args: ["input": input.path,
+                           "output": activeDxfURL.path,
+                           "component": component,
+                           "offset": [dx, 0.0]]
+                )
+                let rdata = res["data"] as? [String: Any] ?? [:]
+                let mapping = rdata["mapping"] as? [String: String] ?? [:]
+                let remapped = Self.decodeConstraints(rdata["constraints"]) ?? []
+                await MainActor.run {
+                    self.currentFilePath = activeDxfURL
+                    // Merge the component's parameters the document lacks;
+                    // an existing same-named parameter wins (document rules).
+                    if let params = component["parameters"] as? [[String: Any]] {
+                        for p in params {
+                            guard let name = p["id"] as? String,
+                                  let expr = p["expression"] as? String,
+                                  !self.userParameters.contains(where: { $0.id == name }),
+                                  self.validateParameterName(name) == nil else { continue }
+                            self.userParameters.append(DimensionParameter(
+                                id: name, expression: expr,
+                                value: (p["value"] as? Double) ?? 0))
+                        }
+                        self.rebuildDimensionEngine()
+                    }
+                    self.sketchConstraints.append(contentsOf: remapped)
+                    self.selectedHandles = Set(mapping.values)
+                    self.hasUnsavedChanges = true
+                    self.reloadDXF()
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Insert component failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     /// Drops offset-link references to handles that no longer exist. A link
     /// whose sources or derived geometry are entirely gone is removed (the
     /// user deleted one side); partial losses just shrink the link.

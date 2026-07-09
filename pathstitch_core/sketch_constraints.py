@@ -1169,6 +1169,90 @@ def op_explode_to_lines(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "ok", "data": {"new_handles": new_handles, "kept": kept}}
 
 
+# ---------------------------------------------------------------------------
+# Reusable constrained components (Phase 9)
+# ---------------------------------------------------------------------------
+
+def op_insert_component(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Instantiates a saved constrained component (a .stchpart: entity dicts +
+    the constraint records among them) into the document, shifted by `offset`.
+    Returns the old→new handle mapping and the constraints remapped onto the
+    fresh handles with fresh ids — a strap slot dropped in as a unit stays a
+    live, editable, constrained model.
+    """
+    input_path = args.get("input")
+    output_path = args.get("output")
+    component = args.get("component") or {}
+    offset = args.get("offset") or [0.0, 0.0]
+    dx, dy = float(offset[0]), float(offset[1])
+    ent_dicts = component.get("entities") or []
+    cons = component.get("constraints") or []
+    if not input_path or not os.path.exists(input_path):
+        return {"status": "error", "message": f"Input file not found: {input_path}"}
+    if not output_path:
+        return {"status": "error", "message": "Output path must be specified."}
+    if not ent_dicts:
+        return {"status": "error", "message": "Component contains no entities."}
+
+    try:
+        doc = ezdxf.readfile(input_path)
+    except Exception as e:
+        return {"status": "error", "message": f"Cannot read DXF: {e}"}
+    msp = doc.modelspace()
+
+    mapping: Dict[str, str] = {}
+    for e in ent_dicts:
+        t = e.get("type")
+        layer = e.get("layer", "0")
+        if layer not in doc.layers:
+            try:
+                doc.layers.new(layer)
+            except Exception:
+                layer = "0"
+        attribs = {"layer": layer}
+        try:
+            if t == "LINE":
+                ne = msp.add_line((e["start"][0] + dx, e["start"][1] + dy),
+                                  (e["end"][0] + dx, e["end"][1] + dy),
+                                  dxfattribs=attribs)
+            elif t == "CIRCLE":
+                ne = msp.add_circle((e["center"][0] + dx, e["center"][1] + dy),
+                                    radius=float(e["radius"]), dxfattribs=attribs)
+            elif t == "ARC":
+                ne = msp.add_arc((e["center"][0] + dx, e["center"][1] + dy),
+                                 radius=float(e["radius"]),
+                                 start_angle=float(e["start_angle"]),
+                                 end_angle=float(e["end_angle"]),
+                                 dxfattribs=attribs)
+            else:
+                continue
+        except Exception:
+            continue
+        mapping[e.get("handle", "")] = ne.dxf.handle
+
+    remapped: List[Dict[str, Any]] = []
+    for c in cons:
+        pts = c.get("points") or []
+        ents = c.get("entities") or []
+        if any(p.get("handle") not in mapping for p in pts) \
+                or any(h not in mapping for h in ents):
+            continue  # references something outside the saved selection
+        nc = dict(c)
+        nc["id"] = uuid.uuid4().hex
+        if pts:
+            nc["points"] = [{"handle": mapping[p["handle"]], "role": p.get("role", "")}
+                            for p in pts]
+        if ents:
+            nc["entities"] = [mapping[h] for h in ents]
+        remapped.append(nc)
+
+    try:
+        doc.saveas(output_path)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to write DXF: {e}"}
+    return {"status": "ok", "data": {"mapping": mapping, "constraints": remapped}}
+
+
 OPERATIONS = {
     "sketch_solve": op_sketch_solve,
     "sketch_diagnose": op_sketch_diagnose,
@@ -1178,6 +1262,7 @@ OPERATIONS = {
     "session_abort": op_session_abort,
     "infer_constraints": op_infer_constraints,
     "explode_to_lines": op_explode_to_lines,
+    "insert_component": op_insert_component,
 }
 
 
