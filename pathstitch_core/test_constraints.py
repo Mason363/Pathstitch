@@ -874,6 +874,59 @@ def test_radius_constraint():
     print("  radius constraint (drives radius, keeps tangency, validates) ok")
 
 
+def test_anchor_and_stiffness():
+    """Fusion motion priority: the FIRST-picked operand moves to the SECOND,
+    and heavily-constrained geometry resists moving more than a stray line."""
+    # 1. Two free lines + parallel: first pick rotates, second stays put.
+    doc, msp = _new_doc()
+    a = msp.add_line((0, 0), (10, 4)).dxf.handle       # first pick (mover)
+    b = msp.add_line((0, 10), (10, 10)).dxf.handle     # second pick (anchor)
+    src_p = _save(doc, "anchor_in.dxf")
+    out = os.path.join(TMP, "anchor_out.dxf")
+    res = sc.op_sketch_solve({"input": src_p, "output": out,
+                              "constraints": [_c("parallel", entities=[a, b], cid="pa")],
+                              "anchor_constraint_id": "pa"})
+    d = res["data"]["diagnostics"]
+    assert d["converged"], d
+    ents = _entity_map(out)
+    bb = ents[b]
+    assert _dist(bb["start"], (0, 10)) < 1e-3 and _dist(bb["end"], (10, 10)) < 1e-3, \
+        f"anchor moved: {bb}"
+    aa = ents[a]
+    # The mover aligned to the (nearly untouched) anchor: cross ≈ 0 and the
+    # original 0.4 slope is gone.
+    ua = (aa["end"][0] - aa["start"][0], aa["end"][1] - aa["start"][1])
+    ub = (bb["end"][0] - bb["start"][0], bb["end"][1] - bb["start"][1])
+    cross = ua[0] * ub[1] - ua[1] * ub[0]
+    assert abs(cross) / (math.hypot(*ua) * math.hypot(*ub)) < 1e-6, "not parallel"
+    assert abs(ua[1]) < 5e-3, f"mover did not rotate to the anchor: dy={ua[1]}"
+
+    # 2. Stray line coincident onto a constrained rectangle corner (stray
+    #    picked FIRST): the rectangle corner must not move.
+    doc, msp = _new_doc()
+    r1 = msp.add_line((0, 0), (20, 0)).dxf.handle
+    r2 = msp.add_line((20, 0), (20, 10)).dxf.handle
+    stray = msp.add_line((30, 30), (45, 38)).dxf.handle
+    src_p = _save(doc, "stiff_in.dxf")
+    cons = [
+        _c("ground", points=[_pt(r1, "start")], cid="g"),
+        _c("coincident", points=[_pt(r1, "end"), _pt(r2, "start")], cid="c1"),
+        _c("horizontal", entities=[r1], cid="h"),
+        _c("vertical", entities=[r2], cid="v"),
+        dict(_c("coincident", points=[_pt(stray, "start"), _pt(r2, "end")]), id="new"),
+    ]
+    res = sc.op_sketch_solve({"input": src_p, "output": out, "constraints": cons,
+                              "anchor_constraint_id": "new"})
+    d = res["data"]["diagnostics"]
+    assert d["converged"], d
+    ents = _entity_map(out)
+    corner = ents[r2]["end"]
+    # "Stays put" = sub-visible drift (µm scale) while the stray travels ~25mm.
+    assert _dist(corner, (20, 10)) < 0.01, f"rectangle corner moved: {corner}"
+    assert _dist(ents[stray]["start"], corner) < 1e-5, "stray did not attach"
+    print("  pick-order anchoring + stiffness priority ok")
+
+
 def run_all():
     tests = [
         test_perpendicular_corner,
@@ -901,6 +954,7 @@ def run_all():
         test_solve_sketch_api,
         test_insert_component,
         test_radius_constraint,
+        test_anchor_and_stiffness,
         test_drag_benchmark,
     ]
     print(f"Running {len(tests)} constraint-solver tests (tmp: {TMP})")

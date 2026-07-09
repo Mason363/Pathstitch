@@ -43,6 +43,8 @@ CONVERGE_TOL = 1e-6          # mm; residual infinity-norm for "constraints hold"
 REG_WEIGHT = 1e-2            # sqrt(lambda), lambda = 1e-4
 DRAG_WEIGHT = 3.0            # cursor adherence; stage-B polish re-imposes constraints exactly
 MAX_NFEV = 200               # per solve stage
+STIFFNESS_K = 3.0            # stay-put weight grows with an entity's constraint count
+ANCHOR_REG = 2.0             # the pick-anchor entity effectively stays put
 NULLSPACE_TOL = 1e-6         # nullspace component below this = param determined
 MIN_RADIUS = 1e-9
 
@@ -542,7 +544,8 @@ def _solve_system(table: ParamTable, constraints: List[Dict[str, Any]],
                   x_start: Optional[np.ndarray] = None,
                   x_body_base: Optional[np.ndarray] = None,
                   do_solve: bool = True,
-                  restrict_pins: Optional[set] = None) -> Dict[str, Any]:
+                  restrict_pins: Optional[set] = None,
+                  anchor_new_cid: Optional[str] = None) -> Dict[str, Any]:
     """Runs the two-stage solve (or a diagnose-only pass when do_solve=False).
 
     Returns {"x": final vector (reverted to x_start on failure),
@@ -568,6 +571,34 @@ def _solve_system(table: ParamTable, constraints: List[Dict[str, Any]],
         if not funcs:
             return np.zeros(0)
         return np.concatenate([fn(xfull) for fn in funcs])
+
+    # Motion priority (Fusion feel): heavily-constrained geometry resists
+    # moving — a stray line absorbs the correction, a rectangle stays. And
+    # when a constraint was just added, the FIRST-picked operand moves to the
+    # SECOND (the last pick anchors), never both meeting in the middle.
+    counts: Dict[str, int] = {m["handle"]: 0 for m in table.meta}
+    for c in constraints:
+        if c.get("id") == anchor_new_cid:
+            continue  # the new constraint itself doesn't stiffen its operands
+        refs = {p.get("handle") for p in c.get("points") or []}             | set(c.get("entities") or [])
+        for h in refs:
+            if h in counts:
+                counts[h] += 1
+    reg_w_full = np.full(table.n, REG_WEIGHT)
+    for m in table.meta:
+        w = REG_WEIGHT * (1.0 + STIFFNESS_K * counts[m["handle"]])
+        reg_w_full[m["offset"]:m["offset"] + m["count"]] = w
+    if anchor_new_cid is not None:
+        new_c = next((c for c in constraints if c.get("id") == anchor_new_cid), None)
+        if new_c is not None:
+            ordered = [p.get("handle") for p in new_c.get("points") or []]                 + list(new_c.get("entities") or [])
+            distinct = [h for i, h in enumerate(ordered)
+                        if h in table.by_handle and h not in ordered[:i]]
+            if len(distinct) >= 2:
+                anchor = table.by_handle[distinct[-1]]
+                sl = slice(anchor["offset"], anchor["offset"] + anchor["count"])
+                reg_w_full[sl] = np.maximum(reg_w_full[sl], ANCHOR_REG)
+    reg_w = reg_w_full[free_arr] if n_free else np.zeros(0)
 
     # Drag rows (soft targets, weight below constraints).
     drag_fn = None
@@ -611,7 +642,7 @@ def _solve_system(table: ParamTable, constraints: List[Dict[str, Any]],
             def fun_a(xf):
                 check_deadline()
                 xfull = embed(xf)
-                rows = [constraints_F(xfull), REG_WEIGHT * (xf - x0_free)]
+                rows = [constraints_F(xfull), reg_w * (xf - x0_free)]
                 if drag_fn is not None:
                     rows.append(drag_fn(xfull))
                 return np.concatenate(rows)
@@ -622,12 +653,18 @@ def _solve_system(table: ParamTable, constraints: List[Dict[str, Any]],
             # Stage B: constraints only (anchored at stage A) so committed
             # geometry satisfies constraints regardless of drag weights.
             xa = res_a.x
+            # Stage-B regularization only pins nullspace drift; keep it far
+            # below the constraint weight and solve tight so the committed
+            # geometry meets CONVERGE_TOL even after a biased stage A.
+            polish_w = REG_WEIGHT * 0.01
+
             def fun_b(xf):
                 check_deadline()
                 return np.concatenate([constraints_F(embed(xf)),
-                                       REG_WEIGHT * (xf - xa)])
+                                       polish_w * (xf - xa)])
 
-            res_b = least_squares(fun_b, xa, method="lm", max_nfev=MAX_NFEV)
+            res_b = least_squares(fun_b, xa, method="lm", max_nfev=MAX_NFEV,
+                                  ftol=1e-14, xtol=1e-14, gtol=1e-14)
             nfev_total += res_b.nfev
             x_attempt = embed(res_b.x)
         except SolveTimeout:
@@ -718,7 +755,8 @@ def op_sketch_solve(args: Dict[str, Any]) -> Dict[str, Any]:
 
     table = ParamTable(_load_solvables(doc))
     try:
-        res = _solve_system(table, constraints, time_cap_ms=250.0)
+        res = _solve_system(table, constraints, time_cap_ms=250.0,
+                            anchor_new_cid=args.get("anchor_constraint_id"))
     except ConstraintError as e:
         return {"status": "error", "message": str(e)}
 

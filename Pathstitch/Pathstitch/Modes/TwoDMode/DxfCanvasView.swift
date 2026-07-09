@@ -110,6 +110,10 @@ struct DxfCanvasView: View {
     @State private var dimensionFieldError: Bool = false
     /// First picked point for a two-point linear dimension (MAS-110 §1).
     @State private var dimensionFirstPoint: CGPoint? = nil
+    /// Fusion pick matrix: the first pick may be an entity (line/circle/arc)
+    /// or a named point — the second pick decides the dimension type.
+    @State private var dimensionFirstEntity: String? = nil
+    @State private var dimensionFirstPointRef: PointRef? = nil
     @FocusState private var isTextEditorFocused: Bool
     @FocusState private var isDimensionEditorFocused: Bool
     @FocusState private var isCalibrationInputFocused: Bool
@@ -453,6 +457,8 @@ struct DxfCanvasView: View {
                     curvePoints = []
                     state.activeMeasureStart = nil
                     gizmoDimKind = nil
+                    dimensionFirstEntity = nil
+                    dimensionFirstPointRef = nil
                     // Leaving the Constrain tool drops partial picks + glyph selection.
                     if oldTool == .constrain && newTool != .constrain {
                         state.pendingConstraintPoints = []
@@ -5913,42 +5919,185 @@ struct DxfCanvasView: View {
     /// the geometry; reference dimensions are placed at their measured value.
     private func placeDimension(at point: CGPoint, size: CGSize, modelBounds: CGRect) {
         let modelPt = toModel(point: point, size: size, bounds: modelBounds)
+        let hit = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 14.0, size: size, bounds: modelBounds)
+        let pointRef = constraintPointPick(at: point, size: size, modelBounds: modelBounds)
 
-        if let ent = findNearestEntity(modelPt: modelPt, maxDistanceScreen: 14.0, size: size, bounds: modelBounds) {
+        // ---- Second pick: combine with the stored first pick (Fusion matrix).
+        if let firstHandle = dimensionFirstEntity,
+           let first = state.entities.first(where: { $0.handle == firstHandle }) {
+            dimensionFirstEntity = nil
             dimensionFirstPoint = nil
-            if ent.type == "LINE", let s = ent.start, let e = ent.end {
+            if first.type == "LINE", let s = first.start, let e = first.end {
                 let a = CGPoint(x: s[0], y: s[1]), b = CGPoint(x: e[0], y: e[1])
+                if let second = hit, second.type == "LINE", second.handle != first.handle,
+                   let s2 = second.start, let e2 = second.end {
+                    // line + line: parallel → distance between; else → angle.
+                    let u1 = (e[0] - s[0], e[1] - s[1])
+                    let u2 = (e2[0] - s2[0], e2[1] - s2[1])
+                    let cross = u1.0 * u2.1 - u1.1 * u2.0
+                    let denom = hypot(u1.0, u1.1) * hypot(u2.0, u2.1)
+                    if denom > 1e-9, abs(cross / denom) < 0.087 {   // < ~5° → parallel
+                        placeLineToLineDistance(from: first, to: second,
+                                                size: size, modelBounds: modelBounds)
+                    } else {
+                        placeAngleDimension(first: first, second: second,
+                                            size: size, modelBounds: modelBounds)
+                    }
+                    return
+                }
+                if let p = pointRef, p.handle != first.handle {
+                    placePointLineDistance(pointRef: p, line: first, pointFirst: false,
+                                           size: size, modelBounds: modelBounds)
+                    return
+                }
+                // Empty space / same line → the plain length dimension.
                 let len = Double(hypot(a.x - b.x, a.y - b.y))
                 beginParametricDimension(start: a, end: b, value: len, type: "length",
-                                         handle: ent.handle, size: size, modelBounds: modelBounds)
+                                         handle: first.handle, size: size, modelBounds: modelBounds)
                 return
             }
-            if (ent.type == "CIRCLE" || ent.type == "ARC"), let c = ent.center, let r = ent.radius {
+            if (first.type == "CIRCLE" || first.type == "ARC"),
+               let c = first.center, let r = first.radius {
                 let center = CGPoint(x: c[0], y: c[1])
                 let edge = CGPoint(x: center.x + CGFloat(r), y: center.y)
-                beginParametricDimension(start: center, end: edge, value: r, type: "radius",
-                                         handle: ent.handle, size: size, modelBounds: modelBounds)
+                if first.type == "CIRCLE" {
+                    // Fusion: circles dimension as DIAMETER by default.
+                    beginParametricDimension(start: center, end: edge, value: r * 2,
+                                             type: "diameter", handle: first.handle,
+                                             size: size, modelBounds: modelBounds)
+                } else {
+                    beginParametricDimension(start: center, end: edge, value: r, type: "radius",
+                                             handle: first.handle, size: size, modelBounds: modelBounds)
+                }
                 return
             }
+            return
         }
 
-        // Two-point linear (reference) distance.
-        let snapped = snappedModelPoint(forScreen: point, ref: dimensionFirstPoint, size: size, bounds: modelBounds)
-        if let first = dimensionFirstPoint {
+        if let firstPt = dimensionFirstPoint {
+            // point + line → perpendicular distance; point + point → distance.
+            if let second = hit, second.type == "LINE",
+               let firstRef = dimensionFirstPointRef {
+                dimensionFirstPoint = nil
+                dimensionFirstPointRef = nil
+                placePointLineDistance(pointRef: firstRef, line: second, pointFirst: true,
+                                       size: size, modelBounds: modelBounds)
+                return
+            }
+            let snapped = snappedModelPoint(forScreen: point, ref: firstPt, size: size, bounds: modelBounds)
+            let firstRef = dimensionFirstPointRef
             dimensionFirstPoint = nil
-            let dist = Double(hypot(first.x - snapped.x, first.y - snapped.y))
+            dimensionFirstPointRef = nil
+            let dist = Double(hypot(firstPt.x - snapped.x, firstPt.y - snapped.y))
             guard dist > 1e-6 else { return }
-            state.saveToHistory()
-            let varName = state.dimensionEngine.nextVarName()
-            state.dimensionEngine.addNumeric(value: dist, id: varName, driven: true)
-            let m = MeasurementLine(start: first, end: snapped, distanceMm: dist,
-                                    isAutoDimension: false, dimensionType: "reference",
-                                    varName: varName, expression: String(format: "%g", dist),
-                                    driven: true, isParametric: true, offsetDistance: 0)
-            state.measurements.append(m)
-        } else {
-            dimensionFirstPoint = snapped
+            // Driving when both points are solvable named points (Fusion);
+            // otherwise a driven reference measurement.
+            var constraint: SketchConstraint? = nil
+            if let a = firstRef, let b = pointRef, a != b {
+                var c = SketchConstraint(kind: "distance")
+                c.points = [a, b]
+                c.value = dist
+                constraint = c
+            }
+            commitComboDimension(start: firstPt, end: snapped, value: dist,
+                                 type: constraint == nil ? "reference" : "length",
+                                 constraint: constraint, size: size, modelBounds: modelBounds)
+            return
         }
+
+        // ---- First pick: store an entity or a point.
+        if let ent = hit, ent.type == "LINE" || ent.type == "CIRCLE" || ent.type == "ARC" {
+            dimensionFirstEntity = ent.handle
+            dimensionFirstPoint = nil
+            dimensionFirstPointRef = nil
+            return
+        }
+        let snapped = snappedModelPoint(forScreen: point, ref: nil, size: size, bounds: modelBounds)
+        dimensionFirstPoint = snapped
+        dimensionFirstPointRef = pointRef
+        dimensionFirstEntity = nil
+    }
+
+    /// Perpendicular point→line distance dimension (driving). `pointFirst`
+    /// preserves the user's pick order for the solver's move-the-first rule.
+    private func placePointLineDistance(pointRef: PointRef, line: DXFEntity, pointFirst: Bool,
+                                        size: CGSize, modelBounds: CGRect) {
+        guard let pEnt = state.entities.first(where: { $0.handle == pointRef.handle }),
+              let p = namedPoint(pEnt, role: pointRef.role),
+              let s = line.start, let e = line.end else { return }
+        let a = CGPoint(x: s[0], y: s[1]), b = CGPoint(x: e[0], y: e[1])
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len2 = dx * dx + dy * dy
+        guard len2 > 1e-12 else { return }
+        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2
+        let foot = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+        let dist = Double(hypot(p.x - foot.x, p.y - foot.y))
+        guard dist > 1e-6 else { return }
+        var c = SketchConstraint(kind: "distance")
+        c.points = [pointRef]
+        c.entities = [line.handle]
+        c.value = dist
+        commitComboDimension(start: p, end: foot, value: dist, type: "length",
+                             constraint: c, size: size, modelBounds: modelBounds)
+    }
+
+    /// Distance between two (near-)parallel lines: perpendicular distance from
+    /// the first line's start onto the second line (Fusion behavior).
+    private func placeLineToLineDistance(from first: DXFEntity, to second: DXFEntity,
+                                         size: CGSize, modelBounds: CGRect) {
+        placePointLineDistance(pointRef: PointRef(handle: first.handle, role: "start"),
+                               line: second, pointFirst: false,
+                               size: size, modelBounds: modelBounds)
+    }
+
+    /// Angle dimension between two lines (driving angle constraint).
+    private func placeAngleDimension(first: DXFEntity, second: DXFEntity,
+                                     size: CGSize, modelBounds: CGRect) {
+        guard let s1 = first.start, let e1 = first.end,
+              let s2 = second.start, let e2 = second.end else { return }
+        let u1 = (e1[0] - s1[0], e1[1] - s1[1])
+        let u2 = (e2[0] - s2[0], e2[1] - s2[1])
+        var deg = atan2(u1.0 * u2.1 - u1.1 * u2.0, u1.0 * u2.0 + u1.1 * u2.1) * 180.0 / .pi
+        if deg < 0 { deg += 360 }
+        var c = SketchConstraint(kind: "angle")
+        c.entities = [first.handle, second.handle]
+        c.value = deg
+        let m1 = CGPoint(x: (s1[0] + e1[0]) / 2, y: (s1[1] + e1[1]) / 2)
+        let m2 = CGPoint(x: (s2[0] + e2[0]) / 2, y: (s2[1] + e2[1]) / 2)
+        commitComboDimension(start: m1, end: m2, value: deg, type: "angle",
+                             constraint: c, size: size, modelBounds: modelBounds)
+    }
+
+    /// Shared tail for the combo dimensions: register the engine variable,
+    /// append the measurement, link+solve its driving constraint, open the
+    /// floating value editor (mirrors beginParametricDimension).
+    private func commitComboDimension(start: CGPoint, end: CGPoint, value: Double,
+                                      type: String, constraint: SketchConstraint?,
+                                      size: CGSize, modelBounds: CGRect) {
+        state.saveToHistory()
+        let varName = state.dimensionEngine.nextVarName()
+        let driven = (constraint == nil)
+        state.dimensionEngine.addNumeric(value: value, id: varName, driven: driven)
+        var m = MeasurementLine(start: start, end: end, distanceMm: value,
+                                isAutoDimension: false,
+                                entityHandle: constraint?.entities.first
+                                    ?? constraint?.points.first?.handle,
+                                dimensionType: type, varName: varName,
+                                expression: String(format: "%g", value),
+                                driven: driven, isParametric: true, offsetDistance: 0)
+        m.constraintId = constraint?.id
+        state.measurements.append(m)
+        if let c = constraint {
+            state.linkDimensionConstraint(measureId: m.id, constraint: c)
+        }
+        state.selectedMeasurement = m
+        editingDimension = m
+        editingDimensionText = String(format: "%.2f", value)
+        let s = toScreen(dx: start.x, dy: start.y, size: size, bounds: modelBounds)
+        let e = toScreen(dx: end.x, dy: end.y, size: size, bounds: modelBounds)
+        editingDimensionScreenPos = CGPoint(x: (s.x + e.x) / 2, y: (s.y + e.y) / 2 - 24)
+        dimensionFieldError = false
+        isDimensionEditorFocused = true
     }
 
     /// Seeds a driving entity dimension and opens the floating field for explicit
@@ -6392,11 +6541,24 @@ struct DxfCanvasView: View {
         let color: Color = isSelected ? Color.white
             : (isHovered ? Color.accent_hover : (measure.driven ? Color.text_secondary : Color.text_primary))
         let lineW: CGFloat = isSelected ? 2.0 : 1.4
-        let label = DimensionEngine.label(value: measure.distanceMm,
+        var label = DimensionEngine.label(value: measure.distanceMm,
                                           expression: measure.expression ?? "",
                                           driven: measure.driven)
+        if measure.dimensionType == "angle" {
+            label = label.replacingOccurrences(of: " mm", with: "°")
+        }
 
-        // Radius dimension → leader from center to edge with an arrowhead + R label.
+        // Radius/diameter dimension → leader with an arrowhead + R/⌀ label.
+        if measure.dimensionType == "diameter" {
+            var leader = SwiftUI.Path()
+            leader.move(to: startScreen)
+            leader.addLine(to: endScreen)
+            context.stroke(leader, with: .color(color), style: StrokeStyle(lineWidth: lineW, lineCap: .round))
+            drawArrowhead(at: endScreen, towards: startScreen, color: color, context: &context)
+            context.draw(Text("⌀ \(label)").font(.system(size: 10, weight: .bold)).foregroundColor(color),
+                         at: CGPoint(x: endScreen.x + 6, y: endScreen.y - 12), anchor: .leading)
+            return
+        }
         if measure.dimensionType == "radius" {
             var leader = SwiftUI.Path()
             leader.move(to: startScreen)

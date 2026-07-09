@@ -3290,7 +3290,9 @@ class AppState {
         do { value = try dimensionEngine.preview(raw) }
         catch let e as DimensionError { return e }
         catch { return .syntax("\(error)") }
-        if !value.isFinite || value <= 0 { return .syntax("must be a positive length") }
+        let isAngle = measurements.first(where: { $0.id == measureId })?.dimensionType == "angle"
+        if !value.isFinite { return .syntax("not a finite value") }
+        if !isAngle && value <= 0 { return .syntax("must be a positive length") }
 
         // Register / update this dimension's variable, detecting cycles.
         let varName = measurements[idx].varName ?? dimensionEngine.nextVarName()
@@ -3307,7 +3309,9 @@ class AppState {
             // Fusion parity: the dimension IS a constraint — drive geometry
             // through the solver so every relation holds, not a raw resize.
             measurements[idx].distanceMm = value
-            _ = setConstraintExpression(id: cid, rawExpression: raw)
+            // Diameter labels drive the underlying RADIUS constraint at half.
+            let effective = measurements[idx].dimensionType == "diameter" ? "(\(raw))/2" : raw
+            _ = setConstraintExpression(id: cid, rawExpression: effective)
         } else {
             // Drive the geometry to the evaluated value through the existing resize path.
             selectedMeasurement = measurements[idx]
@@ -3454,6 +3458,7 @@ class AppState {
         if ["distance", "radius"].contains(sketchConstraints[idx].kind) && value <= 0 {
             return "Value must be positive."
         }
+        // (angle constraints accept any finite value, including 0 and negatives)
         saveToHistory()
         var updated = sketchConstraints
         updated[idx].expression = raw
@@ -3492,6 +3497,8 @@ class AppState {
                                  value: m.distanceMm)
         } else if m.dimensionType == "radius" && (ent.type == "CIRCLE" || ent.type == "ARC") {
             c = SketchConstraint(kind: "radius", entities: [h], value: m.distanceMm)
+        } else if m.dimensionType == "diameter" && ent.type == "CIRCLE" {
+            c = SketchConstraint(kind: "radius", entities: [h], value: m.distanceMm / 2)
         } else {
             return false
         }
@@ -3500,6 +3507,17 @@ class AppState {
         // No extra history entry: the dimension placement already made one.
         runSketchSolve(constraints: sketchConstraints + [c], rejectIfConflicting: c)
         return true
+    }
+
+    /// Links a combo dimension (two-point / point-line / angle / line-line)
+    /// to its freshly built driving constraint and solves. The measurement was
+    /// already appended and history saved by the caller.
+    func linkDimensionConstraint(measureId: UUID, constraint: SketchConstraint) {
+        if let idx = measurements.firstIndex(where: { $0.id == measureId }) {
+            measurements[idx].constraintId = constraint.id
+        }
+        runSketchSolve(constraints: sketchConstraints + [constraint],
+                       rejectIfConflicting: constraint)
     }
 
     /// Selection-first constraining (Fusion): if the current selection already
@@ -5035,12 +5053,16 @@ class AppState {
             }
             let activeDxfURL = sessionTempDirectory.appendingPathComponent("active.dxf")
             do {
+                var args: [String: Any] = ["input": input.path,
+                                           "output": activeDxfURL.path,
+                                           "constraints": payload]
+                // Move-the-first-pick rule: the just-added constraint's last
+                // operand anchors; the first pick does the moving.
+                if let newC = rejectIfConflicting { args["anchor_constraint_id"] = newC.id }
                 let res = try await PythonBridge.shared.run(
                     module: "sketch_constraints",
                     op: "sketch_solve",
-                    args: ["input": input.path,
-                           "output": activeDxfURL.path,
-                           "constraints": payload]
+                    args: args
                 )
                 let data = res["data"] as? [String: Any] ?? [:]
                 await MainActor.run {
@@ -5630,10 +5652,10 @@ class AppState {
                     measurements[i].end = CGPoint(x: e[0], y: e[1])
                     measurements[i].distanceMm = Double(hypot(s[0] - e[0], s[1] - e[1]))
                 } else if let c = p.center, c.count >= 2, let r = p.radius,
-                          measurements[i].dimensionType == "radius" {
+                          measurements[i].dimensionType == "radius" || measurements[i].dimensionType == "diameter" {
                     measurements[i].start = CGPoint(x: c[0], y: c[1])
                     measurements[i].end = CGPoint(x: c[0] + r, y: c[1])
-                    measurements[i].distanceMm = r
+                    measurements[i].distanceMm = measurements[i].dimensionType == "diameter" ? r * 2 : r
                 }
             }
         }
